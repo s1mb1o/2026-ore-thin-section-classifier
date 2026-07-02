@@ -9,6 +9,7 @@
 - Evaluated SegFormer-B0 best checkpoint on the full val split: sulfide IoU `0.953371`, F1 `0.976129`, AUC `0.996154`, HD95 mean `33.92 px` on 512 sampled val tiles.
 - Added tiled inference `scripts/infer_binary_sulfide.py`, component/ore analysis `scripts/analyze_ore_from_masks.py`, and one-command runner `scripts/run_ore_pipeline.py`.
 - Final B1 demo on `2539589-1.JPG` produced `sulfide_fraction 0.294490` and a deterministic `hard_to_process_ore` summary with ordinary/fine component overlays under `outputs/inference_demo/b1_final_row_2539589_1/`.
+- Ran a six-image final-B1 visual validation pack from the balanced split under `outputs/visual_validation_b1_final/`. Masks/overlays rendered, but deterministic ordinary/fine rules disagreed with folder labels on 2 of 4 ordinary/fine examples; saved the calibration finding in `docs/notes/2026-07-03-b1-visual-validation-pack.md`.
 - Added balanced official image-level split generation: `outputs/official_balanced_eval_split.json` has `387` labelled images, `129` per ordinary/fine/talcose class, and keeps `14` panoramas separate as unlabelled stress images.
 - Added model/data/run cards under `docs/cards/` for checkpoint provenance, balanced split caveats, and the B1 demo pipeline run.
 

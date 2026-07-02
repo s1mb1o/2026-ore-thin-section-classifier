@@ -70,6 +70,7 @@ Source dataset facts from the original repository handoff:
 - `docs/notes/2026-07-03-official-metrics-and-panorama-split.md`: organizer clarification on IoU/Hausdorff, F1/AUC, and unlabelled panorama usage.
 - `docs/notes/2026-07-03-research-mindstorm-improvements.ru.md`: research-backed Russian mindstorm for killer features, training upgrades, annotation strategy, and presentation framing.
 - `docs/notes/2026-07-03-reusable-demo-libraries.md`: shared libraries for source fusion, active-review queues, dataset curation, component reports, report cards, and scribble classifiers.
+- `docs/notes/2026-07-03-b1-visual-validation-pack.md`: six-image final-B1 visual sanity pack and calibration finding for ordinary/fine rules.
 - `docs/notes/2026-07-03-heuristic-segmentation-subproject.md`: separate non-neural segmentation baseline, smoke result, limits, and intended use as a disagreement source.
 - `docs/notes/2026-07-03-gpu-training-status.md`: current binary sulfide dataset, gx10 ResUNet job, and zelda blocker.
 - `docs/notes/talc-blue-line-conversion.md`: v2 talc blue-line converter/review note.
@@ -83,11 +84,11 @@ Source dataset facts from the original repository handoff:
 2. Use the local SegFormer-B1 mirror at `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/` as the default sulfide checkpoint.
 3. Keep the local SegFormer-B0 mirror at `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/` as the smaller fallback checkpoint.
 4. Use `outputs/official_balanced_eval_split.json` for balanced labelled-class evaluation; keep weak-label metrics separate from image-level class metrics.
-5. Compare SegFormer-B1/B0 predictions against `heuristic_segmentation/` outputs and surface disagreement areas as the first sulfide QA queue.
-6. Wire the reusable demo libraries into pipeline outputs: `source_fusion` -> `review_queue` -> `component_reports` -> `report_cards`, with `curation` for split/label QA and `scribble_classifier` as an optional reviewer-assist source.
-7. Use the research mindstorm note to prioritize the remaining differentiating features: robustness certificate, illumination/flat-field artifact, high-loss pseudo-label cleanup, annotation-budget simulation, OIA-style report protocol, and MIL over sulfide components.
-8. Use `apps/sulfide_qa_streamlit.py` as a file-based QA app with overlays, confidence heatmaps, disagreement layers, and JSON verdicts.
-9. Calibrate component-level ordinary/fine rule thresholds against the balanced labelled split.
+5. Calibrate component ordinary/fine thresholds using the six-image visual pack plus the balanced split; current visual pack shows rule disagreements on 2 of 4 ordinary/fine examples.
+6. Compare SegFormer-B1/B0 predictions against `heuristic_segmentation/` outputs and surface disagreement areas as the first sulfide QA queue.
+7. Wire the reusable demo libraries into pipeline outputs: `source_fusion` -> `review_queue` -> `component_reports` -> `report_cards`, with `curation` for split/label QA and `scribble_classifier` as an optional reviewer-assist source.
+8. Use the research mindstorm note to prioritize the remaining differentiating features: robustness certificate, illumination/flat-field artifact, high-loss pseudo-label cleanup, annotation-budget simulation, OIA-style report protocol, and MIL over sulfide components.
+9. Use `apps/sulfide_qa_streamlit.py` as a file-based QA app with overlays, confidence heatmaps, disagreement layers, and JSON verdicts.
 10. Review and accept/fix talc masks from `outputs/talc_blue_line_conversion` in `apps/talc_review_streamlit.py`.
 
 ## Known Risks
