@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      margin: 0;
+      background: transparent;
+      color: #1f2933;
+    }
+    .toolbar {
+      align-items: center;
+      display: flex;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 0 8px 0;
+    }
+    button {
+      background: #ffffff;
+      border: 1px solid #aeb8c2;
+      border-radius: 6px;
+      color: #1f2933;
+      cursor: pointer;
+      font: inherit;
+      line-height: 1;
+      padding: 8px 10px;
+    }
+    button.active {
+      background: #1f6feb;
+      border-color: #1f6feb;
+      color: #ffffff;
+    }
+    button:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+    .status {
+      color: #52616f;
+      font-size: 12px;
+      margin-left: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    canvas {
+      border: 1px solid #aeb8c2;
+      border-radius: 6px;
+      display: block;
+      max-width: 100%;
+      outline: none;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="selectMode" type="button" class="active">Select</button>
+    <button id="addPoint" type="button">Add point</button>
+    <button id="deletePoint" type="button">Delete point</button>
+    <span id="status" class="status"></span>
+  </div>
+  <canvas id="editor" tabindex="0"></canvas>
+
+  <script>
+    const canvas = document.getElementById("editor");
+    const ctx = canvas.getContext("2d");
+    const selectButton = document.getElementById("selectMode");
+    const addButton = document.getElementById("addPoint");
+    const deleteButton = document.getElementById("deletePoint");
+    const statusNode = document.getElementById("status");
+
+    const state = {
+      args: {},
+      image: null,
+      imageSrc: "",
+      geometry: null,
+      mode: "select",
+      selectedPoint: -1,
+      drag: null,
+    };
+
+    function post(type, value) {
+      window.parent.postMessage({ isStreamlitMessage: true, type, ...value }, "*");
+    }
+
+    function componentReady() {
+      post("streamlit:componentReady", { apiVersion: 1 });
+    }
+
+    function setFrameHeight() {
+      post("streamlit:setFrameHeight", { height: canvas.height + 48 });
+    }
+
+    function setComponentValue() {
+      post("streamlit:setComponentValue", {
+        value: {
+          type: state.args.shapeType,
+          geometry: cloneGeometry(state.geometry),
+          width: canvas.width,
+          height: canvas.height,
+        },
+      });
+    }
+
+    function cloneGeometry(geometry) {
+      return JSON.parse(JSON.stringify(geometry));
+    }
+
+    function defaultPolygon(width, height) {
+      const left = Math.round(width * 0.38);
+      const right = Math.round(width * 0.62);
+      const top = Math.round(height * 0.38);
+      const bottom = Math.round(height * 0.62);
+      return {
+        points: [
+          { x: left, y: top },
+          { x: right, y: top },
+          { x: right, y: bottom },
+          { x: left, y: bottom },
+        ],
+      };
+    }
+
+    function defaultBox(width, height) {
+      return {
+        x1: Math.round(width * 0.38),
+        y1: Math.round(height * 0.38),
+        x2: Math.round(width * 0.62),
+        y2: Math.round(height * 0.62),
+      };
+    }
+
+    function defaultPoint(width, height) {
+      return {
+        x: Math.round(width * 0.5),
+        y: Math.round(height * 0.5),
+      };
+    }
+
+    function normalizePoint(point) {
+      return {
+        x: clamp(Math.round(Number(point.x) || 0), 0, canvas.width - 1),
+        y: clamp(Math.round(Number(point.y) || 0), 0, canvas.height - 1),
+      };
+    }
+
+    function normalizePolygon(geometry) {
+      const source = geometry && Array.isArray(geometry.points) ? geometry.points : [];
+      const points = source.map(normalizePoint).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+      return points.length >= 3 ? { points } : defaultPolygon(canvas.width, canvas.height);
+    }
+
+    function normalizeBox(geometry) {
+      const fallback = defaultBox(canvas.width, canvas.height);
+      const source = geometry || fallback;
+      const x1 = clamp(Math.round(Number(source.x1) || fallback.x1), 0, canvas.width - 1);
+      const y1 = clamp(Math.round(Number(source.y1) || fallback.y1), 0, canvas.height - 1);
+      const x2 = clamp(Math.round(Number(source.x2) || fallback.x2), 0, canvas.width - 1);
+      const y2 = clamp(Math.round(Number(source.y2) || fallback.y2), 0, canvas.height - 1);
+      return normalizeRect({ x1, y1, x2, y2 });
+    }
+
+    function normalizePointGeometry(geometry) {
+      return normalizePoint(geometry || defaultPoint(canvas.width, canvas.height));
+    }
+
+    function normalizeRect(rect) {
+      const left = clamp(Math.min(rect.x1, rect.x2), 0, canvas.width - 1);
+      const right = clamp(Math.max(rect.x1, rect.x2), 0, canvas.width - 1);
+      const top = clamp(Math.min(rect.y1, rect.y2), 0, canvas.height - 1);
+      const bottom = clamp(Math.max(rect.y1, rect.y2), 0, canvas.height - 1);
+      return { x1: left, y1: top, x2: Math.max(left + 1, right), y2: Math.max(top + 1, bottom) };
+    }
+
+    function clamp(value, minValue, maxValue) {
+      return Math.max(minValue, Math.min(maxValue, value));
+    }
+
+    function distance(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function pointToSegmentDistance(point, a, b) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const denom = dx * dx + dy * dy;
+      if (denom === 0) return distance(point, a);
+      const t = clamp(((point.x - a.x) * dx + (point.y - a.y) * dy) / denom, 0, 1);
+      const projection = { x: a.x + t * dx, y: a.y + t * dy };
+      return distance(point, projection);
+    }
+
+    function nearestPolygonPoint(point) {
+      const points = state.geometry.points || [];
+      let bestIndex = -1;
+      let bestDistance = 12;
+      points.forEach((candidate, index) => {
+        const currentDistance = distance(point, candidate);
+        if (currentDistance < bestDistance) {
+          bestDistance = currentDistance;
+          bestIndex = index;
+        }
+      });
+      return bestIndex;
+    }
+
+    function nearestPolygonEdge(point) {
+      const points = state.geometry.points || [];
+      let bestIndex = -1;
+      let bestDistance = 18;
+      for (let index = 0; index < points.length; index += 1) {
+        const nextIndex = (index + 1) % points.length;
+        const currentDistance = pointToSegmentDistance(point, points[index], points[nextIndex]);
+        if (currentDistance < bestDistance) {
+          bestDistance = currentDistance;
+          bestIndex = index;
+        }
+      }
+      return bestIndex;
+    }
+
+    function pointInPolygon(point, polygon) {
+      let inside = false;
+      const points = polygon.points || [];
+      for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+        const pi = points[i];
+        const pj = points[j];
+        const crosses = (pi.y > point.y) !== (pj.y > point.y);
+        const x = ((pj.x - pi.x) * (point.y - pi.y)) / Math.max(1e-6, pj.y - pi.y) + pi.x;
+        if (crosses && point.x < x) inside = !inside;
+      }
+      return inside;
+    }
+
+    function boxHandles(rect) {
+      const xMid = (rect.x1 + rect.x2) / 2;
+      const yMid = (rect.y1 + rect.y2) / 2;
+      return [
+        { name: "nw", x: rect.x1, y: rect.y1 },
+        { name: "n", x: xMid, y: rect.y1 },
+        { name: "ne", x: rect.x2, y: rect.y1 },
+        { name: "e", x: rect.x2, y: yMid },
+        { name: "se", x: rect.x2, y: rect.y2 },
+        { name: "s", x: xMid, y: rect.y2 },
+        { name: "sw", x: rect.x1, y: rect.y2 },
+        { name: "w", x: rect.x1, y: yMid },
+      ];
+    }
+
+    function nearestBoxHandle(point) {
+      let best = null;
+      let bestDistance = 12;
+      boxHandles(state.geometry).forEach((handle) => {
+        const currentDistance = distance(point, handle);
+        if (currentDistance < bestDistance) {
+          best = handle.name;
+          bestDistance = currentDistance;
+        }
+      });
+      return best;
+    }
+
+    function pointInRect(point, rect) {
+      return point.x >= rect.x1 && point.x <= rect.x2 && point.y >= rect.y1 && point.y <= rect.y2;
+    }
+
+    function updateToolbar() {
+      const isPolygon = state.args.shapeType === "polygon";
+      addButton.disabled = !isPolygon;
+      deleteButton.disabled = !isPolygon || state.selectedPoint < 0 || (state.geometry.points || []).length <= 3;
+      selectButton.classList.toggle("active", state.mode === "select");
+      addButton.classList.toggle("active", state.mode === "add");
+      if (isPolygon) {
+        statusNode.textContent = `${state.geometry.points.length} points`;
+      } else if (state.args.shapeType === "point") {
+        statusNode.textContent = `${Math.round(state.geometry.x)},${Math.round(state.geometry.y)}`;
+      } else {
+        statusNode.textContent = `${Math.round(state.geometry.x1)},${Math.round(state.geometry.y1)} - ${Math.round(state.geometry.x2)},${Math.round(state.geometry.y2)}`;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (state.image) {
+        ctx.drawImage(state.image, 0, 0, canvas.width, canvas.height);
+      }
+      ctx.save();
+      ctx.fillStyle = state.args.fillColor || "rgba(0, 255, 0, 0.35)";
+      ctx.strokeStyle = state.args.strokeColor || "#00ff00";
+      ctx.lineWidth = 2;
+      if (state.args.shapeType === "polygon") {
+        drawPolygon();
+      } else if (state.args.shapeType === "point") {
+        drawPoint();
+      } else {
+        drawBox();
+      }
+      ctx.restore();
+      updateToolbar();
+    }
+
+    function drawPolygon() {
+      const points = state.geometry.points || [];
+      if (points.length === 0) return;
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      points.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      points.forEach((point, index) => {
+        ctx.beginPath();
+        ctx.fillStyle = index === state.selectedPoint ? "#ffffff" : state.args.strokeColor || "#00ff00";
+        ctx.strokeStyle = "#1f2933";
+        ctx.lineWidth = 2;
+        ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      });
+    }
+
+    function drawPoint() {
+      const point = normalizePointGeometry(state.geometry);
+      state.geometry = point;
+      ctx.beginPath();
+      ctx.fillStyle = state.args.strokeColor || "#00ff00";
+      ctx.strokeStyle = "#1f2933";
+      ctx.lineWidth = 2;
+      ctx.arc(point.x, point.y, 7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(point.x - 13, point.y);
+      ctx.lineTo(point.x + 13, point.y);
+      ctx.moveTo(point.x, point.y - 13);
+      ctx.lineTo(point.x, point.y + 13);
+      ctx.strokeStyle = state.args.strokeColor || "#00ff00";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    function drawBox() {
+      const rect = normalizeRect(state.geometry);
+      state.geometry = rect;
+      ctx.fillRect(rect.x1, rect.y1, rect.x2 - rect.x1, rect.y2 - rect.y1);
+      ctx.strokeRect(rect.x1, rect.y1, rect.x2 - rect.x1, rect.y2 - rect.y1);
+      boxHandles(rect).forEach((handle) => {
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = "#1f2933";
+        ctx.lineWidth = 2;
+        ctx.fillRect(handle.x - 5, handle.y - 5, 10, 10);
+        ctx.strokeRect(handle.x - 5, handle.y - 5, 10, 10);
+      });
+    }
+
+    function pointer(event) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      return {
+        x: clamp((event.clientX - rect.left) * scaleX, 0, canvas.width - 1),
+        y: clamp((event.clientY - rect.top) * scaleY, 0, canvas.height - 1),
+      };
+    }
+
+    function startPolygonDrag(point) {
+      const vertexIndex = nearestPolygonPoint(point);
+      if (state.mode === "add") {
+        const edgeIndex = nearestPolygonEdge(point);
+        const insertIndex = edgeIndex >= 0 ? edgeIndex + 1 : state.geometry.points.length;
+        state.geometry.points.splice(insertIndex, 0, normalizePoint(point));
+        state.selectedPoint = insertIndex;
+        state.drag = { type: "point", index: insertIndex };
+        draw();
+        return;
+      }
+      if (vertexIndex >= 0) {
+        state.selectedPoint = vertexIndex;
+        state.drag = { type: "point", index: vertexIndex };
+      } else if (pointInPolygon(point, state.geometry)) {
+        state.drag = { type: "polygon", start: point, points: cloneGeometry(state.geometry).points };
+      } else {
+        state.selectedPoint = -1;
+      }
+      draw();
+    }
+
+    function startBoxDrag(point) {
+      const handle = nearestBoxHandle(point);
+      if (handle) {
+        state.drag = { type: "box-handle", handle };
+      } else if (pointInRect(point, state.geometry)) {
+        state.drag = { type: "box-move", start: point, rect: cloneGeometry(state.geometry) };
+      }
+      draw();
+    }
+
+    function startPointDrag(point) {
+      state.geometry = normalizePoint(point);
+      state.drag = { type: "point-prompt" };
+      draw();
+    }
+
+    function dragTo(point) {
+      if (!state.drag) return;
+      if (state.drag.type === "point") {
+        state.geometry.points[state.drag.index] = normalizePoint(point);
+      } else if (state.drag.type === "point-prompt") {
+        state.geometry = normalizePoint(point);
+      } else if (state.drag.type === "polygon") {
+        const dx = point.x - state.drag.start.x;
+        const dy = point.y - state.drag.start.y;
+        state.geometry.points = state.drag.points.map((item) => normalizePoint({ x: item.x + dx, y: item.y + dy }));
+      } else if (state.drag.type === "box-handle") {
+        applyBoxHandleDrag(state.drag.handle, point);
+      } else if (state.drag.type === "box-move") {
+        const dx = point.x - state.drag.start.x;
+        const dy = point.y - state.drag.start.y;
+        const rect = state.drag.rect;
+        const width = rect.x2 - rect.x1;
+        const height = rect.y2 - rect.y1;
+        const x1 = clamp(rect.x1 + dx, 0, canvas.width - width - 1);
+        const y1 = clamp(rect.y1 + dy, 0, canvas.height - height - 1);
+        state.geometry = { x1, y1, x2: x1 + width, y2: y1 + height };
+      }
+      draw();
+    }
+
+    function applyBoxHandleDrag(handle, point) {
+      const rect = { ...state.geometry };
+      if (handle.includes("w")) rect.x1 = point.x;
+      if (handle.includes("e")) rect.x2 = point.x;
+      if (handle.includes("n")) rect.y1 = point.y;
+      if (handle.includes("s")) rect.y2 = point.y;
+      if (handle === "n") rect.y1 = point.y;
+      if (handle === "s") rect.y2 = point.y;
+      if (handle === "w") rect.x1 = point.x;
+      if (handle === "e") rect.x2 = point.x;
+      state.geometry = normalizeRect(rect);
+    }
+
+    canvas.addEventListener("pointerdown", (event) => {
+      canvas.focus();
+      canvas.setPointerCapture(event.pointerId);
+      const point = pointer(event);
+      if (state.args.shapeType === "polygon") {
+        startPolygonDrag(point);
+      } else if (state.args.shapeType === "point") {
+        startPointDrag(point);
+      } else {
+        startBoxDrag(point);
+      }
+    });
+
+    canvas.addEventListener("pointermove", (event) => {
+      if (!state.drag) return;
+      dragTo(pointer(event));
+    });
+
+    canvas.addEventListener("pointerup", () => {
+      if (!state.drag) return;
+      state.drag = null;
+      setComponentValue();
+    });
+
+    canvas.addEventListener("dblclick", (event) => {
+      if (state.args.shapeType !== "polygon") return;
+      const point = pointer(event);
+      const edgeIndex = nearestPolygonEdge(point);
+      const insertIndex = edgeIndex >= 0 ? edgeIndex + 1 : state.geometry.points.length;
+      state.geometry.points.splice(insertIndex, 0, normalizePoint(point));
+      state.selectedPoint = insertIndex;
+      draw();
+      setComponentValue();
+    });
+
+    canvas.addEventListener("keydown", (event) => {
+      if (event.key !== "Backspace" && event.key !== "Delete") return;
+      deleteSelectedPoint();
+      event.preventDefault();
+    });
+
+    selectButton.addEventListener("click", () => {
+      state.mode = "select";
+      draw();
+    });
+
+    addButton.addEventListener("click", () => {
+      if (state.args.shapeType !== "polygon") return;
+      state.mode = state.mode === "add" ? "select" : "add";
+      draw();
+    });
+
+    deleteButton.addEventListener("click", () => {
+      deleteSelectedPoint();
+    });
+
+    function deleteSelectedPoint() {
+      if (state.args.shapeType !== "polygon") return;
+      if (state.selectedPoint < 0) return;
+      if ((state.geometry.points || []).length <= 3) return;
+      state.geometry.points.splice(state.selectedPoint, 1);
+      state.selectedPoint = -1;
+      draw();
+      setComponentValue();
+    }
+
+    function configure(args) {
+      const width = Math.max(1, Math.round(Number(args.width) || 640));
+      const height = Math.max(1, Math.round(Number(args.height) || 480));
+      canvas.width = width;
+      canvas.height = height;
+      state.args = args;
+      state.selectedPoint = -1;
+      state.mode = "select";
+      if (args.shapeType === "polygon") {
+        state.geometry = normalizePolygon(args.initialGeometry);
+      } else if (args.shapeType === "point") {
+        state.geometry = normalizePointGeometry(args.initialGeometry);
+      } else {
+        state.geometry = normalizeBox(args.initialGeometry);
+      }
+      if (state.imageSrc !== args.backgroundImage) {
+        state.imageSrc = args.backgroundImage || "";
+        state.image = null;
+        if (state.imageSrc) {
+          const image = new Image();
+          image.onload = () => {
+            state.image = image;
+            draw();
+          };
+          image.src = state.imageSrc;
+        }
+      }
+      draw();
+      setFrameHeight();
+    }
+
+    window.addEventListener("message", (event) => {
+      if (!event.data || event.data.type !== "streamlit:render") return;
+      configure(event.data.args || {});
+    });
+
+    componentReady();
+  </script>
+</body>
+</html>
