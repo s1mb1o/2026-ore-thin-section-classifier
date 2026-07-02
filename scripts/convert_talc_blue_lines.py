@@ -21,6 +21,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", type=Path, required=True, help="Image file or directory with blue-line talc annotations.")
     parser.add_argument("--output-dir", type=Path, required=True, help="Output directory for candidate masks and manifest.")
     parser.add_argument("--sulfide-mask-dir", type=Path, default=None, help="Optional directory with precomputed binary sulfide masks named by image stem.")
+    parser.add_argument(
+        "--silicate-mask-dir",
+        type=Path,
+        default=None,
+        help="Optional directory with binary silicon/silicate support masks named by image stem.",
+    )
     parser.add_argument("--sulfide-mode", choices=["heuristic", "none"], default="heuristic")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--blue-hue-min", type=int, default=90)
@@ -30,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--markup-ignore-dilate-px", type=int, default=4)
     parser.add_argument("--min-region-area-px", type=int, default=600)
     parser.add_argument("--sulfide-bright-percentile", type=float, default=88.0)
+    parser.add_argument("--talc-positive-core-erode-px", type=int, default=2)
+    parser.add_argument("--silicate-hard-negative-margin-px", type=int, default=4)
     parser.add_argument("--fallback-hull", action="store_true", help="Enable aggressive convex-hull fallback for open blue strokes.")
     parser.add_argument("--summary-json", type=Path, default=None, help="Optional path for a copy of the manifest JSON.")
     return parser.parse_args()
@@ -47,12 +55,15 @@ def main() -> None:
         fallback_hull=args.fallback_hull,
         sulfide_mode=args.sulfide_mode,
         sulfide_bright_percentile=args.sulfide_bright_percentile,
+        talc_positive_core_erode_px=args.talc_positive_core_erode_px,
+        silicate_hard_negative_margin_px=args.silicate_hard_negative_margin_px,
     )
     manifest = convert_talc_annotation_folder(
         args.input,
         args.output_dir,
         config,
         sulfide_mask_dir=args.sulfide_mask_dir,
+        silicate_mask_dir=args.silicate_mask_dir,
         limit=args.limit,
     )
     text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"

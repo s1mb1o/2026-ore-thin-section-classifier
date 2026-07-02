@@ -75,9 +75,9 @@ from ore_classifier.talc_blue_line_converter import (  # noqa: E402
 
 
 ACTION_OPTIONS = {
-    "Add talc": "add_talc",
-    "Erase talc": "erase_talc",
-    "Uncertain": "uncertain",
+    "Mark talc": "add_talc",
+    "Remove talc": "erase_talc",
+    "Mark uncertain": "uncertain",
     "Exclude artifact": "exclude_artifact",
 }
 
@@ -97,7 +97,14 @@ ACTION_FILL_RGBA = {
 
 PREVIEW_MODES = ["Side by side", "QA overlay", "Original lines"]
 CANVAS_BACKGROUNDS = ["Current mask", "QA overlay", "Original lines", "Original photo"]
-EDITOR_MODES = ["Canvas", "Geometry", "Polygon table", "Rectangle form", "Mask", "SAM2", "Save"]
+EDITOR_MODES = ["Review canvas", "Upload mask", "Advanced", "Save review"]
+CANVAS_TOOL_OPTIONS = {
+    "Brush": "brush",
+    "Erase": "erase",
+    "Filled polygon": "polygon",
+    "Filled box": "box",
+    "SAM2 assist": "sam2",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -172,16 +179,25 @@ def resize_mask(mask: np.ndarray, shape_hw: tuple[int, int]) -> np.ndarray:
     return cv2.resize(np.where(mask > 0, 255, 0).astype(np.uint8), (shape_hw[1], shape_hw[0]), interpolation=cv2.INTER_NEAREST)
 
 
-def canvas_color_masks(canvas_rgba: np.ndarray, original_shape_hw: tuple[int, int]) -> dict[str, np.ndarray]:
+def canvas_color_masks(
+    canvas_rgba: np.ndarray,
+    original_shape_hw: tuple[int, int],
+    background_rgb: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
     rgb = canvas_rgba[:, :, :3].astype(np.uint8)
+    if background_rgb is not None and background_rgb.shape[:2] == rgb.shape[:2]:
+        diff = np.abs(rgb.astype(np.int16) - background_rgb[:, :, :3].astype(np.int16))
+        changed = np.any(diff > 12, axis=2)
+    else:
+        changed = np.ones(rgb.shape[:2], dtype=bool)
     red = rgb[:, :, 0].astype(np.int16)
     green = rgb[:, :, 1].astype(np.int16)
     blue = rgb[:, :, 2].astype(np.int16)
     masks = {
-        "add_talc": (green > 180) & (red < 110) & (blue < 140),
-        "erase_talc": (red > 180) & (blue > 160) & (green < 130),
-        "uncertain": (red > 180) & (green > 180) & (blue < 130),
-        "exclude_artifact": (red > 200) & (green > 90) & (green < 190) & (blue < 100),
+        "add_talc": changed & (green > 180) & (red < 110) & (blue < 140),
+        "erase_talc": changed & (red > 180) & (blue > 160) & (green < 130),
+        "uncertain": changed & (red > 180) & (green > 180) & (blue < 130),
+        "exclude_artifact": changed & (red > 200) & (green > 90) & (green < 190) & (blue < 100),
     }
     out: dict[str, np.ndarray] = {}
     for action, mask in masks.items():
@@ -191,6 +207,18 @@ def canvas_color_masks(canvas_rgba: np.ndarray, original_shape_hw: tuple[int, in
 
 def session_key(image_id: str, suffix: str) -> str:
     return f"talc_review_{image_id}_{suffix}"
+
+
+def reset_invalid_choice(key: str, valid_options: list[str], default: str) -> None:
+    if key in st.session_state and st.session_state[key] not in valid_options:
+        st.session_state[key] = default
+
+
+def segmented_choice(label: str, options: list[str], *, default: str, key: str) -> str:
+    reset_invalid_choice(key, options, default)
+    if key in st.session_state:
+        return st.segmented_control(label, options, key=key)
+    return st.segmented_control(label, options, default=default, key=key)
 
 
 def set_flash(level: str, message: str) -> None:
@@ -465,8 +493,8 @@ def render_canvas_sam2_tool(
         st.info("SAM2 helper is not available in this checkout.")
         return
     model_id, device = render_sam2_setup_controls(image_id, button_key_suffix="canvas")
-    prompt_label = st.segmented_control(
-        "SAM2 canvas prompt",
+    prompt_label = segmented_choice(
+        "SAM2 prompt",
         ["Point", "Box"],
         default="Point",
         key=session_key(image_id, "canvas_sam2_prompt"),
@@ -495,7 +523,7 @@ def render_canvas_sam2_tool(
         if original_geometry is not None:
             st.session_state[geometry_key] = original_geometry
 
-    if st.button("Run SAM2 canvas prompt", type="primary", key=session_key(image_id, "canvas_sam2_run")):
+    if st.button("Run SAM2", type="primary", key=session_key(image_id, "canvas_sam2_run")):
         geometry = st.session_state[geometry_key]
         if shape_type == "point":
             prompt_geometry = {"type": "point_xy", "x": int(geometry["x"]), "y": int(geometry["y"])}
@@ -510,6 +538,81 @@ def render_canvas_sam2_tool(
         apply_sam2_prompt(sample, image_rgb.shape[:2], prompt_geometry, action, model_id, device, "canvas_sam2")
 
 
+def render_canvas_shape_tool(
+    sample: dict[str, Any],
+    image_rgb: np.ndarray,
+    preview: np.ndarray,
+    scale: float,
+    action: str,
+    background_label: str,
+    shape_type: str,
+) -> None:
+    image_id = sample["image_id"]
+    geometry_key = session_key(image_id, f"canvas_shape_{shape_type}")
+    if geometry_key not in st.session_state:
+        if shape_type == "polygon":
+            st.session_state[geometry_key] = {"points": default_polygon_points(image_rgb.shape[:2])}
+        else:
+            st.session_state[geometry_key] = default_box_geometry(image_rgb.shape[:2])
+
+    initial_geometry = geometry_to_preview(st.session_state[geometry_key], shape_type, scale, preview.shape[:2])
+    value = mask_shape_editor_component(
+        backgroundImage=image_data_url(preview),
+        width=int(preview.shape[1]),
+        height=int(preview.shape[0]),
+        shapeType=shape_type,
+        fillColor=ACTION_FILL_RGBA[action],
+        strokeColor=ACTION_COLORS[action],
+        initialGeometry=initial_geometry,
+        key=session_key(image_id, f"canvas_shape_editor_{shape_type}"),
+        default={"type": shape_type, "geometry": initial_geometry, "width": int(preview.shape[1]), "height": int(preview.shape[0])},
+    )
+    if isinstance(value, dict) and isinstance(value.get("geometry"), dict):
+        original_geometry = geometry_to_original(value["geometry"], shape_type, scale, image_rgb.shape[:2])
+        if original_geometry is not None:
+            st.session_state[geometry_key] = original_geometry
+
+    shape_label = "polygon" if shape_type == "polygon" else "box"
+    col_apply, col_reset = st.columns([1, 1])
+    if col_reset.button("Reset shape", key=session_key(image_id, f"reset_canvas_{shape_type}")):
+        if shape_type == "polygon":
+            st.session_state[geometry_key] = {"points": default_polygon_points(image_rgb.shape[:2])}
+        else:
+            st.session_state[geometry_key] = default_box_geometry(image_rgb.shape[:2])
+        st.rerun()
+    if col_apply.button(f"Apply filled {shape_label}", type="primary", key=session_key(image_id, f"apply_canvas_{shape_type}")):
+        geometry = st.session_state[geometry_key]
+        if shape_type == "polygon":
+            points = normalize_points(geometry.get("points", []), image_rgb.shape[:2])
+            if len(points) < 3:
+                st.warning("Polygon needs at least three points.")
+                return
+            edit_mask = polygon_mask(image_rgb.shape[:2], mask_points(points))
+            saved_geometry: dict[str, Any] = {"points": mask_points(points)}
+        else:
+            edit_mask = rectangle_mask(
+                image_rgb.shape[:2],
+                int(geometry["x1"]),
+                int(geometry["y1"]),
+                int(geometry["x2"]),
+                int(geometry["y2"]),
+            )
+            saved_geometry = {key: int(geometry[key]) for key in ["x1", "y1", "x2", "y2"]}
+        apply_mask_action(
+            sample,
+            edit_mask,
+            action,
+            {
+                "edit_type": f"canvas_filled_{shape_label}",
+                "target_action": action,
+                "background": background_label,
+                "geometry": saved_geometry,
+            },
+        )
+        set_flash("success", f"Filled {shape_label} applied.")
+        st.rerun()
+
+
 def render_canvas_editor(
     sample: dict[str, Any],
     image_rgb: np.ndarray,
@@ -519,10 +622,12 @@ def render_canvas_editor(
     max_display_width: int,
 ) -> None:
     render_edit_metrics(sample)
+    background_key = session_key(sample["image_id"], "canvas_background")
+    reset_invalid_choice(background_key, CANVAS_BACKGROUNDS, "Current mask")
     background_label = st.selectbox(
-        "Canvas background",
+        "View while editing",
         CANVAS_BACKGROUNDS,
-        key=session_key(sample["image_id"], "canvas_background"),
+        key=background_key,
     )
     background_image = {
         "Current mask": current_mask_rgb,
@@ -531,40 +636,40 @@ def render_canvas_editor(
         "Original photo": image_rgb,
     }[background_label]
     preview, scale = resize_preview(background_image, max_display_width)
-    tool = st.segmented_control(
-        "Canvas tool",
-        ["Pen", "Eraser", "Polygon", "Box", "Move/resize", "SAM2"],
-        default="Pen",
-        key=session_key(sample["image_id"], "canvas_tool"),
+    canvas_tool_labels = list(CANVAS_TOOL_OPTIONS.keys())
+    tool_key = session_key(sample["image_id"], "canvas_tool")
+    tool_label = segmented_choice(
+        "Tool",
+        canvas_tool_labels,
+        default="Brush",
+        key=tool_key,
     )
-    if tool == "Eraser":
+    tool_kind = CANVAS_TOOL_OPTIONS[tool_label]
+    if tool_kind == "erase":
         action = "erase_talc"
-        st.caption("Eraser removes talc from the current mask.")
-    elif tool == "Move/resize":
-        action = "add_talc"
-        st.caption("Move/resize edits existing canvas objects before applying them.")
     else:
-        action_label = st.selectbox("Canvas action", list(ACTION_OPTIONS.keys()), key=session_key(sample["image_id"], "canvas_action"))
+        action_label = st.selectbox("Apply as", list(ACTION_OPTIONS.keys()), key=session_key(sample["image_id"], "canvas_action"))
         action = ACTION_OPTIONS[action_label]
-    if tool == "SAM2":
+    if tool_kind == "sam2":
         render_canvas_sam2_tool(sample, image_rgb, preview, scale, action)
+        return
+    if tool_kind in {"polygon", "box"}:
+        render_canvas_shape_tool(sample, image_rgb, preview, scale, action, background_label, tool_kind)
         return
     if st_canvas is None:
         st.info("Canvas component is not installed.")
         return
-    mode = {"Pen": "freedraw", "Eraser": "freedraw", "Polygon": "polygon", "Box": "rect", "Move/resize": "transform"}[tool]
+    mode = "freedraw"
     stroke_color = ACTION_COLORS[action]
-    if tool in {"Pen", "Eraser"}:
-        stroke_width = st.slider("Stroke width", 2, 48, 10, key=session_key(sample["image_id"], "canvas_stroke_width"))
-        fill_color = "rgba(0, 0, 0, 0)"
-    else:
-        stroke_width = 2
-        fill_color = ACTION_FILL_RGBA[action]
+    stroke_width = st.slider("Stroke width", 2, 48, 10, key=session_key(sample["image_id"], "canvas_stroke_width"))
+    fill_color = "rgba(0, 0, 0, 0)"
     drawing_key = session_key(sample["image_id"], "canvas_drawing")
     size_key = session_key(sample["image_id"], "canvas_size")
+    drawing_tool_key = session_key(sample["image_id"], "canvas_drawing_tool")
     canvas_size = (int(preview.shape[1]), int(preview.shape[0]))
-    if st.session_state.get(size_key) != canvas_size:
+    if st.session_state.get(size_key) != canvas_size or st.session_state.get(drawing_tool_key) != tool_kind:
         st.session_state[size_key] = canvas_size
+        st.session_state[drawing_tool_key] = tool_kind
         st.session_state.pop(drawing_key, None)
     canvas = st_canvas(
         fill_color=fill_color,
@@ -581,15 +686,15 @@ def render_canvas_editor(
     if canvas.json_data is not None:
         st.session_state[drawing_key] = canvas.json_data
     col_apply, col_clear = st.columns([1, 1])
-    apply_clicked = col_apply.button("Apply canvas edit", type="primary")
-    if col_clear.button("Clear canvas objects"):
+    apply_clicked = col_apply.button("Apply draft", type="primary")
+    if col_clear.button("Clear draft"):
         st.session_state.pop(drawing_key, None)
         st.rerun()
     if apply_clicked:
         if canvas.image_data is None:
             st.warning("No canvas edit to apply.")
             return
-        masks = canvas_color_masks(canvas.image_data.astype(np.uint8), image_rgb.shape[:2])
+        masks = canvas_color_masks(canvas.image_data.astype(np.uint8), image_rgb.shape[:2], background_rgb=preview)
         applied = 0
         for action_name, edit_mask in masks.items():
             if np.count_nonzero(edit_mask) == 0:
@@ -604,13 +709,13 @@ def render_canvas_editor(
                 {
                     "edit_type": "canvas_mask_area",
                     "scale": scale,
-                    "tool": tool,
+                    "tool": tool_label,
                     "background": background_label,
                     "applied_pixels_in_preview": applied,
                 },
             )
             st.session_state.pop(drawing_key, None)
-            set_flash("success", "Canvas edit applied.")
+            set_flash("success", "Draft applied.")
             st.rerun()
         else:
             st.warning("No colored canvas pixels were detected.")
@@ -635,7 +740,7 @@ def render_geometry_editor(
         "Original lines": original_lines_rgb,
         "Original photo": image_rgb,
     }[background_label]
-    shape_label = st.segmented_control(
+    shape_label = segmented_choice(
         "Geometry type",
         ["Polygon", "Box"],
         default="Polygon",
@@ -704,10 +809,11 @@ def render_geometry_editor(
         st.rerun()
 
 
-def render_rectangle_editor(sample: dict[str, Any], shape_hw: tuple[int, int]) -> None:
+def render_rectangle_editor(sample: dict[str, Any], shape_hw: tuple[int, int], *, show_metrics: bool = True) -> None:
     image_id = sample["image_id"]
     height, width = shape_hw
-    render_edit_metrics(sample)
+    if show_metrics:
+        render_edit_metrics(sample)
     with st.form(session_key(image_id, "rect_form")):
         action_label = st.selectbox("Rectangle action", list(ACTION_OPTIONS.keys()))
         col1, col2, col3, col4 = st.columns(4)
@@ -733,9 +839,10 @@ def render_rectangle_editor(sample: dict[str, Any], shape_hw: tuple[int, int]) -
         st.rerun()
 
 
-def render_polygon_editor(sample: dict[str, Any], shape_hw: tuple[int, int]) -> None:
+def render_polygon_editor(sample: dict[str, Any], shape_hw: tuple[int, int], *, show_metrics: bool = True) -> None:
     image_id = sample["image_id"]
-    render_edit_metrics(sample)
+    if show_metrics:
+        render_edit_metrics(sample)
     points_key = session_key(image_id, "polygon_points")
     version_key = session_key(image_id, "polygon_points_version")
     st.session_state.setdefault(points_key, default_polygon_points(shape_hw))
@@ -822,16 +929,17 @@ def render_polygon_editor(sample: dict[str, Any], shape_hw: tuple[int, int]) -> 
         st.rerun()
 
 
-def render_sam2_editor(sample: dict[str, Any], shape_hw: tuple[int, int]) -> None:
+def render_sam2_editor(sample: dict[str, Any], shape_hw: tuple[int, int], *, show_metrics: bool = True) -> None:
     if generate_sam2_region_mask is None or sam2_assist_status is None:
         st.info("SAM2 helper is not available in this checkout.")
         return
-    render_edit_metrics(sample)
+    if show_metrics:
+        render_edit_metrics(sample)
     image_id = sample["image_id"]
     height, width = shape_hw
     model_id, device = render_sam2_setup_controls(image_id, button_key_suffix="editor")
     action_label = st.selectbox("SAM2 action", list(ACTION_OPTIONS.keys()), key=session_key(image_id, "sam2_action"))
-    prompt_type = st.segmented_control(
+    prompt_type = segmented_choice(
         "SAM2 prompt",
         ["Point", "Box"],
         default="Point",
@@ -870,7 +978,7 @@ def main() -> None:
     conversion_dir_input = st.sidebar.text_input("Conversion directory", str(args.conversion_dir))
     conversion_dir = resolve_path(conversion_dir_input)
     max_display_width = st.sidebar.slider("Display width", 480, 1800, int(args.max_display_width), 20)
-    preview_mode = st.sidebar.selectbox("Preview mode", PREVIEW_MODES)
+    preview_mode = st.sidebar.selectbox("Top preview", PREVIEW_MODES)
 
     try:
         manifest = load_manifest(conversion_dir)
@@ -938,32 +1046,37 @@ def main() -> None:
             clear_edits(image_id)
             st.session_state.pop(session_key(image_id, "canvas_drawing"), None)
             st.session_state.pop(session_key(image_id, "canvas_size"), None)
+            st.session_state.pop(session_key(image_id, "canvas_drawing_tool"), None)
+            st.session_state.pop(session_key(image_id, "canvas_shape_polygon"), None)
+            st.session_state.pop(session_key(image_id, "canvas_shape_box"), None)
             set_flash("success", "Base masks reloaded and unsaved edits cleared.")
             st.rerun()
 
-    editor_mode = st.segmented_control(
-        "Editor",
+    editor_key = session_key(image_id, "editor_mode")
+    editor_mode = segmented_choice(
+        "Workspace",
         EDITOR_MODES,
-        default="Canvas",
-        key=session_key(image_id, "editor_mode"),
+        default="Review canvas",
+        key=editor_key,
     )
-    if editor_mode == "Canvas":
+    if editor_mode == "Review canvas":
         render_canvas_editor(sample, image_rgb, current_mask_rgb, overlay_rgb, original_lines_rgb, max_display_width)
-    elif editor_mode == "Geometry":
-        render_geometry_editor(sample, image_rgb, current_mask_rgb, original_lines_rgb, max_display_width)
-    elif editor_mode == "Polygon table":
-        render_polygon_editor(sample, image_rgb.shape[:2])
-    elif editor_mode == "Rectangle form":
-        render_rectangle_editor(sample, image_rgb.shape[:2])
-    elif editor_mode == "Mask":
+    elif editor_mode == "Upload mask":
         render_edit_metrics(sample)
-        uploaded = st.file_uploader("Mask PNG", type=["png", "jpg", "jpeg", "tif", "tiff", "bmp"])
+        uploaded = st.file_uploader("Mask file", type=["png", "jpg", "jpeg", "tif", "tiff", "bmp"])
         upload_action_label = st.selectbox("Upload action", list(ACTION_OPTIONS.keys()))
-        if uploaded is not None and st.button("Apply uploaded mask"):
+        if uploaded is not None and st.button("Apply mask file"):
             save_uploaded_mask(uploaded, sample, ACTION_OPTIONS[upload_action_label])
-    elif editor_mode == "SAM2":
-        render_sam2_editor(sample, image_rgb.shape[:2])
-    elif editor_mode == "Save":
+    elif editor_mode == "Advanced":
+        render_edit_metrics(sample)
+        with st.expander("Exact polygon coordinates"):
+            render_polygon_editor(sample, image_rgb.shape[:2], show_metrics=False)
+        with st.expander("Exact rectangle coordinates"):
+            render_rectangle_editor(sample, image_rgb.shape[:2], show_metrics=False)
+        with st.expander("Coordinate SAM2 prompt"):
+            render_sam2_editor(sample, image_rgb.shape[:2], show_metrics=False)
+    elif editor_mode == "Save review":
+        render_edit_metrics(sample)
         if st.button("Save reviewed masks", type="primary"):
             review_summary = save_reviewed_masks(sample_dir(sample), talc_mask, ignore_mask, current_edits(image_id))
             st.success("Reviewed masks saved.")

@@ -10,7 +10,10 @@ This note records the v2 talc annotation conversion path for
 The official talc annotations are not binary masks. They are microscope photos
 with blue hand-drawn boundary strokes. Some strokes are open, and some marked
 regions overlap bright sulfide grains. The v2 converter produces conservative
-candidate talc masks plus QA artifacts for manual review.
+candidate talc masks plus QA artifacts for manual review. It can also consume an
+optional silicon/silicate support mask as evidence: supported pixels inside the
+talc candidate become stronger positives, unsupported candidate pixels become
+uncertain, and supported pixels outside the candidate become hard negatives.
 
 ## Code
 
@@ -38,6 +41,16 @@ python3 scripts/convert_talc_blue_lines.py \
   --sulfide-mask-dir path/to/binary_sulfide_masks
 ```
 
+Optional silicon/silicate support masks can also be supplied by image stem:
+
+```bash
+python3 scripts/convert_talc_blue_lines.py \
+  --input "dataset/Фото руд по сортам. ч1/Оталькованные руды/Области оталькования" \
+  --output-dir outputs/talc_blue_line_conversion \
+  --sulfide-mask-dir path/to/binary_sulfide_masks \
+  --silicate-mask-dir path/to/silicate_support_masks
+```
+
 ## Outputs
 
 Each sample directory contains:
@@ -48,12 +61,23 @@ Each sample directory contains:
 - `candidate_talc_mask.png`
 - `sulfide_mask.png`
 - `sulfide_overlap_mask.png`
+- `silicate_support_mask.png`
+- `silicate_supported_talc_mask.png`
+- `silicate_unsupported_talc_mask.png`
+- `talc_positive_core_mask.png`
+- `silicate_hard_negative_mask.png`
 - `ignore_mask.png`
 - `final_talc_mask.png`
 - `qa_overlay.png`
 - `conversion_summary.json`
 
-The current v2 full run is:
+For training, use `talc_positive_core_mask.png` as conservative positive talc,
+`silicate_hard_negative_mask.png` as `not_talc` hard negatives, and
+`ignore_mask.png` for uncertain/markup/sulfide-overlap pixels. Do not treat the
+whole silicate support mask as talc.
+
+The current v2 full run below was generated without an external silicate support
+mask:
 
 ```text
 outputs/talc_blue_line_conversion/manifest.json
@@ -90,25 +114,25 @@ The app displays original blue annotation lines next to the QA overlay by
 default. Editing is mask-first: canvas defaults to `Current mask`, and the
 original blue-line image remains available as a reference background.
 
-The edit area uses a stateful `Editor` segmented control so the selected tool
-survives Streamlit reruns after applying edits. Each editor shows local
-`Current talc px`, `Current ignore px`, and `Unsaved edits` counters.
+The edit area uses a stateful `Workspace` segmented control so the selected
+workspace survives Streamlit reruns after applying edits. Each editing
+workspace shows local `Current talc px`, `Current ignore px`, and `Unsaved
+edits` counters.
 
-Canvas tools:
+Main `Review canvas` tools:
 
-- `Pen` and `Eraser` apply stroke-width edits to the current mask.
-- `Polygon` and `Box` apply filled areas; their line width is not the edited geometry.
-- `Move/resize` exposes the Fabric transform mode for drawn canvas objects, including rectangle handles.
+- `Brush` and `Erase` apply stroke-width edits to the current mask.
+- `Filled polygon` and `Filled box` apply editable filled areas; polygon
+  vertices can be dragged, inserted, and deleted, and boxes support corner/edge
+  drag before applying.
+- `SAM2 assist` uses the same canvas background and action controls, with
+  draggable point or box prompts plus `Load/check SAM2` and `Run SAM2`.
 
-The `Geometry` editor uses the local component in
-`apps/components/mask_shape_editor/index.html`. It supports polygon vertex
-dragging, point insertion/deletion, and box corner/edge dragging before applying
-the filled area as a mask. `Polygon table` and `Rectangle form` are kept as
-exact-coordinate fallbacks.
-
-The `SAM2` editor is optional. It now has explicit model/device controls and a
-`Load/check SAM2` button before running point or box prompts. The model cache
-should stay in the normal Hugging Face cache, not under the project tree.
+`Advanced` keeps exact-coordinate fallbacks out of the normal review path:
+polygon table, rectangle form, and coordinate SAM2 prompt. SAM2 remains
+optional and uses explicit model/device controls plus a `Load/check SAM2`
+button before running point or box prompts. The model cache should stay in the
+normal Hugging Face cache, not under the project tree.
 
 Reviewed outputs are saved under each sample directory:
 

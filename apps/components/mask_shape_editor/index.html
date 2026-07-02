@@ -58,7 +58,7 @@
 </head>
 <body>
   <div class="toolbar">
-    <button id="selectMode" type="button" class="active">Select</button>
+    <button id="selectMode" type="button" class="active">Edit</button>
     <button id="addPoint" type="button">Add point</button>
     <button id="deletePoint" type="button">Delete point</button>
     <span id="status" class="status"></span>
@@ -270,6 +270,8 @@
 
     function updateToolbar() {
       const isPolygon = state.args.shapeType === "polygon";
+      addButton.style.display = isPolygon ? "" : "none";
+      deleteButton.style.display = isPolygon ? "" : "none";
       addButton.disabled = !isPolygon;
       deleteButton.disabled = !isPolygon || state.selectedPoint < 0 || (state.geometry.points || []).length <= 3;
       selectButton.classList.toggle("active", state.mode === "select");

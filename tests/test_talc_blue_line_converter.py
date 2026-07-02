@@ -19,6 +19,7 @@ from ore_classifier.talc_blue_line_converter import (  # noqa: E402
     polygon_mask,
     read_mask,
     rectangle_mask,
+    write_mask,
 )
 
 
@@ -46,7 +47,7 @@ class TalcBlueLineConverterTest(unittest.TestCase):
                 fallback_hull=False,
             ),
         )
-        self.assertEqual(summary["schema_version"], "talc-blue-line-conversion-v0.1")
+        self.assertEqual(summary["schema_version"], "talc-blue-line-conversion-v0.2")
         self.assertGreater(summary["raw_blue_stroke_pixels"], 0)
         self.assertGreater(summary["candidate_talc_pixels"], 0)
         self.assertGreater(summary["overlap_pixels"], 0)
@@ -56,6 +57,41 @@ class TalcBlueLineConverterTest(unittest.TestCase):
         self.assertGreater(final_mask[45, 45], 0)
         self.assertEqual(final_mask[60, 80], 0)
         self.assertGreater(overlap_mask[60, 80], 0)
+
+    def test_silicate_support_promotes_core_and_marks_unsupported_candidate_uncertain(self) -> None:
+        silicate_path = self.out_root / "synthetic_blue_line_silicate.png"
+        silicate = np.zeros((120, 160), dtype=np.uint8)
+        silicate[38:82, 42:76] = 255
+        silicate[10:20, 10:22] = 255
+        write_mask(silicate_path, silicate)
+
+        summary = convert_talc_annotation_image(
+            self.image_path,
+            self.out_root / "converted_with_silicate",
+            TalcConversionConfig(
+                gap_close_px=8,
+                line_dilate_px=2,
+                markup_ignore_dilate_px=1,
+                sulfide_mode="none",
+                talc_positive_core_erode_px=1,
+                silicate_hard_negative_margin_px=2,
+                fallback_hull=False,
+            ),
+            silicate_mask_path=silicate_path,
+        )
+        final_mask = read_mask(Path(summary["paths"]["final_talc_mask"]))
+        ignore_mask = read_mask(Path(summary["paths"]["ignore_mask"]))
+        positive_core = read_mask(Path(summary["paths"]["talc_positive_core_mask"]))
+        hard_negative = read_mask(Path(summary["paths"]["silicate_hard_negative_mask"]))
+
+        self.assertGreater(final_mask[50, 50], 0)
+        self.assertEqual(final_mask[70, 110], 0)
+        self.assertGreater(ignore_mask[70, 110], 0)
+        self.assertGreater(positive_core[50, 50], 0)
+        self.assertGreater(hard_negative[15, 15], 0)
+        self.assertGreater(summary["silicate_supported_talc_pixels"], 0)
+        self.assertGreater(summary["silicate_unsupported_talc_pixels"], 0)
+        self.assertGreater(summary["silicate_hard_negative_pixels"], 0)
 
     def test_apply_rectangle_review_edit(self) -> None:
         talc = np.zeros((20, 30), dtype=np.uint8)

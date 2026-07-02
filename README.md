@@ -30,6 +30,7 @@ docs/
 apps/         # Streamlit QA tools
 scripts/      # dataset and training utilities
 src/ore_classifier/
+heuristic_segmentation/  # separate non-neural segmentation baseline
 outputs/      # generated artifacts, ignored by git
 models/       # local pointers/config only; HF cache stays outside repo
 dataset -> ../2026_Nornikel_Hackaton/dataset
@@ -52,6 +53,9 @@ The source manifest in the old repository verified `1236/1236` files and about `
 - `docs/notes/talc-blue-line-conversion.md`
 - `docs/specs/official-tz-solution-map.ru.md`
 - `docs/official/Скажи мне кто твой шлиф.md`
+- `docs/cards/binary-sulfide-model-card.md`
+- `docs/cards/official-balanced-eval-dataset-card.md`
+- `docs/cards/demo-run-fact-sheet.md`
 - `SMOKE_TESTS.md`
 
 ## Implemented Blocks
@@ -78,11 +82,75 @@ The current full run contains `42` samples with status counts:
 `31 candidate_ok`, `9 needs_manual_review`, and
 `2 sulfide_overlap_review_required`.
 
+### Heuristic Segmentation Baseline
+
+The separate `heuristic_segmentation/` subproject provides a non-neural
+baseline for sulfide/intergrowth segmentation and disagreement analysis:
+
+```bash
+python3 heuristic_segmentation/run_heuristic_segmentation.py \
+  --image "dataset/Фото руд по сортам. ч1/Рядовые руды/DSCN2176.JPG" \
+  --output-dir outputs/heuristic_segmentation_smoke \
+  --max-side 900 \
+  --overwrite
+```
+
+It writes a four-label `class_mask.png`, binary sulfide/talc-candidate masks,
+an overlay, component CSV, and JSON metrics. Treat `talc_candidate` and the
+ordinary/fine decision as heuristic QA signals, not expert ground truth.
+
+### Neural Binary Sulfide Pipeline
+
+Build a balanced official image-level evaluation split:
+
+```bash
+python3 scripts/build_official_balanced_eval_split.py \
+  --official-manifest outputs/official_manifest.json \
+  --out-json outputs/official_balanced_eval_split.json \
+  --out-csv outputs/official_balanced_eval_split.csv
+```
+
+Current split: `129` ordinary, `129` fine, `129` talcose images; panoramas are
+kept separately as `14` unlabelled stress/performance images.
+
+Evaluate a binary sulfide checkpoint with organizer-relevant segmentation
+metrics:
+
+```bash
+python3 scripts/evaluate_binary_sulfide.py \
+  --dataset-manifest outputs/binary_sulfide_dataset_v0/manifest.json \
+  --checkpoint models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --split val \
+  --batch-size 16 \
+  --hausdorff-max-items 512 \
+  --out-json outputs/evaluations/segformer_b0_best_eval_metrics.json
+```
+
+Run one image through the current end-to-end path:
+
+```bash
+python3 scripts/run_ore_pipeline.py \
+  --image "dataset/Фото руд по сортам. ч1/Рядовые руды/2539589-1.JPG" \
+  --checkpoint models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/best.pt \
+  --out-dir outputs/demo_ore_pipeline \
+  --tile-size 1024 \
+  --stride 768 \
+  --batch-size 4
+```
+
+The pipeline writes:
+
+- binary sulfide mask;
+- confidence heatmap;
+- sulfide overlay preview;
+- component ordinary/fine CSV;
+- intergrowth overlay preview;
+- deterministic ore summary JSON.
+
 ## Next Implementation Steps
 
-1. Build a dataset manifest from the symlinked official data.
-2. Review and accept/fix the generated talc masks from `outputs/talc_blue_line_conversion`.
-3. Implement binary sulfide pseudo-label generation: Petroscope teacher, LumenStone/pretrained student, and brightness morphology baseline.
-4. Implement the Streamlit binary QA app in `apps/`.
-5. Train and validate the binary sulfide model on `gx10` / `zelda`.
-6. Add component-level ordinary/fine classification and talc fraction rule.
+1. Re-run the demo image and sampled class examples with the final mirrored SegFormer-B1 checkpoint.
+2. Compare SegFormer-B1/B0 and heuristic segmentation outputs to build the first disagreement queue.
+3. Review and accept/fix the generated talc masks from `outputs/talc_blue_line_conversion`.
+4. Use the Streamlit binary QA app to record accepted/rejected/uncertain mask verdicts.
+5. Calibrate component-level ordinary/fine thresholds against the balanced labelled split.

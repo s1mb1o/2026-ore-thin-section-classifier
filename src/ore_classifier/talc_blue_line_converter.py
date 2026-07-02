@@ -35,6 +35,8 @@ class TalcConversionConfig:
     sulfide_min_area_px: int = 80
     sulfide_close_px: int = 5
     sulfide_dilate_px: int = 2
+    talc_positive_core_erode_px: int = 2
+    silicate_hard_negative_margin_px: int = 4
     overlay_alpha: float = 0.42
 
 
@@ -102,6 +104,20 @@ def remove_small_components(mask: np.ndarray, min_area_px: int) -> np.ndarray:
         if area >= min_area_px:
             out[labels == component_id] = 255
     return out
+
+
+def erode_mask(mask: np.ndarray, px: int) -> np.ndarray:
+    binary = ensure_uint8_mask(mask)
+    if px <= 0:
+        return binary
+    return ensure_uint8_mask(cv2.erode(binary, ellipse_kernel(px), iterations=1))
+
+
+def dilate_mask(mask: np.ndarray, px: int) -> np.ndarray:
+    binary = ensure_uint8_mask(mask)
+    if px <= 0:
+        return binary
+    return ensure_uint8_mask(cv2.dilate(binary, ellipse_kernel(px), iterations=1))
 
 
 def detect_blue_stroke(image_rgb: np.ndarray, config: TalcConversionConfig) -> np.ndarray:
@@ -243,6 +259,8 @@ def mask_pixels(mask: np.ndarray) -> int:
 def confidence_label(summary: dict[str, Any]) -> str:
     if summary["final_talc_pixels"] == 0:
         return "needs_manual_review"
+    if summary.get("silicate_source") not in {None, "none"} and float(summary.get("silicate_supported_fraction") or 0.0) < 0.20:
+        return "silicate_support_review_required"
     overlap_fraction = summary["overlap_pixels"] / max(1, summary["candidate_talc_pixels"])
     if summary["fallback_hull_pixels"] > summary["closed_fill_pixels"] * 2:
         return "candidate_from_hull_review_required"
@@ -265,6 +283,7 @@ def convert_talc_annotation_image(
     config: TalcConversionConfig | None = None,
     *,
     sulfide_mask_path: Path | None = None,
+    silicate_mask_path: Path | None = None,
 ) -> dict[str, Any]:
     config = config or TalcConversionConfig()
     image_path = image_path.resolve()
@@ -292,10 +311,30 @@ def convert_talc_annotation_image(
         sulfide_mask = detect_bright_sulfide_mask(image_rgb, config)
         sulfide_source = "heuristic_bright_phase"
 
+    if silicate_mask_path is not None:
+        silicate_support = read_mask(silicate_mask_path, shape_hw)
+        silicate_source = str(silicate_mask_path)
+    else:
+        silicate_support = np.zeros(shape_hw, dtype=np.uint8)
+        silicate_source = "none"
+
     candidate_talc = ensure_uint8_mask((filled_region > 0) & (markup_ignore == 0))
     overlap = ensure_uint8_mask((candidate_talc > 0) & (sulfide_mask > 0))
-    final_talc = ensure_uint8_mask((candidate_talc > 0) & (sulfide_mask == 0))
-    ignore = ensure_uint8_mask((markup_ignore > 0) | (overlap > 0))
+    talc_without_sulfide = ensure_uint8_mask((candidate_talc > 0) & (sulfide_mask == 0))
+    if silicate_mask_path is not None:
+        silicate_supported_talc = ensure_uint8_mask((talc_without_sulfide > 0) & (silicate_support > 0))
+        silicate_unsupported_talc = ensure_uint8_mask((talc_without_sulfide > 0) & (silicate_support == 0))
+        final_talc = silicate_supported_talc
+    else:
+        silicate_supported_talc = np.zeros(shape_hw, dtype=np.uint8)
+        silicate_unsupported_talc = np.zeros(shape_hw, dtype=np.uint8)
+        final_talc = talc_without_sulfide
+    candidate_guard = dilate_mask(candidate_talc | markup_ignore, config.silicate_hard_negative_margin_px)
+    silicate_hard_negative = ensure_uint8_mask(
+        (silicate_support > 0) & (candidate_guard == 0) & (sulfide_mask == 0) & (markup_ignore == 0)
+    )
+    talc_positive_core = erode_mask(final_talc, config.talc_positive_core_erode_px)
+    ignore = ensure_uint8_mask((markup_ignore > 0) | (overlap > 0) | (silicate_unsupported_talc > 0))
 
     copied_image = out_dir / image_path.name
     if copied_image.resolve() != image_path:
@@ -309,6 +348,11 @@ def convert_talc_annotation_image(
         "candidate_talc_mask": out_dir / "candidate_talc_mask.png",
         "sulfide_mask": out_dir / "sulfide_mask.png",
         "sulfide_overlap_mask": out_dir / "sulfide_overlap_mask.png",
+        "silicate_support_mask": out_dir / "silicate_support_mask.png",
+        "silicate_supported_talc_mask": out_dir / "silicate_supported_talc_mask.png",
+        "silicate_unsupported_talc_mask": out_dir / "silicate_unsupported_talc_mask.png",
+        "talc_positive_core_mask": out_dir / "talc_positive_core_mask.png",
+        "silicate_hard_negative_mask": out_dir / "silicate_hard_negative_mask.png",
         "ignore_mask": out_dir / "ignore_mask.png",
         "final_talc_mask": out_dir / "final_talc_mask.png",
         "qa_overlay": out_dir / "qa_overlay.png",
@@ -320,6 +364,11 @@ def convert_talc_annotation_image(
     write_mask(paths["candidate_talc_mask"], candidate_talc)
     write_mask(paths["sulfide_mask"], sulfide_mask)
     write_mask(paths["sulfide_overlap_mask"], overlap)
+    write_mask(paths["silicate_support_mask"], silicate_support)
+    write_mask(paths["silicate_supported_talc_mask"], silicate_supported_talc)
+    write_mask(paths["silicate_unsupported_talc_mask"], silicate_unsupported_talc)
+    write_mask(paths["talc_positive_core_mask"], talc_positive_core)
+    write_mask(paths["silicate_hard_negative_mask"], silicate_hard_negative)
     write_mask(paths["ignore_mask"], ignore)
     write_mask(paths["final_talc_mask"], final_talc)
     write_image_rgb(
@@ -336,7 +385,7 @@ def convert_talc_annotation_image(
     )
 
     summary = {
-        "schema_version": "talc-blue-line-conversion-v0.1",
+        "schema_version": "talc-blue-line-conversion-v0.2",
         "generated_at": utc_now_iso(),
         "image_id": image_path.stem,
         "image_path": str(image_path),
@@ -344,6 +393,7 @@ def convert_talc_annotation_image(
         "width": int(shape_hw[1]),
         "height": int(shape_hw[0]),
         "sulfide_source": sulfide_source,
+        "silicate_source": silicate_source,
         "config": asdict(config),
         "raw_blue_stroke_pixels": mask_pixels(raw_stroke),
         "closed_stroke_pixels": mask_pixels(closed_stroke),
@@ -353,6 +403,13 @@ def convert_talc_annotation_image(
         "candidate_talc_pixels": mask_pixels(candidate_talc),
         "sulfide_pixels": mask_pixels(sulfide_mask),
         "overlap_pixels": mask_pixels(overlap),
+        "talc_without_sulfide_pixels": mask_pixels(talc_without_sulfide),
+        "silicate_support_pixels": mask_pixels(silicate_support),
+        "silicate_supported_talc_pixels": mask_pixels(silicate_supported_talc),
+        "silicate_unsupported_talc_pixels": mask_pixels(silicate_unsupported_talc),
+        "silicate_supported_fraction": mask_pixels(silicate_supported_talc) / max(1, mask_pixels(talc_without_sulfide)),
+        "talc_positive_core_pixels": mask_pixels(talc_positive_core),
+        "silicate_hard_negative_pixels": mask_pixels(silicate_hard_negative),
         "ignore_pixels": mask_pixels(ignore),
         "final_talc_pixels": mask_pixels(final_talc),
         "paths": {key: str(value) for key, value in paths.items() if key != "summary_json"},
@@ -375,6 +432,7 @@ def convert_talc_annotation_folder(
     config: TalcConversionConfig | None = None,
     *,
     sulfide_mask_dir: Path | None = None,
+    silicate_mask_dir: Path | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
     config = config or TalcConversionConfig()
@@ -385,6 +443,7 @@ def convert_talc_annotation_folder(
     samples_dir = out_dir / "samples"
     for image_path in images:
         sulfide_mask_path = find_matching_mask(sulfide_mask_dir, image_path) if sulfide_mask_dir else None
+        silicate_mask_path = find_matching_mask(silicate_mask_dir, image_path) if silicate_mask_dir else None
         sample_out = samples_dir / image_path.stem
         samples.append(
             convert_talc_annotation_image(
@@ -392,10 +451,11 @@ def convert_talc_annotation_folder(
                 sample_out,
                 config,
                 sulfide_mask_path=sulfide_mask_path,
+                silicate_mask_path=silicate_mask_path,
             )
         )
     manifest = {
-        "schema_version": "talc-blue-line-conversion-manifest-v0.1",
+        "schema_version": "talc-blue-line-conversion-manifest-v0.2",
         "generated_at": utc_now_iso(),
         "input_path": str(input_path),
         "output_dir": str(out_dir),

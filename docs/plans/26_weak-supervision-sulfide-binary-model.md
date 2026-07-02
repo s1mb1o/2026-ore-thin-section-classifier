@@ -377,6 +377,8 @@ ore_classification_metrics.json
 
 Official panoramas include very large JPEGs; the current local dataset has images up to `27025 x 21227` px. Full-image inference is not practical for these inputs.
 
+Organizer clarification on 2026-07-03: panoramas may be used as a test set, but in the provided dataset they are unannotated and unclassified. For model evaluation, prefer a balanced sample from several labelled classes; use panoramas mainly for performance, visual QA, confidence heatmaps, and large-image stress testing unless they receive separate annotations or class labels.
+
 Use overlapping tiled inference:
 
 ```text
@@ -433,6 +435,13 @@ Report metrics honestly by supervision source:
 - Official image-level ordinary/fine/talcose F1: task-level calibration metric.
 - Talc fraction error: only on usable official blue-line-derived talc masks.
 
+Organizer-recommended production metrics:
+
+- segmentation: IoU and Hausdorff distance, preferably HD95 if exact Hausdorff is too sensitive to single-pixel outliers;
+- classification: F1 and AUC.
+
+These metrics should guide model selection and calibration. Do not optimize the demo for `100%` on the provided data or present weak pseudo-label agreement as final production accuracy.
+
 Avoid claims like:
 
 ```text
@@ -459,7 +468,8 @@ image-level validation against official class folders
 6. Add binary model training script for gx10/zelda.
 7. Add the Streamlit binary QA app and binary patch applier.
 8. Add final tiled inference command for large official panoramas.
-9. Add documentation and metric tables separating true proxy metrics from weak official-domain metrics.
+9. Add Hausdorff/HD95, F1, and AUC metric exports where applicable.
+10. Add documentation and metric tables separating true proxy metrics, weak official-domain metrics, balanced class-folder evaluation, and unlabelled panorama stress tests.
 
 ## Done Definition
 

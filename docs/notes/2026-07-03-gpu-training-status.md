@@ -27,6 +27,22 @@ Date: 2026-07-03
   - epoch 3: val sulfide IoU `0.931152`
   - epoch 4: val sulfide IoU `0.932628`
   - epoch 5: val sulfide IoU `0.934942`
+  - epoch 6: val sulfide IoU `0.940857`
+  - epoch 7: val sulfide IoU `0.930861`
+  - epoch 8: val sulfide IoU `0.944586`
+  - epoch 9: val sulfide IoU `0.943122`
+  - epoch 10: val sulfide IoU `0.947211`
+  - epoch 11: val sulfide IoU `0.944813`
+  - epoch 12: val sulfide IoU `0.946529`
+  - epoch 13: val sulfide IoU `0.945835`
+  - epoch 14: val sulfide IoU `0.947859`
+  - epoch 15: val sulfide IoU `0.944637`
+  - epoch 16: val sulfide IoU `0.948193`
+  - epoch 17: val sulfide IoU `0.948684`
+  - epoch 18: val sulfide IoU `0.949281`
+  - epoch 19: val sulfide IoU `0.950296`
+- Best observed so far: epoch 19, val sulfide IoU `0.950296`, val bg IoU `0.943570`, val pixel accuracy `0.972856`.
+- Status: still running; metrics are preliminary until epoch 30.
 
 ## zelda
 
@@ -34,17 +50,28 @@ Date: 2026-07-03
 - Workspace: `/root/2026_Nornikel_Hackaton_v2`
 - Synced: v2 code/docs and `outputs/binary_sulfide_dataset_v0`
 - Prepared venv: `/root/2026_Nornikel_Hackaton_v2/.venv`
-- Installed packages include torch `2.5.1+cu121`, torchvision `0.20.1+cu121`, OpenCV, numpy, transformers.
+- Rebuilt venv after recovery; installed packages include torch `2.5.1+cu121`, torchvision `0.20.1+cu121`, OpenCV `5.0.0`, numpy, transformers `5.12.1`.
 - GPU recovered on retry:
   - `lspci`: Virtio GPU plus `NVIDIA Corporation Device 2684`
   - `nvidia-smi`: `NVIDIA GeForce RTX 4090`, `49140 MiB`
   - `torch.cuda.is_available()`: `True`
 - CUDA sanity run passed for SegFormer-B0.
-- Active session: `tmux nornickel_v2_segformer_b0`
+- Completed session: `tmux nornickel_v2_segformer_b0`
 - Output dir: `outputs/train_segformer_b0_zelda_20260702_220225`
 - Command: SegFormer-B0, 30 epochs, batch 16, AMP, `lr=6e-5`, CUDA.
 - First live check after launch: process PID `1631`, GPU utilization around `94%`, GPU memory around `6117 MiB / 49140 MiB`.
-- Latest observed metrics:
+- Final benchmark summary:
+  - best epoch: `13`
+  - best val sulfide IoU: `0.953371`
+  - val bg IoU at best: `0.947638`
+  - val pixel accuracy at best: `0.974712`
+  - final epoch 30 val sulfide IoU: `0.951119`
+  - total training seconds: `824.83`
+  - average seconds per epoch: `27.49`
+  - checkpoint size: `43M`
+- Local mirror: `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/`
+- Local checksum `best.pt`: `6133984ab605424ef9a42a4486857ba1872fae87fa2a1fa63ebe9b49a6368162`
+- Epoch metrics:
   - epoch 1: val sulfide IoU `0.902211`
   - epoch 2: val sulfide IoU `0.907983`
   - epoch 3: val sulfide IoU `0.92744`
@@ -54,3 +81,27 @@ Date: 2026-07-03
   - epoch 7: val sulfide IoU `0.938191`
   - epoch 8: val sulfide IoU `0.939145`
   - epoch 9: val sulfide IoU `0.948772`
+
+Detailed benchmark note: `docs/benchmarks/01_binary_sulfide_model_benchmark.md`.
+
+## zelda SegFormer-B1
+
+- Completed session: `tmux nornickel_v2_segformer_b1_safe`
+- Output dir: `outputs/train_segformer_b1_zelda_20260703_overnight_safetensors`
+- Command: SegFormer-B1, 30 epochs, batch 16, AMP, `lr=6e-5`, CUDA.
+- Training script was updated to prefer `use_safetensors=True` because zelda has torch `2.5.1+cu121` and Transformers rejects unsafe `.bin` loading for some models.
+- Final benchmark summary:
+  - best epoch: `16`
+  - best val sulfide IoU: `0.971548`
+  - val bg IoU at best: `0.967670`
+  - val pixel accuracy at best: `0.984634`
+  - sulfide F1 at best: `0.985569`
+  - sulfide AUC at best: `0.998522`
+  - HD95 mean on 512 sampled val tiles: `26.25 px`
+  - final epoch 30 val sulfide IoU: `0.964032`
+  - total training seconds: `1097.59`
+  - average seconds per epoch: `36.59`
+  - checkpoint size: `160M`
+- Local mirror: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/`
+- Local checksum `best.pt`: `e71ceb0d3df88b8f24473c5fb4b82678303d854a2f8b15ad1af66022dea11908`
+- Local checksum `last.pt`: `03db84dbce6395cd381c2be568d9a366aeaf94cfab573ce80c34566d7a435d11`

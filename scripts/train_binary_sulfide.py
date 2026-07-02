@@ -148,6 +148,7 @@ def create_model(args):
             id2label={0: "not_sulfide", 1: "sulfide"},
             label2id={"not_sulfide": 0, "sulfide": 1},
             ignore_mismatched_sizes=True,
+            use_safetensors=True,
         )
     except Exception as exc:
         if not args.allow_random_init:
