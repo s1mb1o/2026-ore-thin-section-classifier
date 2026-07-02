@@ -305,6 +305,11 @@ def default_box_geometry(shape_hw: tuple[int, int]) -> dict[str, int]:
     }
 
 
+def default_point_geometry(shape_hw: tuple[int, int]) -> dict[str, int]:
+    height, width = shape_hw
+    return {"x": width // 2, "y": height // 2}
+
+
 def geometry_to_preview(geometry: dict[str, Any], shape_type: str, scale: float, preview_shape_hw: tuple[int, int]) -> dict[str, Any]:
     preview_height, preview_width = preview_shape_hw
     if shape_type == "polygon":
@@ -317,6 +322,11 @@ def geometry_to_preview(geometry: dict[str, Any], shape_type: str, scale: float,
                 }
                 for point in points
             ]
+        }
+    if shape_type == "point":
+        return {
+            "x": max(0, min(preview_width - 1, int(round(float(geometry.get("x", 0)) * scale)))),
+            "y": max(0, min(preview_height - 1, int(round(float(geometry.get("y", 0)) * scale)))),
         }
     return {
         "x1": max(0, min(preview_width, int(round(float(geometry.get("x1", 0)) * scale)))),
@@ -344,6 +354,14 @@ def geometry_to_original(geometry: dict[str, Any], shape_type: str, scale: float
             except (KeyError, TypeError, ValueError):
                 continue
         return {"points": points} if len(points) >= 3 else None
+    if shape_type == "point":
+        try:
+            return {
+                "x": max(0, min(width - 1, int(round(float(geometry["x"]) * factor)))),
+                "y": max(0, min(height - 1, int(round(float(geometry["y"]) * factor)))),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
     try:
         return {
             "x1": max(0, min(width, int(round(float(geometry["x1"]) * factor)))),
@@ -375,6 +393,123 @@ def save_uploaded_mask(uploaded_file: Any, sample: dict[str, Any], action: str) 
     st.rerun()
 
 
+def render_sam2_setup_controls(image_id: str, *, button_key_suffix: str) -> tuple[str, str | None]:
+    model_id = st.text_input("SAM2 model", DEFAULT_SAM2_MODEL_ID, key=session_key(image_id, "sam2_model_id"))
+    device_label = st.selectbox("SAM2 device", ["auto", "mps", "cuda", "cpu"], key=session_key(image_id, "sam2_device"))
+    device = None if device_label == "auto" else device_label
+    status_placeholder = st.empty()
+    if sam2_assist_status is None:
+        status_placeholder.info("SAM2 status helper is not available in this checkout.")
+        return model_id, device
+    status = sam2_assist_status(model_id=model_id, device=device)
+    status_placeholder.json(status, expanded=False)
+    force_reload = st.checkbox("Force SAM2 reload", value=False, key=session_key(image_id, "sam2_force_reload"))
+    if st.button("Load/check SAM2", key=session_key(image_id, f"sam2_load_check_{button_key_suffix}")):
+        status = sam2_assist_status(model_id=model_id, device=device, check_load=True, force_reload=force_reload)
+        status_placeholder.json(status, expanded=False)
+        if not status.get("available"):
+            st.code("python3 -m pip install torch\npython3 -m pip install git+https://github.com/facebookresearch/sam2.git", language="bash")
+    return model_id, device
+
+
+def apply_sam2_prompt(
+    sample: dict[str, Any],
+    shape_hw: tuple[int, int],
+    prompt_geometry: dict[str, Any],
+    action: str,
+    model_id: str,
+    device: str | None,
+    source: str,
+) -> None:
+    if generate_sam2_region_mask is None:
+        st.info("SAM2 helper is not available in this checkout.")
+        return
+    try:
+        image_id = sample["image_id"]
+        result = generate_sam2_region_mask(
+            image_path=resolve_path(sample["paths"]["source_image"]),
+            prompt_geometry=prompt_geometry,
+            out_dir=sample_dir(sample) / "reviewed" / "sam2_assist",
+            model_id=model_id,
+            device=device,
+            output_name=f"{source}_{prompt_geometry['type']}_{len(current_edits(image_id)) + 1}",
+        )
+        mask_path = resolve_path(result["mask"]["path"])
+        edit_mask = read_mask(mask_path, shape_hw)
+        apply_mask_action(
+            sample,
+            edit_mask,
+            action,
+            {
+                "edit_type": f"{source}_{prompt_geometry['type']}",
+                "target_action": action,
+                "prompt": prompt_geometry,
+                "sam2_result": result,
+            },
+        )
+        set_flash("success", "SAM2 edit applied.")
+        st.rerun()
+    except Exception as exc:  # noqa: BLE001 - Streamlit should surface runtime setup failures.
+        st.error(str(exc))
+
+
+def render_canvas_sam2_tool(
+    sample: dict[str, Any],
+    image_rgb: np.ndarray,
+    preview: np.ndarray,
+    scale: float,
+    action: str,
+) -> None:
+    image_id = sample["image_id"]
+    if generate_sam2_region_mask is None or sam2_assist_status is None:
+        st.info("SAM2 helper is not available in this checkout.")
+        return
+    model_id, device = render_sam2_setup_controls(image_id, button_key_suffix="canvas")
+    prompt_label = st.segmented_control(
+        "SAM2 canvas prompt",
+        ["Point", "Box"],
+        default="Point",
+        key=session_key(image_id, "canvas_sam2_prompt"),
+    )
+    shape_type = "point" if prompt_label == "Point" else "box"
+    geometry_key = session_key(image_id, f"canvas_sam2_geometry_{shape_type}")
+    if geometry_key not in st.session_state:
+        st.session_state[geometry_key] = (
+            default_point_geometry(image_rgb.shape[:2]) if shape_type == "point" else default_box_geometry(image_rgb.shape[:2])
+        )
+
+    initial_geometry = geometry_to_preview(st.session_state[geometry_key], shape_type, scale, preview.shape[:2])
+    value = mask_shape_editor_component(
+        backgroundImage=image_data_url(preview),
+        width=int(preview.shape[1]),
+        height=int(preview.shape[0]),
+        shapeType=shape_type,
+        fillColor="rgba(31, 111, 235, 0.22)",
+        strokeColor=ACTION_COLORS[action],
+        initialGeometry=initial_geometry,
+        key=session_key(image_id, f"canvas_sam2_prompt_editor_{shape_type}"),
+        default={"type": shape_type, "geometry": initial_geometry, "width": int(preview.shape[1]), "height": int(preview.shape[0])},
+    )
+    if isinstance(value, dict) and isinstance(value.get("geometry"), dict):
+        original_geometry = geometry_to_original(value["geometry"], shape_type, scale, image_rgb.shape[:2])
+        if original_geometry is not None:
+            st.session_state[geometry_key] = original_geometry
+
+    if st.button("Run SAM2 canvas prompt", type="primary", key=session_key(image_id, "canvas_sam2_run")):
+        geometry = st.session_state[geometry_key]
+        if shape_type == "point":
+            prompt_geometry = {"type": "point_xy", "x": int(geometry["x"]), "y": int(geometry["y"])}
+        else:
+            prompt_geometry = {
+                "type": "rectangle_xyxy",
+                "x1": int(geometry["x1"]),
+                "y1": int(geometry["y1"]),
+                "x2": int(geometry["x2"]),
+                "y2": int(geometry["y2"]),
+            }
+        apply_sam2_prompt(sample, image_rgb.shape[:2], prompt_geometry, action, model_id, device, "canvas_sam2")
+
+
 def render_canvas_editor(
     sample: dict[str, Any],
     image_rgb: np.ndarray,
@@ -383,9 +518,6 @@ def render_canvas_editor(
     original_lines_rgb: np.ndarray,
     max_display_width: int,
 ) -> None:
-    if st_canvas is None:
-        st.info("Canvas component is not installed.")
-        return
     render_edit_metrics(sample)
     background_label = st.selectbox(
         "Canvas background",
@@ -401,7 +533,7 @@ def render_canvas_editor(
     preview, scale = resize_preview(background_image, max_display_width)
     tool = st.segmented_control(
         "Canvas tool",
-        ["Pen", "Eraser", "Polygon", "Box", "Move/resize"],
+        ["Pen", "Eraser", "Polygon", "Box", "Move/resize", "SAM2"],
         default="Pen",
         key=session_key(sample["image_id"], "canvas_tool"),
     )
@@ -414,6 +546,12 @@ def render_canvas_editor(
     else:
         action_label = st.selectbox("Canvas action", list(ACTION_OPTIONS.keys()), key=session_key(sample["image_id"], "canvas_action"))
         action = ACTION_OPTIONS[action_label]
+    if tool == "SAM2":
+        render_canvas_sam2_tool(sample, image_rgb, preview, scale, action)
+        return
+    if st_canvas is None:
+        st.info("Canvas component is not installed.")
+        return
     mode = {"Pen": "freedraw", "Eraser": "freedraw", "Polygon": "polygon", "Box": "rect", "Move/resize": "transform"}[tool]
     stroke_color = ACTION_COLORS[action]
     if tool in {"Pen", "Eraser"}:
@@ -691,18 +829,7 @@ def render_sam2_editor(sample: dict[str, Any], shape_hw: tuple[int, int]) -> Non
     render_edit_metrics(sample)
     image_id = sample["image_id"]
     height, width = shape_hw
-    model_id = st.text_input("SAM2 model", DEFAULT_SAM2_MODEL_ID, key=session_key(image_id, "sam2_model_id"))
-    device_label = st.selectbox("SAM2 device", ["auto", "mps", "cuda", "cpu"], key=session_key(image_id, "sam2_device"))
-    device = None if device_label == "auto" else device_label
-    status_placeholder = st.empty()
-    status = sam2_assist_status(model_id=model_id, device=device)
-    status_placeholder.json(status, expanded=False)
-    force_reload = st.checkbox("Force SAM2 reload", value=False, key=session_key(image_id, "sam2_force_reload"))
-    if st.button("Load/check SAM2"):
-        status = sam2_assist_status(model_id=model_id, device=device, check_load=True, force_reload=force_reload)
-        status_placeholder.json(status, expanded=False)
-        if not status.get("available"):
-            st.code("python3 -m pip install torch\npython3 -m pip install git+https://github.com/facebookresearch/sam2.git", language="bash")
+    model_id, device = render_sam2_setup_controls(image_id, button_key_suffix="editor")
     action_label = st.selectbox("SAM2 action", list(ACTION_OPTIONS.keys()), key=session_key(image_id, "sam2_action"))
     prompt_type = st.segmented_control(
         "SAM2 prompt",
@@ -723,32 +850,15 @@ def render_sam2_editor(sample: dict[str, Any], shape_hw: tuple[int, int]) -> Non
         y2 = col4.number_input("box y2", min_value=0, max_value=height, value=min(height, height // 2 + height // 10))
         prompt_geometry = {"type": "rectangle_xyxy", "x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2)}
     if st.button("Run SAM2"):
-        try:
-            result = generate_sam2_region_mask(
-                image_path=resolve_path(sample["paths"]["source_image"]),
-                prompt_geometry=prompt_geometry,
-                out_dir=sample_dir(sample) / "reviewed" / "sam2_assist",
-                model_id=model_id,
-                device=device,
-            )
-            mask_path = resolve_path(result["mask"]["path"])
-            edit_mask = read_mask(mask_path, shape_hw)
-            action = ACTION_OPTIONS[action_label]
-            apply_mask_action(
-                sample,
-                edit_mask,
-                action,
-                {
-                    "edit_type": f"sam2_{prompt_geometry['type']}",
-                    "target_action": action,
-                    "prompt": prompt_geometry,
-                    "sam2_result": result,
-                },
-            )
-            set_flash("success", "SAM2 edit applied.")
-            st.rerun()
-        except Exception as exc:  # noqa: BLE001 - Streamlit should surface runtime setup failures.
-            st.error(str(exc))
+        apply_sam2_prompt(
+            sample,
+            shape_hw,
+            prompt_geometry,
+            ACTION_OPTIONS[action_label],
+            model_id,
+            device,
+            "sam2_editor",
+        )
 
 
 def main() -> None:
