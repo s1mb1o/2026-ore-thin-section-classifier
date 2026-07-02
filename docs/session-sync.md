@@ -80,7 +80,7 @@ Source dataset facts from the original repository handoff:
 
 ## Immediate Next Steps
 
-1. Monitor gx10 `tmux nornickel_v2_resunet` and update `docs/benchmarks/01_binary_sulfide_model_benchmark.md` after epoch 30; latest observed ResUNet best is epoch 19 IoU `0.950296`.
+1. Monitor gx10 `tmux nornickel_v2_resunet` and update `docs/benchmarks/01_binary_sulfide_model_benchmark.md` after epoch 30; latest observed ResUNet best is epoch 21 IoU `0.950462`.
 2. Use the local SegFormer-B1 mirror at `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/` as the default sulfide checkpoint.
 3. Keep the local SegFormer-B0 mirror at `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/` as the smaller fallback checkpoint.
 4. Use `outputs/official_balanced_eval_split.json` for balanced labelled-class evaluation; keep weak-label metrics separate from image-level class metrics.
@@ -105,7 +105,7 @@ Source dataset facts from the original repository handoff:
 
 - Official manifest generation works with very large panoramas by disabling the PIL decompression limit; `outputs/official_manifest.json` contains `1236` images.
 - Binary sulfide dataset builder writes tiled RGB images, masks, ignore masks, and a JSON manifest under `outputs/binary_sulfide_dataset_v0`.
-- Training script supports `resunet`, `segformer_b0`, and `segformer_b1` with ignored pixels, AMP, checkpoints, CSV logs, and IoU metrics.
+- Training script supports `resunet`, `segformer_b0`, `segformer_b1`, and `segformer_b2` with ignored pixels, AMP, checkpoints, CSV logs, and IoU metrics.
 - `scripts/evaluate_binary_sulfide.py` reports IoU, F1, AUC, Hausdorff, and HD95. SegFormer-B1 best eval: sulfide IoU `0.971548`, F1 `0.985569`, AUC `0.998522`, HD95 mean `26.25 px` on 512 sampled val tiles.
 - `scripts/infer_binary_sulfide.py` runs overlapping tiled inference and writes `sulfide_mask.png`, `confidence.png`, `overlay_preview.jpg`, and `summary.json`.
 - `scripts/analyze_ore_from_masks.py` computes connected-component ordinary/fine features, ore class rule output, `component_features.csv`, and intergrowth overlay.
@@ -114,6 +114,7 @@ Source dataset facts from the original repository handoff:
 - Final B1 demo output exists under `outputs/inference_demo/b1_final_row_2539589_1/`: final B1 inference on official row ore image, sulfide fraction `0.294490`, component summary, confidence map, and overlays.
 - Local smoke tests passed for ResUNet and SegFormer-B0 on `outputs/smoke_binary_sulfide_dataset`; full local unit tests now cover `31` tests.
 - gx10 ResUNet training is active in `tmux nornickel_v2_resunet`.
+- zelda SegFormer-B2 training is active in `tmux nornickel_v2_segformer_b2`; epoch 1 val sulfide IoU is `0.941538`.
 - zelda SegFormer-B1 training completed 30 epochs; best validation sulfide IoU is `0.971548` at epoch 16, with final epoch 30 IoU `0.964032`.
 - zelda SegFormer-B0 training completed 30 epochs; current best validation sulfide IoU is `0.953371` at epoch 13, with final epoch 30 IoU `0.951119`.
 - zelda SegFormer-B1 and SegFormer-B0 `best.pt`, `last.pt`, `train_log.csv`, and `metrics.json` were mirrored locally under `models/binary_sulfide/`.

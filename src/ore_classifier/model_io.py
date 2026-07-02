@@ -26,7 +26,7 @@ def load_binary_segmentation_checkpoint(path: Path, device: torch.device):
     model_name = train_args.get("model", "resunet")
     if model_name == "resunet":
         model = create_resunet(base_channels=int(train_args.get("base_channels", 32)))
-    elif model_name in {"segformer_b0", "segformer_b1"}:
+    elif model_name in {"segformer_b0", "segformer_b1", "segformer_b2"}:
         model = create_segformer_for_eval(model_name)
     else:
         raise ValueError(f"Unsupported checkpoint model={model_name!r}")
@@ -50,6 +50,15 @@ def create_segformer_for_eval(model_name: str):
         config = SegformerConfig(
             num_labels=2,
             depths=[2, 2, 2, 2],
+            hidden_sizes=[64, 128, 320, 512],
+            decoder_hidden_size=256,
+            id2label={0: "not_sulfide", 1: "sulfide"},
+            label2id={"not_sulfide": 0, "sulfide": 1},
+        )
+    elif model_name == "segformer_b2":
+        config = SegformerConfig(
+            num_labels=2,
+            depths=[3, 4, 6, 3],
             hidden_sizes=[64, 128, 320, 512],
             decoder_hidden_size=256,
             id2label={0: "not_sulfide", 1: "sulfide"},

@@ -41,7 +41,8 @@
 
 - Benchmarked the first binary `sulfide / not_sulfide` segmentation runs on `outputs/binary_sulfide_dataset_v0`.
 - Current best checkpoint is SegFormer-B1 on zelda: best validation sulfide IoU `0.971548` at epoch 16; final epoch 30 sulfide IoU `0.964032`.
-- ResUNet on gx10 is still preliminary at 19/30 epochs, best observed validation sulfide IoU `0.950296`.
+- ResUNet on gx10 is still preliminary at 21/30 epochs, best observed validation sulfide IoU `0.950462`.
+- SegFormer-B2 is running on zelda as the next larger-transformer candidate; epoch 1 validation sulfide IoU is `0.941538`.
 - Mirrored SegFormer-B0 and SegFormer-B1 `best.pt`, `last.pt`, `train_log.csv`, and `metrics.json` locally under `models/binary_sulfide/`.
 - Saved the benchmark details and weak-label caveats in `docs/benchmarks/01_binary_sulfide_model_benchmark.md`.
 

@@ -24,7 +24,7 @@ from ore_classifier.models import create_resunet  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train a binary sulfide segmentation model.")
     parser.add_argument("--dataset-manifest", type=Path, required=True)
-    parser.add_argument("--model", choices=("resunet", "segformer_b0", "segformer_b1"), default="resunet")
+    parser.add_argument("--model", choices=("resunet", "segformer_b0", "segformer_b1", "segformer_b2"), default="resunet")
     parser.add_argument("--out-dir", type=Path, default=Path("outputs/train_binary_sulfide"))
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -140,7 +140,11 @@ def create_model(args):
     if pretrained is None:
         if args.allow_random_init:
             return SegformerForSemanticSegmentation(segformer_config(args.model))
-        pretrained = "nvidia/mit-b0" if args.model == "segformer_b0" else "nvidia/mit-b1"
+        pretrained = {
+            "segformer_b0": "nvidia/mit-b0",
+            "segformer_b1": "nvidia/mit-b1",
+            "segformer_b2": "nvidia/mit-b2",
+        }[args.model]
     try:
         return SegformerForSemanticSegmentation.from_pretrained(
             pretrained,
@@ -164,6 +168,15 @@ def segformer_config(model_name: str):
         return SegformerConfig(
             num_labels=2,
             depths=[2, 2, 2, 2],
+            hidden_sizes=[64, 128, 320, 512],
+            decoder_hidden_size=256,
+            id2label={0: "not_sulfide", 1: "sulfide"},
+            label2id={"not_sulfide": 0, "sulfide": 1},
+        )
+    if model_name == "segformer_b2":
+        return SegformerConfig(
+            num_labels=2,
+            depths=[3, 4, 6, 3],
             hidden_sizes=[64, 128, 320, 512],
             decoder_hidden_size=256,
             id2label={0: "not_sulfide", 1: "sulfide"},

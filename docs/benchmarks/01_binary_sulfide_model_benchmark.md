@@ -26,7 +26,8 @@ Panorama clarification: official panoramas may be used as a test/stress set, but
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | SegFormer-B1 | zelda `root@161.104.48.181` | completed 30/30 | `0.971548` | 16 | `0.967670` | `0.984634` | `36.59` | `160M` |
 | SegFormer-B0 | zelda `root@161.104.48.181` | completed 30/30 | `0.953371` | 13 | `0.947638` | `0.974712` | `27.49` | `43M` |
-| ResUNet `base_channels=32` | gx10 `ashmelev@192.168.86.14` | preliminary 19/30 | `0.950296` | 19 | `0.943570` | `0.972856` | `241.4` | `93M` |
+| ResUNet `base_channels=32` | gx10 `ashmelev@192.168.86.14` | preliminary 21/30 | `0.950462` | 21 | `0.943302` | `0.972844` | `241.5` | `93M` |
+| SegFormer-B2 | zelda `root@161.104.48.181` | preliminary 1/30 | `0.941538` | 1 | `0.935750` | `0.968424` | `79.33` | pending |
 
 SegFormer-B1 extended metrics from `scripts/evaluate_binary_sulfide.py`:
 
@@ -62,7 +63,9 @@ SegFormer-B1 final epoch metrics:
 - val bg IoU: `0.959587`
 - val pixel accuracy: `0.980600`
 
-ResUNet is still running on gx10, so its row is not a final 30-epoch result. The best observed row at epoch 19 had val loss `0.071418`.
+ResUNet is still running on gx10, so its row is not a final 30-epoch result. The best observed row at epoch 21 had val loss `0.069642`.
+
+SegFormer-B2 is running on zelda as the next larger-transformer candidate. Its epoch 1 result is below B1/B0 and not yet meaningful for final ranking.
 
 ## Checkpoints
 
@@ -72,6 +75,7 @@ ResUNet is still running on gx10, so its row is not a final 30-epoch result. The
 - Local SegFormer-B0 fallback mirror: `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/`
 - SegFormer-B0 last checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b0_zelda_20260702_220225/last.pt`
 - ResUNet preliminary checkpoint: `/home/ashmelev/Projects/2026_Nornikel_Hackaton_v2/outputs/train_resunet_gx10_20260703_004425/best.pt`
+- SegFormer-B2 preliminary checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b2_zelda_20260703_overnight_safetensors/best.pt`
 
 Local SegFormer-B1 checksums:
 
@@ -92,8 +96,8 @@ Do not stop the ResUNet run yet: keep it to completion as a sanity check for arc
 ## Next Benchmark Actions
 
 1. Monitor gx10 until `outputs/train_resunet_gx10_20260703_004425/train_log.csv` reaches epoch 30.
-2. Update this benchmark with the final ResUNet row.
-3. Build B1 visual validation: sampled overlays, confidence heatmaps, and false-positive/false-negative examples from both official class images and unlabelled panoramas.
-4. Add the final B1 demo overlays to the presentation/demo path.
+2. Monitor zelda `tmux nornickel_v2_segformer_b2` until epoch 30, then evaluate and mirror B2 if it beats B1/B0.
+3. Update this benchmark with the final ResUNet and B2 rows.
+4. Build B1 visual validation: sampled overlays, confidence heatmaps, and false-positive/false-negative examples from both official class images and unlabelled panoramas.
 5. Use `outputs/official_balanced_eval_split.json` for balanced image-level class validation; keep unlabelled panoramas separate for performance and visual stress tests.
 6. After non-expert QA produces corrected masks, repeat the benchmark with a new dataset version and keep the current numbers as `binary_sulfide_dataset_v0` baseline only.

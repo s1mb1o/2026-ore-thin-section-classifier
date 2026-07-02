@@ -41,7 +41,9 @@ Date: 2026-07-03
   - epoch 17: val sulfide IoU `0.948684`
   - epoch 18: val sulfide IoU `0.949281`
   - epoch 19: val sulfide IoU `0.950296`
-- Best observed so far: epoch 19, val sulfide IoU `0.950296`, val bg IoU `0.943570`, val pixel accuracy `0.972856`.
+  - epoch 20: val sulfide IoU `0.947377`
+  - epoch 21: val sulfide IoU `0.950462`
+- Best observed so far: epoch 21, val sulfide IoU `0.950462`, val bg IoU `0.943302`, val pixel accuracy `0.972844`.
 - Status: still running; metrics are preliminary until epoch 30.
 
 ## zelda
@@ -105,3 +107,14 @@ Detailed benchmark note: `docs/benchmarks/01_binary_sulfide_model_benchmark.md`.
 - Local mirror: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/`
 - Local checksum `best.pt`: `e71ceb0d3df88b8f24473c5fb4b82678303d854a2f8b15ad1af66022dea11908`
 - Local checksum `last.pt`: `03db84dbce6395cd381c2be568d9a366aeaf94cfab573ce80c34566d7a435d11`
+
+## zelda SegFormer-B2
+
+- Added code support for `segformer_b2` as the next quality candidate after B1.
+- Active session: `tmux nornickel_v2_segformer_b2`
+- Output dir: `outputs/train_segformer_b2_zelda_20260703_overnight_safetensors`
+- Command: SegFormer-B2, 30 epochs, batch 16, AMP, `lr=6e-5`, CUDA.
+- Pretrained encoder: `nvidia/mit-b2`; decode head is initialized for binary sulfide segmentation.
+- First launch check: GPU utilization reached `100%`, memory around `17.9 GiB / 49.1 GiB`.
+- Epoch 1: val sulfide IoU `0.941538`, val bg IoU `0.935750`, val pixel accuracy `0.968424`, `79.33 s`.
+- Status: running; update the benchmark after final epoch 30.
