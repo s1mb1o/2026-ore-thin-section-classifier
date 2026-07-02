@@ -119,7 +119,7 @@ metrics:
 ```bash
 python3 scripts/evaluate_binary_sulfide.py \
   --dataset-manifest outputs/binary_sulfide_dataset_v0/manifest.json \
-  --checkpoint models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
   --split val \
   --batch-size 16 \
   --hausdorff-max-items 512 \
@@ -149,8 +149,8 @@ The pipeline writes:
 
 ## Next Implementation Steps
 
-1. Re-run the demo image and sampled class examples with the final mirrored SegFormer-B1 checkpoint.
-2. Compare SegFormer-B1/B0 and heuristic segmentation outputs to build the first disagreement queue.
+1. Compare SegFormer-B2/B1/B0 and heuristic segmentation outputs to build the first disagreement queue.
+2. Calibrate component-level ordinary/fine thresholds against the balanced labelled split.
 3. Review and accept/fix the generated talc masks from `outputs/talc_blue_line_conversion`.
 4. Use the Streamlit binary QA app to record accepted/rejected/uncertain mask verdicts.
-5. Calibrate component-level ordinary/fine thresholds against the balanced labelled split.
+5. Wire accepted talc masks into `run_ore_pipeline.py` before claiming talcose image-level quality.

@@ -44,7 +44,21 @@ Date: 2026-07-03
   - epoch 20: val sulfide IoU `0.947377`
   - epoch 21: val sulfide IoU `0.950462`
 - Best observed so far: epoch 21, val sulfide IoU `0.950462`, val bg IoU `0.943302`, val pixel accuracy `0.972844`.
-- Status: still running; metrics are preliminary until epoch 30.
+- Final benchmark summary:
+  - best epoch: `26`
+  - best val sulfide IoU: `0.956436`
+  - val bg IoU at best: `0.950908`
+  - val pixel accuracy at best: `0.976373`
+  - sulfide F1 at best: `0.977733`
+  - sulfide AUC at best: `0.996942`
+  - HD95 mean on 512 sampled val tiles: `37.37 px`
+  - final epoch 30 val sulfide IoU: `0.953216`
+  - total training seconds: `7242.35`
+  - average seconds per epoch: `241.41`
+  - checkpoint size: `96M`
+- Local mirror: `models/binary_sulfide/resunet_dataset_v0_gx10_20260703_004425/`
+- Local checksum `best.pt`: `fac6799ced81f2341168607230fa0d7766fab3f12854430b9922eaa5550e7308`
+- Local checksum `last.pt`: `0d815047868853202217a95fa94a6e5fb577efa5f41b0a6cbdbebf9daa117c02`
 
 ## zelda
 
@@ -111,10 +125,23 @@ Detailed benchmark note: `docs/benchmarks/01_binary_sulfide_model_benchmark.md`.
 ## zelda SegFormer-B2
 
 - Added code support for `segformer_b2` as the next quality candidate after B1.
-- Active session: `tmux nornickel_v2_segformer_b2`
+- Completed session: `tmux nornickel_v2_segformer_b2`
 - Output dir: `outputs/train_segformer_b2_zelda_20260703_overnight_safetensors`
 - Command: SegFormer-B2, 30 epochs, batch 16, AMP, `lr=6e-5`, CUDA.
 - Pretrained encoder: `nvidia/mit-b2`; decode head is initialized for binary sulfide segmentation.
 - First launch check: GPU utilization reached `100%`, memory around `17.9 GiB / 49.1 GiB`.
-- Epoch 1: val sulfide IoU `0.941538`, val bg IoU `0.935750`, val pixel accuracy `0.968424`, `79.33 s`.
-- Status: running; update the benchmark after final epoch 30.
+- Final benchmark summary:
+  - best epoch: `20`
+  - best val sulfide IoU: `0.974381`
+  - val bg IoU at best: `0.970874`
+  - val pixel accuracy at best: `0.986181`
+  - sulfide F1 at best: `0.987024`
+  - sulfide AUC at best: `0.998811`
+  - HD95 mean on 512 sampled val tiles: `23.57 px`
+  - final epoch 30 val sulfide IoU: `0.969119`
+  - total training seconds: `2352.14`
+  - average seconds per epoch: `78.40`
+  - checkpoint size: `320M`
+- Local mirror: `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/`
+- Local checksum `best.pt`: `55c31ef645cfb5c9b0b8fd91f4b9d2070e425b32ed60e23b3c15b292546b910f`
+- Local checksum `last.pt`: `40cc2fa920282964d70588a9815a94915611a22f0182e97327c629220119f00c`

@@ -8,7 +8,7 @@
 - Evaluated SegFormer-B1 best checkpoint on the full val split: sulfide IoU `0.971548`, F1 `0.985569`, AUC `0.998522`, HD95 mean `26.25 px` on 512 sampled val tiles.
 - Evaluated SegFormer-B0 best checkpoint on the full val split: sulfide IoU `0.953371`, F1 `0.976129`, AUC `0.996154`, HD95 mean `33.92 px` on 512 sampled val tiles.
 - Added tiled inference `scripts/infer_binary_sulfide.py`, component/ore analysis `scripts/analyze_ore_from_masks.py`, and one-command runner `scripts/run_ore_pipeline.py`.
-- Final B1 demo on `2539589-1.JPG` produced `sulfide_fraction 0.294490` and a deterministic `hard_to_process_ore` summary with ordinary/fine component overlays under `outputs/inference_demo/b1_final_row_2539589_1/`.
+- Final B2 demo on `2539589-1.JPG` produced `sulfide_fraction 0.296259` and a deterministic `hard_to_process_ore` summary with ordinary/fine component overlays under `outputs/inference_demo/b2_final_row_2539589_1/`.
 - Ran a six-image final-B1 visual validation pack from the balanced split under `outputs/visual_validation_b1_final/`. Masks/overlays rendered, but deterministic ordinary/fine rules disagreed with folder labels on 2 of 4 ordinary/fine examples; saved the calibration finding in `docs/notes/2026-07-03-b1-visual-validation-pack.md`.
 - Added balanced official image-level split generation: `outputs/official_balanced_eval_split.json` has `387` labelled images, `129` per ordinary/fine/talcose class, and keeps `14` panoramas separate as unlabelled stress images.
 - Added model/data/run cards under `docs/cards/` for checkpoint provenance, balanced split caveats, and the B1 demo pipeline run.
@@ -40,10 +40,10 @@
 ### Binary sulfide model benchmark
 
 - Benchmarked the first binary `sulfide / not_sulfide` segmentation runs on `outputs/binary_sulfide_dataset_v0`.
-- Current best checkpoint is SegFormer-B1 on zelda: best validation sulfide IoU `0.971548` at epoch 16; final epoch 30 sulfide IoU `0.964032`.
-- ResUNet on gx10 is still preliminary at 21/30 epochs, best observed validation sulfide IoU `0.950462`.
-- SegFormer-B2 is running on zelda as the next larger-transformer candidate; epoch 1 validation sulfide IoU is `0.941538`.
-- Mirrored SegFormer-B0 and SegFormer-B1 `best.pt`, `last.pt`, `train_log.csv`, and `metrics.json` locally under `models/binary_sulfide/`.
+- Current best checkpoint is SegFormer-B2 on zelda: best validation sulfide IoU `0.974381` at epoch 20; final epoch 30 sulfide IoU `0.969119`.
+- ResUNet on gx10 completed 30 epochs: best validation sulfide IoU `0.956436` at epoch 26; final epoch 30 sulfide IoU `0.953216`.
+- SegFormer-B2 extended eval reached F1 `0.987024`, AUC `0.998811`, and HD95 mean `23.57 px`, beating B1 on all tracked weak-label metrics.
+- Mirrored SegFormer-B0/B1/B2 and ResUNet `best.pt`, `last.pt`, `train_log.csv`, and `metrics.json` locally under `models/binary_sulfide/`.
 - Saved the benchmark details and weak-label caveats in `docs/benchmarks/01_binary_sulfide_model_benchmark.md`.
 
 ### Clean v2 extraction

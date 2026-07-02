@@ -8,9 +8,11 @@ Binary `sulfide / not_sulfide` segmentation for reflected-light optical microsco
 
 ## Current Checkpoints
 
-- Current default: SegFormer-B1, zelda run `outputs/train_segformer_b1_zelda_20260703_overnight_safetensors/best.pt`
+- Current default: SegFormer-B2, zelda run `outputs/train_segformer_b2_zelda_20260703_overnight_safetensors/best.pt`
+- Local B2 mirror: `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/`
+- Fast fallback: SegFormer-B1, zelda run `outputs/train_segformer_b1_zelda_20260703_overnight_safetensors/best.pt`
 - Local B1 mirror: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/`
-- Stable fallback: SegFormer-B0, zelda run `outputs/train_segformer_b0_zelda_20260702_220225/best.pt`
+- Small fallback: SegFormer-B0, zelda run `outputs/train_segformer_b0_zelda_20260702_220225/best.pt`
 - Local B0 mirror: `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/`
 - ResUNet sanity check: gx10 run `outputs/train_resunet_gx10_20260703_004425/best.pt`
 
@@ -24,7 +26,17 @@ Binary `sulfide / not_sulfide` segmentation for reflected-light optical microsco
 
 ## Metrics
 
-Current SegFormer-B1 best checkpoint:
+Current SegFormer-B2 best checkpoint:
+
+- val sulfide IoU: `0.974381`
+- val background IoU: `0.970874`
+- val pixel accuracy: `0.986181`
+- sulfide F1: `0.987024`
+- sulfide AUC: `0.998811`
+- Hausdorff mean on 512 sampled val tiles: `73.32 px`
+- HD95 mean on 512 sampled val tiles: `23.57 px`
+
+Fallback SegFormer-B1 best checkpoint:
 
 - val sulfide IoU: `0.971548`
 - val background IoU: `0.967670`
@@ -34,7 +46,7 @@ Current SegFormer-B1 best checkpoint:
 - Hausdorff mean on 512 sampled val tiles: `76.81 px`
 - HD95 mean on 512 sampled val tiles: `26.25 px`
 
-Fallback SegFormer-B0 best checkpoint:
+Small fallback SegFormer-B0 best checkpoint:
 
 - val sulfide IoU: `0.953371`
 - val background IoU: `0.947638`
@@ -54,4 +66,4 @@ Fallback SegFormer-B0 best checkpoint:
 
 ## Recommended Use In Demo
 
-Use the final mirrored SegFormer-B1 checkpoint for sulfide masks and confidence heatmaps. Keep SegFormer-B0 as the smaller fallback if B1 loading or memory becomes a blocker during the live demo.
+Use the final mirrored SegFormer-B2 checkpoint for sulfide masks and confidence heatmaps. Keep SegFormer-B1 as the faster fallback if B2 loading or memory becomes a blocker during the live demo.

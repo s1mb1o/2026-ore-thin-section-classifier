@@ -24,10 +24,18 @@ Panorama clarification: official panoramas may be used as a test/stress set, but
 
 | Model | Host | Status | Best val sulfide IoU | Best epoch | Val bg IoU at best | Val pixel acc at best | Avg sec/epoch | Checkpoint size |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| SegFormer-B2 | zelda `root@161.104.48.181` | completed 30/30 | `0.974381` | 20 | `0.970874` | `0.986181` | `78.40` | `320M` |
 | SegFormer-B1 | zelda `root@161.104.48.181` | completed 30/30 | `0.971548` | 16 | `0.967670` | `0.984634` | `36.59` | `160M` |
+| ResUNet `base_channels=32` | gx10 `ashmelev@192.168.86.14` | completed 30/30 | `0.956436` | 26 | `0.950908` | `0.976373` | `241.41` | `96M` |
 | SegFormer-B0 | zelda `root@161.104.48.181` | completed 30/30 | `0.953371` | 13 | `0.947638` | `0.974712` | `27.49` | `43M` |
-| ResUNet `base_channels=32` | gx10 `ashmelev@192.168.86.14` | preliminary 21/30 | `0.950462` | 21 | `0.943302` | `0.972844` | `241.5` | `93M` |
-| SegFormer-B2 | zelda `root@161.104.48.181` | preliminary 1/30 | `0.941538` | 1 | `0.935750` | `0.968424` | `79.33` | pending |
+
+SegFormer-B2 extended metrics from `scripts/evaluate_binary_sulfide.py`:
+
+- F1 sulfide: `0.987024`
+- AUC sulfide: `0.998811`
+- Hausdorff mean on 512 sampled val tiles: `73.32 px`
+- HD95 mean on 512 sampled val tiles: `23.57 px`
+- Output: `outputs/evaluations/segformer_b2_best_eval_metrics.json`
 
 SegFormer-B1 extended metrics from `scripts/evaluate_binary_sulfide.py`:
 
@@ -44,6 +52,14 @@ SegFormer-B0 extended metrics from `scripts/evaluate_binary_sulfide.py`:
 - Hausdorff mean on 512 sampled val tiles: `86.23 px`
 - HD95 mean on 512 sampled val tiles: `33.92 px`
 - Output: `outputs/evaluations/segformer_b0_best_eval_metrics.json`
+
+ResUNet extended metrics from `scripts/evaluate_binary_sulfide.py`:
+
+- F1 sulfide: `0.977733`
+- AUC sulfide: `0.996942`
+- Hausdorff mean on 512 sampled val tiles: `92.30 px`
+- HD95 mean on 512 sampled val tiles: `37.37 px`
+- Output: `outputs/evaluations/resunet_best_eval_metrics.json`
 
 SegFormer-B0 final epoch metrics:
 
@@ -63,19 +79,39 @@ SegFormer-B1 final epoch metrics:
 - val bg IoU: `0.959587`
 - val pixel accuracy: `0.980600`
 
-ResUNet is still running on gx10, so its row is not a final 30-epoch result. The best observed row at epoch 21 had val loss `0.069642`.
+ResUNet final epoch metrics:
 
-SegFormer-B2 is running on zelda as the next larger-transformer candidate. Its epoch 1 result is below B1/B0 and not yet meaningful for final ranking.
+- epoch: `30`
+- train loss: `0.044054`
+- val loss: `0.065122`
+- val sulfide IoU: `0.953216`
+- val bg IoU: `0.946566`
+- val pixel accuracy: `0.974418`
+
+SegFormer-B2 final epoch metrics:
+
+- epoch: `30`
+- train loss: `0.021654`
+- val loss: `0.043971`
+- val sulfide IoU: `0.969119`
+- val bg IoU: `0.965199`
+- val pixel accuracy: `0.983366`
 
 ## Checkpoints
 
-- Local SegFormer-B1 mirror: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/`
-- Current best binary sulfide checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b1_zelda_20260703_overnight_safetensors/best.pt`
+- Local SegFormer-B2 mirror: `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/`
+- Current best binary sulfide checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b2_zelda_20260703_overnight_safetensors/best.pt`
+- SegFormer-B2 last checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b2_zelda_20260703_overnight_safetensors/last.pt`
+- Local SegFormer-B1 fallback mirror: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/`
 - SegFormer-B1 last checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b1_zelda_20260703_overnight_safetensors/last.pt`
 - Local SegFormer-B0 fallback mirror: `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/`
 - SegFormer-B0 last checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b0_zelda_20260702_220225/last.pt`
-- ResUNet preliminary checkpoint: `/home/ashmelev/Projects/2026_Nornikel_Hackaton_v2/outputs/train_resunet_gx10_20260703_004425/best.pt`
-- SegFormer-B2 preliminary checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b2_zelda_20260703_overnight_safetensors/best.pt`
+- ResUNet checkpoint: `/home/ashmelev/Projects/2026_Nornikel_Hackaton_v2/outputs/train_resunet_gx10_20260703_004425/best.pt`
+
+Local SegFormer-B2 checksums:
+
+- `best.pt`: `55c31ef645cfb5c9b0b8fd91f4b9d2070e425b32ed60e23b3c15b292546b910f`
+- `last.pt`: `40cc2fa920282964d70588a9815a94915611a22f0182e97327c629220119f00c`
 
 Local SegFormer-B1 checksums:
 
@@ -89,15 +125,13 @@ Local SegFormer-B0 checksums:
 
 ## Recommendation
 
-Use SegFormer-B1 as the current default binary sulfide checkpoint. It beats SegFormer-B0 on the same weak-label validation split across IoU, F1, AUC, Hausdorff mean, and HD95 mean. Keep SegFormer-B0 as the smaller fallback checkpoint because it is faster and already has complete extended metrics.
+Use SegFormer-B2 as the current default binary sulfide checkpoint. It beats SegFormer-B1 on the same weak-label validation split across IoU, F1, AUC, Hausdorff mean, and HD95 mean. Keep SegFormer-B1 as the faster fallback and SegFormer-B0 as the smallest fallback.
 
-Do not stop the ResUNet run yet: keep it to completion as a sanity check for architecture diversity. If final ResUNet does not overtake SegFormer-B0/B1, retire it to the benchmark appendix.
+ResUNet is useful as an architecture-diversity sanity check and beats SegFormer-B0 on IoU, but it is slower and below B1/B2 on the extended metrics.
 
 ## Next Benchmark Actions
 
-1. Monitor gx10 until `outputs/train_resunet_gx10_20260703_004425/train_log.csv` reaches epoch 30.
-2. Monitor zelda `tmux nornickel_v2_segformer_b2` until epoch 30, then evaluate and mirror B2 if it beats B1/B0.
-3. Update this benchmark with the final ResUNet and B2 rows.
-4. Build B1 visual validation: sampled overlays, confidence heatmaps, and false-positive/false-negative examples from both official class images and unlabelled panoramas.
-5. Use `outputs/official_balanced_eval_split.json` for balanced image-level class validation; keep unlabelled panoramas separate for performance and visual stress tests.
-6. After non-expert QA produces corrected masks, repeat the benchmark with a new dataset version and keep the current numbers as `binary_sulfide_dataset_v0` baseline only.
+1. Run B2/B1/heuristic disagreement sampling for the Streamlit sulfide QA queue.
+2. Use `outputs/official_balanced_eval_split.json` for balanced image-level class validation; keep unlabelled panoramas separate for performance and visual stress tests.
+3. Calibrate ordinary/fine component thresholds with image-level F1/AUC, not just weak-label pixel IoU.
+4. After non-expert QA produces corrected masks, repeat the benchmark with a new dataset version and keep the current numbers as `binary_sulfide_dataset_v0` baseline only.

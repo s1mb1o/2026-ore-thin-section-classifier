@@ -1,4 +1,4 @@
-# Run Fact Sheet: B1 Demo Ore Pipeline
+# Run Fact Sheet: B2 Demo Ore Pipeline
 
 Date: 2026-07-03
 
@@ -10,11 +10,11 @@ Date: 2026-07-03
 
 ## Checkpoint
 
-- Checkpoint: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/best.pt`
-- Remote run checkpoint: `outputs/train_segformer_b1_zelda_20260703_overnight_safetensors/best.pt`
-- Training run: `outputs/train_segformer_b1_zelda_20260703_overnight_safetensors`
-- Best epoch: `16`
-- Best val sulfide IoU: `0.971548`
+- Checkpoint: `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt`
+- Remote run checkpoint: `outputs/train_segformer_b2_zelda_20260703_overnight_safetensors/best.pt`
+- Training run: `outputs/train_segformer_b2_zelda_20260703_overnight_safetensors`
+- Best epoch: `20`
+- Best val sulfide IoU: `0.974381`
 
 ## Parameters
 
@@ -28,24 +28,24 @@ Date: 2026-07-03
 
 ## Outputs
 
-- Binary sulfide mask: `outputs/inference_demo/b1_final_row_2539589_1/binary_sulfide/sulfide_mask.png`
-- Confidence heatmap: `outputs/inference_demo/b1_final_row_2539589_1/binary_sulfide/confidence.png`
-- Sulfide overlay: `outputs/inference_demo/b1_final_row_2539589_1/binary_sulfide/overlay_preview.jpg`
-- Ore summary: `outputs/inference_demo/b1_final_row_2539589_1/ore_analysis/ore_summary.json`
-- Component features: `outputs/inference_demo/b1_final_row_2539589_1/ore_analysis/component_features.csv`
-- Intergrowth overlay: `outputs/inference_demo/b1_final_row_2539589_1/ore_analysis/intergrowth_overlay_preview.jpg`
-- Pipeline summary: `outputs/inference_demo/b1_final_row_2539589_1/pipeline_summary.json`
+- Binary sulfide mask: `outputs/inference_demo/b2_final_row_2539589_1/binary_sulfide/sulfide_mask.png`
+- Confidence heatmap: `outputs/inference_demo/b2_final_row_2539589_1/binary_sulfide/confidence.png`
+- Sulfide overlay: `outputs/inference_demo/b2_final_row_2539589_1/binary_sulfide/overlay_preview.jpg`
+- Ore summary: `outputs/inference_demo/b2_final_row_2539589_1/ore_analysis/ore_summary.json`
+- Component features: `outputs/inference_demo/b2_final_row_2539589_1/ore_analysis/component_features.csv`
+- Intergrowth overlay: `outputs/inference_demo/b2_final_row_2539589_1/ore_analysis/intergrowth_overlay_preview.jpg`
+- Pipeline summary: `outputs/inference_demo/b2_final_row_2539589_1/pipeline_summary.json`
 
 ## Result
 
-- Inference time: `3.233 s`
-- Sulfide fraction: `29.449%`
-- Component count: `152`
-- Ordinary sulfide fraction: `22.3%`
-- Fine sulfide fraction: `77.7%`
+- Inference time: `3.536 s`
+- Sulfide fraction: `29.626%`
+- Component count: `154`
+- Ordinary sulfide fraction: `19.9%`
+- Fine sulfide fraction: `80.1%`
 - Talc fraction: `0.0%`
 - Deterministic class: `hard_to_process_ore`
-- Russian report text: `Руда классифицирована как труднообогатимая руда: тальк 0.0%, обычные срастания 22.3% сульфидной площади, тонкие срастания 77.7% сульфидной площади.`
+- Russian report text: `Руда классифицирована как труднообогатимая руда: тальк 0.0%, обычные срастания 19.9% сульфидной площади, тонкие срастания 80.1% сульфидной площади.`
 
 ## Caveat
 

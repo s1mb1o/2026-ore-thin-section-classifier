@@ -178,7 +178,7 @@ def segformer_config(model_name: str):
             num_labels=2,
             depths=[3, 4, 6, 3],
             hidden_sizes=[64, 128, 320, 512],
-            decoder_hidden_size=256,
+            decoder_hidden_size=768,
             id2label={0: "not_sulfide", 1: "sulfide"},
             label2id={"not_sulfide": 0, "sulfide": 1},
         )

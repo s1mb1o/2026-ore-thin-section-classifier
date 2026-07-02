@@ -63,7 +63,7 @@ Source dataset facts from the original repository handoff:
 - `docs/plans/25_standalone-ore-classifier-project.md`: standalone implementation plan.
 - `docs/plans/26_weak-supervision-sulfide-binary-model.md`: binary sulfide weak-supervision plan with Streamlit QA.
 - `docs/plans/27_talc-silicate-support-labeling.md`: optional silicate-support plan for conservative talc positives and hard negatives.
-- `docs/benchmarks/01_binary_sulfide_model_benchmark.md`: binary sulfide model benchmark; SegFormer-B1 is the current default checkpoint, SegFormer-B0 remains the smaller mirrored fallback.
+- `docs/benchmarks/01_binary_sulfide_model_benchmark.md`: binary sulfide model benchmark; SegFormer-B2 is the current default checkpoint, SegFormer-B1/B0 remain mirrored fallbacks.
 - `docs/cards/binary-sulfide-model-card.md`: model provenance, metrics, limitations, and B0/B1 checkpoint status.
 - `docs/cards/official-balanced-eval-dataset-card.md`: balanced image-level eval split and panorama caveats.
 - `docs/cards/demo-run-fact-sheet.md`: B1 demo pipeline input, parameters, outputs, and deterministic result.
@@ -81,8 +81,8 @@ Source dataset facts from the original repository handoff:
 ## Immediate Next Steps
 
 1. Monitor gx10 `tmux nornickel_v2_resunet` and update `docs/benchmarks/01_binary_sulfide_model_benchmark.md` after epoch 30; latest observed ResUNet best is epoch 21 IoU `0.950462`.
-2. Use the local SegFormer-B1 mirror at `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/` as the default sulfide checkpoint.
-3. Keep the local SegFormer-B0 mirror at `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/` as the smaller fallback checkpoint.
+2. Use the local SegFormer-B2 mirror at `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/` as the default sulfide checkpoint.
+3. Keep the local SegFormer-B1 mirror at `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/` as the faster fallback checkpoint.
 4. Use `outputs/official_balanced_eval_split.json` for balanced labelled-class evaluation; keep weak-label metrics separate from image-level class metrics.
 5. Calibrate component ordinary/fine thresholds using the six-image visual pack plus the balanced split; current visual pack shows rule disagreements on 2 of 4 ordinary/fine examples.
 6. Compare SegFormer-B1/B0 predictions against `heuristic_segmentation/` outputs and surface disagreement areas as the first sulfide QA queue.
@@ -111,13 +111,14 @@ Source dataset facts from the original repository handoff:
 - `scripts/analyze_ore_from_masks.py` computes connected-component ordinary/fine features, ore class rule output, `component_features.csv`, and intergrowth overlay.
 - `scripts/run_ore_pipeline.py` runs image -> sulfide mask -> ore summary in one command.
 - `scripts/build_official_balanced_eval_split.py` generated `outputs/official_balanced_eval_split.json` / `.csv` with `129` samples per ordinary/fine/talcose class; panoramas are listed separately as unlabelled.
-- Final B1 demo output exists under `outputs/inference_demo/b1_final_row_2539589_1/`: final B1 inference on official row ore image, sulfide fraction `0.294490`, component summary, confidence map, and overlays.
+- Final B2 demo output exists under `outputs/inference_demo/b2_final_row_2539589_1/`: final B2 inference on official row ore image, sulfide fraction `0.296259`, component summary, confidence map, and overlays.
 - Local smoke tests passed for ResUNet and SegFormer-B0 on `outputs/smoke_binary_sulfide_dataset`; full local unit tests now cover `31` tests.
 - gx10 ResUNet training is active in `tmux nornickel_v2_resunet`.
-- zelda SegFormer-B2 training is active in `tmux nornickel_v2_segformer_b2`; epoch 1 val sulfide IoU is `0.941538`.
+- zelda SegFormer-B2 training completed 30 epochs; best validation sulfide IoU is `0.974381` at epoch 20, with final epoch 30 IoU `0.969119`.
 - zelda SegFormer-B1 training completed 30 epochs; best validation sulfide IoU is `0.971548` at epoch 16, with final epoch 30 IoU `0.964032`.
+- gx10 ResUNet training completed 30 epochs; best validation sulfide IoU is `0.956436` at epoch 26, with final epoch 30 IoU `0.953216`.
 - zelda SegFormer-B0 training completed 30 epochs; current best validation sulfide IoU is `0.953371` at epoch 13, with final epoch 30 IoU `0.951119`.
-- zelda SegFormer-B1 and SegFormer-B0 `best.pt`, `last.pt`, `train_log.csv`, and `metrics.json` were mirrored locally under `models/binary_sulfide/`.
+- zelda SegFormer-B2/B1/B0 and gx10 ResUNet `best.pt`, `last.pt`, `train_log.csv`, and `metrics.json` were mirrored locally under `models/binary_sulfide/`.
 - Current binary sulfide benchmark is saved in `docs/benchmarks/01_binary_sulfide_model_benchmark.md`.
 
 ## Implemented Heuristic Block
