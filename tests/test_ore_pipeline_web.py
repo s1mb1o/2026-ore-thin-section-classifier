@@ -15,13 +15,22 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from apps.ore_pipeline_web import OrePipelineHTTPServer, OrePipelineStore, RunCancelled, render_html_page  # noqa: E402
+from apps.ore_pipeline_web import (  # noqa: E402
+    OrePipelineHTTPServer,
+    OrePipelineStore,
+    RunCancelled,
+    build_pdf_report_pages,
+    load_font,
+    render_html_page,
+    text_width,
+    wrap_text_lines,
+)
 
 
 def mask_data_url(mask: np.ndarray) -> str:
@@ -57,6 +66,72 @@ class OrePipelineWebTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_pdf_report_wraps_long_russian_conclusion_text(self) -> None:
+        page = Image.new("RGB", (1240, 1754), "white")
+        draw = ImageDraw.Draw(page)
+        font = load_font(27)
+        text = (
+            "Руда классифицирована как оталькованная: содержание талька — 41.5%, "
+            "преобладание обычных срастаний — 100.0%."
+        )
+
+        lines = wrap_text_lines(draw, text, font, max_width=500)
+
+        self.assertGreater(len(lines), 1)
+        self.assertTrue(all(text_width(draw, line, font) <= 500 for line in lines))
+
+    def test_pdf_report_builds_summary_table_and_visual_sections(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        preprocessed = self.store.prepare_upload(
+            upload["upload_id"],
+            {
+                "illumination_normalization": True,
+                "denoise": True,
+                "contrast_correction": True,
+                "panorama_scaling": True,
+            },
+        )
+        run = self.store.start_run(upload["upload_id"], preprocessed["preprocess"]["preset"], run_async=False)
+
+        pages = build_pdf_report_pages(run, self.store.runs_dir / run["run_id"])
+        pdf_path = self.store.pdf_report_path(run["run_id"])
+
+        self.assertEqual(len(pages), 5)
+        self.assertTrue(all(page.size == (1240, 1754) for page in pages))
+        self.assertTrue(pdf_path.read_bytes().startswith(b"%PDF"))
+        self.assertGreater(pdf_path.stat().st_size, 50_000)
+
+    def test_async_start_returns_payload_while_worker_updates_run_json(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        preset = {
+            "illumination_normalization": True,
+            "denoise": True,
+            "contrast_correction": True,
+            "panorama_scaling": True,
+        }
+
+        for _ in range(3):
+            run = self.store.start_run(upload["upload_id"], preset, run_async=True)
+            self.assertIn(run["status"], {"queued", "running", "complete"})
+            self.assertIn("run_id", run)
+
+            for _ in range(40):
+                run = self.store.run_payload(run["run_id"])
+                if run["status"] in {"complete", "failed", "canceled"}:
+                    break
+                time.sleep(0.05)
+
+            self.assertEqual(run["status"], "complete")
+
+    def test_repeated_same_file_uploads_get_unique_ids(self) -> None:
+        first = self.store.register_upload_from_path(self.image_path)
+        second = self.store.register_upload_from_path(self.image_path)
+
+        self.assertNotEqual(first["upload_id"], second["upload_id"])
+        self.assertEqual(first["sha1"], second["sha1"])
+        self.assertTrue((self.store.uploads_dir / first["upload_id"] / "upload.json").exists())
+        self.assertTrue((self.store.uploads_dir / second["upload_id"] / "upload.json").exists())
 
     def test_upload_preprocess_run_and_download_artifacts(self) -> None:
         upload = self.store.register_upload_from_path(self.image_path)
@@ -384,6 +459,78 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(run["augmentation"]["settings"]["surface_artifacts"]["scratch_count"], 8)
         self.assertEqual(run["augmentation"]["settings"]["surface_artifacts"]["pit_count"], 16)
 
+    def test_apply_after_completed_run_creates_prepared_run_then_start_continues_it(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        run = self.store.start_run(
+            upload["upload_id"],
+            {"preprocessing_enabled": True, "panorama_scaling": False},
+            run_async=False,
+        )
+        self.assertEqual(run["status"], "complete")
+        augmentation = {
+            "enabled": True,
+            "color": {"brightness_pct": 12, "contrast_pct": 7, "saturation_pct": 3, "hue_degrees": 0, "gamma": 1.0},
+            "acquisition": {"blur_radius": 0, "gaussian_noise_std": 0},
+            "surface_artifacts": {"scratch_count": 2, "scratch_intensity_pct": 10, "polishing_haze_pct": 0, "pit_count": 0, "pit_intensity_pct": 0},
+            "runtime": {"random_seed": 11},
+        }
+
+        prepared = self.store.prepare_run_from_apply(
+            run["run_id"],
+            {"preprocessing_enabled": True, "panorama_scaling": False},
+            augmentation_settings=augmentation,
+            changed_step="augmentation",
+        )
+
+        self.assertNotEqual(prepared["run_id"], run["run_id"])
+        self.assertEqual(prepared["status"], "prepared")
+        self.assertEqual(prepared["progress"], 0)
+        self.assertEqual(prepared["derivation"]["parent_run_id"], run["run_id"])
+        self.assertEqual(prepared["derivation"]["changed_step"], "augmentation")
+        self.assertTrue(prepared["augmentation"]["enabled"])
+        self.assertIn("augmented", prepared["display"])
+        self.assertIn("preprocessed", prepared["display"])
+        self.assertNotIn("sulfide", prepared["masks"])
+        self.assertEqual(prepared["summary"], {})
+        self.assertEqual(prepared["metrics"], [])
+        run_dir = self.store.runs_dir / prepared["run_id"]
+        self.assertTrue((run_dir / "input/augmented.png").exists())
+        self.assertTrue((run_dir / "input/preprocessed.png").exists())
+        self.assertFalse((run_dir / "masks/sulfide_mask.png").exists())
+
+        completed = self.store.start_prepared_run(prepared["run_id"], run_async=False)
+        self.assertEqual(completed["run_id"], prepared["run_id"])
+        self.assertEqual(completed["status"], "complete")
+        self.assertIn("sulfide", completed["masks"])
+        self.assertIn("ordinary_overlay", completed["display"])
+
+    def test_apply_on_prepared_run_updates_same_run_before_start(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        run = self.store.start_run(
+            upload["upload_id"],
+            {"preprocessing_enabled": True, "panorama_scaling": False},
+            run_async=False,
+        )
+        prepared = self.store.prepare_run_from_apply(
+            run["run_id"],
+            {"preprocessing_enabled": True, "panorama_scaling": False},
+            augmentation_settings={"enabled": False},
+            changed_step="preprocess",
+        )
+        updated = self.store.prepare_run_from_apply(
+            prepared["run_id"],
+            {"preprocessing_enabled": False, "panorama_scaling": False},
+            augmentation_settings={"enabled": False},
+            changed_step="preprocess",
+        )
+
+        self.assertEqual(updated["run_id"], prepared["run_id"])
+        self.assertEqual(updated["status"], "prepared")
+        self.assertFalse(updated["preprocess"]["enabled"])
+        self.assertEqual(updated["derivation"]["parent_run_id"], run["run_id"])
+        self.assertNotIn("preprocessed", updated["display"])
+        self.assertEqual(len(self.store.list_runs()["runs"]), 2)
+
     def test_curated_metadata_is_saved_with_run_and_inherited_by_edit_run(self) -> None:
         upload = self.store.register_upload_from_path(self.image_path)
         curated = {
@@ -500,7 +647,7 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertEqual(response.status, 302)
             self.assertEqual(response.getheader("Location"), "/workspace")
 
-            for page in ("/workspace", "/batch", "/batch/batch_demo", "/history", "/settings"):
+            for page in ("/workspace", "/batch", "/batch/batch_demo", "/history", "/history_series", "/settings", "/status", "/api"):
                 connection = http.client.HTTPConnection(host, port, timeout=5)
                 connection.request("GET", page)
                 response = connection.getresponse()
@@ -508,6 +655,44 @@ class OrePipelineWebTest(unittest.TestCase):
                 connection.close()
                 self.assertEqual(response.status, 200)
                 self.assertIn("Классификатор рудного шлифа", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_status_payload_and_api_report_system_health(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        run = self.store.start_run(
+            upload["upload_id"],
+            {"preprocessing_enabled": True, "panorama_scaling": False},
+            run_async=False,
+        )
+        payload = self.store.status_payload()
+
+        self.assertEqual(payload["schema_version"], "ore-pipeline-status-v0.1")
+        self.assertIn(payload["health"]["overall"], {"ok", "warning", "error"})
+        self.assertGreaterEqual(payload["cpu"]["logical_cpus"], 1)
+        self.assertIn("available", payload["gpu"])
+        self.assertIn("total_bytes", payload["ram"])
+        self.assertIn("free_bytes", payload["flash"])
+        self.assertGreaterEqual(payload["history"]["runs_total"], 1)
+        self.assertGreaterEqual(payload["history"]["history_size_bytes"], 0)
+        self.assertEqual(payload["history"]["run_status_counts"].get(run["status"]), 1)
+        self.assertEqual(payload["app"]["backend"], "heuristic")
+
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/api/status")
+            response = connection.getresponse()
+            api_payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(api_payload["schema_version"], "ore-pipeline-status-v0.1")
+            self.assertEqual(api_payload["history"]["runs_total"], payload["history"]["runs_total"])
         finally:
             server.shutdown()
             server.server_close()
@@ -590,6 +775,48 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertNotIn(removed_item_id, [item["item_id"] for item in batch["items"]])
         self.assertEqual([item["index"] for item in batch["items"]], [1])
         self.assertEqual(batch["item_counts"]["draft"], 1)
+
+    def test_delete_batch_endpoint_removes_series_and_child_runs(self) -> None:
+        upload_a = self.store.register_upload_from_path(self.image_path)
+        upload_b = self.store.register_upload_from_path(self.image_path_2)
+        batch = self.store.create_batch({"upload_ids": [upload_a["upload_id"], upload_b["upload_id"]]})
+        completed = self.store.run_batch(
+            batch["batch_id"],
+            {
+                "preprocess": {"preprocessing_enabled": True, "panorama_scaling": False},
+                "augmentation": {"enabled": False},
+            },
+            run_async=False,
+        )
+        child_run_ids = [item["run_id"] for item in completed["items"]]
+        batch_dir = self.store.batches_dir / completed["batch_id"]
+        child_run_dirs = [self.store.runs_dir / run_id for run_id in child_run_ids]
+        self.assertTrue(batch_dir.exists())
+        for run_dir in child_run_dirs:
+            self.assertTrue(run_dir.exists())
+
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("DELETE", f"/api/batches/{completed['batch_id']}")
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["removed_batch_id"], completed["batch_id"])
+            self.assertEqual(sorted(payload["removed_run_ids"]), sorted(child_run_ids))
+            self.assertFalse(batch_dir.exists())
+            for run_dir in child_run_dirs:
+                self.assertFalse(run_dir.exists())
+            self.assertEqual(self.store.list_batches()["batches"], [])
+            self.assertEqual(self.store.list_runs()["runs"], [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_app_settings_are_persisted_and_exposed_by_api(self) -> None:
         settings = self.store.save_app_settings(
@@ -876,8 +1103,17 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("function applyAugmentationToControls(settings", html)
         self.assertIn("function updateAugmentationSummary()", html)
         self.assertIn("statusAugmentationUpdated", html)
+        self.assertIn("statusAugmentationPreparedRun", html)
+        self.assertIn("statusPreprocessPreparedRun", html)
         self.assertIn("buttonId: 'applyAugmentationBtn'", html)
         self.assertIn("augmentation: augmentationPayload()", html)
+        self.assertIn("function runIsPrepared(run)", html)
+        self.assertIn("function runCanBePreparedFromApply(run)", html)
+        self.assertIn("function clearResultsPanel()", html)
+        self.assertIn("/prepare", html)
+        self.assertIn("/start", html)
+        self.assertIn("changed_step: changedStep", html)
+        self.assertIn("stagePrepared", html)
         self.assertIn('data-mode="augmented"', html)
         self.assertIn('data-side-layer="augmented"', html)
         self.assertLess(html.index('data-mode="original"'), html.index('data-mode="augmented"'))
@@ -953,6 +1189,38 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertNotIn("Назад к Batch", html)
         self.assertIn('id="settingsTab"', html)
         self.assertIn('id="settingsView"', html)
+        self.assertIn('id="statusTab"', html)
+        self.assertIn('id="statusView"', html)
+        self.assertIn('id="apiTab"', html)
+        self.assertIn('id="apiView"', html)
+        self.assertIn('id="apiDocsNav"', html)
+        self.assertIn('id="apiDocsList"', html)
+        self.assertIn('id="statusCards"', html)
+        self.assertIn('id="statusHealthTable"', html)
+        self.assertIn('id="statusStorageTable"', html)
+        self.assertIn('id="refreshStatusBtn"', html)
+        self.assertIn("const API_REFERENCE", html)
+        self.assertIn("REST API documentation for the v2 UI", html)
+        self.assertIn("Документация REST API для v2 UI", html)
+        self.assertIn("function renderApiDocs()", html)
+        self.assertIn("function runApiSandbox(endpointId)", html)
+        self.assertIn("function attachApiSandboxHandlers()", html)
+        self.assertIn("data-api-run", html)
+        self.assertIn("api-request-url", html)
+        self.assertIn("api-request-body", html)
+        self.assertIn("api-file-input", html)
+        self.assertIn("endpoint.download", html)
+        self.assertIn("multipart/form-data", html)
+        self.assertIn("/api/uploads/{upload_id}/preprocess", html)
+        self.assertIn("/api/runs/start", html)
+        self.assertIn("/api/runs/{run_id}/files", html)
+        self.assertIn("/api/runs/{run_id}/artifacts.zip", html)
+        self.assertIn("/api/runs/{run_id}/metrics.csv", html)
+        self.assertIn("/api/runs/{run_id}/report.pdf", html)
+        self.assertIn("/api/batches/{batch_id}", html)
+        self.assertIn("/api/batches/{batch_id}/run", html)
+        self.assertIn("/api/batches/{batch_id}/cancel", html)
+        self.assertIn("/api/batches/{batch_id}/results.csv", html)
         self.assertIn('id="settingsLanguage"', html)
         self.assertIn('id="settingsTheme"', html)
         self.assertIn('id="settingsShowTiling"', html)
@@ -961,7 +1229,10 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn('id="saveSettingsBtn"', html)
         self.assertIn('id="resetSettingsBtn"', html)
         self.assertIn("/api/settings", html)
+        self.assertIn("/api/status", html)
         self.assertIn("function loadAppSettings()", html)
+        self.assertIn("function loadSystemStatus()", html)
+        self.assertIn("function renderSystemStatus(payload", html)
         self.assertIn("function saveSettingsObject(settings", html)
         self.assertIn("ore-pipeline-app-settings-v0.1", html)
         self.assertIn('value="ru"', html)
@@ -1052,8 +1323,12 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("function renderBatchHistoryTable(batches)", html)
         self.assertIn("function batchCountsText(batch)", html)
         self.assertIn("data-open-batch", html)
+        self.assertIn("data-delete-batch", html)
         self.assertIn("historyOpenBatch", html)
         self.assertIn("historyNoBatches", html)
+        self.assertIn("function removeBatch(batchId)", html)
+        self.assertIn("confirmRemoveBatch", html)
+        self.assertIn("statusBatchRemoved", html)
         self.assertIn("state.historyMode === 'single'", html)
         self.assertIn("fetch('/api/batches')", html)
         self.assertIn("function renderHistoryThumbnail(run)", html)
@@ -1073,10 +1348,16 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("historyOreClassification", html)
         self.assertIn("historyNonSulfides", html)
         self.assertIn("historyRemove", html)
-        self.assertIn("const PAGE_SLUGS = {workspace: '/workspace', batch: '/batch', history: '/history', settings: '/settings'}", html)
+        self.assertIn("const PAGE_SLUGS = {workspace: '/workspace', batch: '/batch', history: '/history', historySeries: '/history_series', settings: '/settings', status: '/status', api: '/api'}", html)
+        self.assertIn("function historySlugForMode(mode)", html)
+        self.assertIn("window.location.pathname === PAGE_SLUGS.historySeries", html)
+        self.assertIn("window.location.pathname === PAGE_SLUGS.api", html)
+        self.assertIn("state.historyMode = 'batches';", html)
+        self.assertIn("window.history.pushState({page: 'history', historyMode: state.historyMode}, '', slug)", html)
         self.assertIn("function setPage(page, options = {})", html)
         self.assertIn("document.body.dataset.page = nextPage", html)
         self.assertIn('body[data-page="history"] aside', html)
+        self.assertIn('body[data-page="api"] aside', html)
         self.assertIn("function resetWindowScroll()", html)
         self.assertIn("resetWindowScroll();", html)
         self.assertIn("window.history.pushState", html)
@@ -1209,7 +1490,13 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("violet brush", html)
         self.assertLess(html.index('id="viewModeButtons"'), html.index('<div class="viewer-shell"'))
         self.assertLess(html.index('<div class="viewer-shell"'), html.index('id="segmentationClassToggles"'))
-        self.assertLess(html.index('id="segmentationClassToggles"'), html.index('id="mainCanvas"'))
+        self.assertLess(html.index('id="segmentationClassToggles"'), html.index('id="splitterOverlay"'))
+        self.assertLess(html.index('id="splitterOverlay"'), html.index('id="mainCanvas"'))
+        self.assertIn('class="splitter-overlay hidden"', html)
+        self.assertIn('class="splitter-line"', html)
+        self.assertIn('class="splitter-handle"', html)
+        self.assertIn("function updateSplitterOverlay()", html)
+        self.assertIn("overlay.style.left = `${Math.round(state.splitter * 10000) / 100}%`;", html)
         self.assertLess(html.index('<div class="viewer-shell"'), html.index('class="viewer-options-row"'))
         self.assertLess(html.index('class="viewer-options-row"'), html.index('id="resultPanel"'))
         viewer_options = html.split('class="viewer-options-row"', 1)[1].split('id="resultPanel"', 1)[0]

@@ -88,6 +88,22 @@ ORE_CLASS_SHORT_RU = {
     "row_ore": "рядовая",
     "hard_to_process_ore": "труднообогатимая",
 }
+REPORT_PAGE_SIZE = (1240, 1754)
+REPORT_MARGIN_X = 80
+REPORT_MARGIN_TOP = 76
+REPORT_TEXT = (20, 26, 36)
+REPORT_MUTED = (72, 83, 98)
+REPORT_LINE = (204, 213, 224)
+REPORT_TABLE_HEADER = (232, 238, 247)
+REPORT_TABLE_ALT = (248, 250, 252)
+REPORT_NON_SULFIDE_COLOR = (46, 74, 96)
+REPORT_SULFIDE_COLOR = (239, 186, 43)
+REPORT_MASK_BACKGROUND = (245, 247, 250)
+REPORT_CLASS_SPECS = [
+    (1, "Обычные срастания", "masks/ordinary_mask.png", (30, 185, 85)),
+    (2, "Тонкие срастания", "masks/fine_mask.png", (230, 65, 65)),
+    (3, "Тальк", "masks/talc_final_mask.png", (40, 120, 245)),
+]
 CURATED_METADATA_SCHEMA_VERSION = "ore-pipeline-curated-metadata-v0.1"
 APP_SETTINGS_SCHEMA_VERSION = "ore-pipeline-app-settings-v0.1"
 BATCH_SCHEMA_VERSION = "ore-pipeline-batch-v0.1"
@@ -1024,6 +1040,169 @@ def count_components(mask: np.ndarray) -> int:
     return max(0, int(labels_count) - 1)
 
 
+def directory_size_summary(path: Path) -> dict[str, Any]:
+    total = 0
+    files = 0
+    directories = 0
+    errors: list[str] = []
+    if not path.exists():
+        return {"path": str(path), "size_bytes": 0, "files": 0, "directories": 0, "errors": []}
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        directories += 1
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        elif entry.is_file(follow_symlinks=False):
+                            files += 1
+                            total += int(entry.stat(follow_symlinks=False).st_size)
+                    except OSError as exc:
+                        if len(errors) < 8:
+                            errors.append(f"{entry.path}: {exc}")
+        except OSError as exc:
+            if len(errors) < 8:
+                errors.append(f"{current}: {exc}")
+    return {"path": str(path), "size_bytes": total, "files": files, "directories": directories, "errors": errors}
+
+
+def cpu_status_payload() -> dict[str, Any]:
+    logical_cpus = int(os.cpu_count() or 1)
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+        load_pct = min(999.0, max(0.0, load_1m / max(logical_cpus, 1) * 100.0))
+        return {
+            "logical_cpus": logical_cpus,
+            "load_average_1m": load_1m,
+            "load_average_5m": load_5m,
+            "load_average_15m": load_15m,
+            "load_percent_1m": load_pct,
+        }
+    except OSError:
+        return {
+            "logical_cpus": logical_cpus,
+            "load_average_1m": None,
+            "load_average_5m": None,
+            "load_average_15m": None,
+            "load_percent_1m": None,
+        }
+
+
+def memory_status_payload() -> dict[str, Any]:
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        values: dict[str, int] = {}
+        for line in meminfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = line.replace(":", "").split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                values[parts[0]] = int(parts[1]) * 1024
+        total = int(values.get("MemTotal") or 0)
+        available = int(values.get("MemAvailable") or values.get("MemFree") or 0)
+        used = max(total - available, 0)
+        return {
+            "total_bytes": total,
+            "available_bytes": available,
+            "used_bytes": used,
+            "used_percent": used / max(total, 1) * 100.0,
+            "source": "/proc/meminfo",
+        }
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        total_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+        total = page_size * total_pages
+        available = page_size * available_pages
+        used = max(total - available, 0)
+        return {
+            "total_bytes": total,
+            "available_bytes": available,
+            "used_bytes": used,
+            "used_percent": used / max(total, 1) * 100.0,
+            "source": "sysconf",
+        }
+    except (AttributeError, OSError, ValueError):
+        pass
+    try:
+        total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, timeout=1.0).strip())
+        output = subprocess.check_output(["vm_stat"], text=True, timeout=1.0)
+        page_size = 4096
+        header = output.splitlines()[0] if output.splitlines() else ""
+        if "page size of" in header:
+            page_size = int(header.split("page size of", 1)[1].split("bytes", 1)[0].strip())
+        pages: dict[str, int] = {}
+        for line in output.splitlines()[1:]:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            digits = "".join(ch for ch in value if ch.isdigit())
+            if digits:
+                pages[key.strip()] = int(digits)
+        available_pages = pages.get("Pages free", 0) + pages.get("Pages inactive", 0) + pages.get("Pages speculative", 0)
+        available = available_pages * page_size
+        used = max(total - available, 0)
+        return {
+            "total_bytes": total,
+            "available_bytes": available,
+            "used_bytes": used,
+            "used_percent": used / max(total, 1) * 100.0,
+            "source": "vm_stat",
+        }
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return {"total_bytes": None, "available_bytes": None, "used_bytes": None, "used_percent": None, "source": "unavailable"}
+
+
+def disk_status_payload(path: Path) -> dict[str, Any]:
+    usage = shutil.disk_usage(path)
+    used = usage.total - usage.free
+    return {
+        "path": str(path),
+        "total_bytes": int(usage.total),
+        "used_bytes": int(used),
+        "free_bytes": int(usage.free),
+        "used_percent": used / max(usage.total, 1) * 100.0,
+        "free_percent": usage.free / max(usage.total, 1) * 100.0,
+    }
+
+
+def gpu_status_payload() -> dict[str, Any]:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return {"available": False, "source": "nvidia-smi", "message": "nvidia-smi not found", "devices": []}
+    command = [
+        nvidia_smi,
+        "--query-gpu=index,name,utilization.gpu,memory.total,memory.used,temperature.gpu",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        result = subprocess.run(command, check=True, text=True, capture_output=True, timeout=2.0)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return {"available": False, "source": "nvidia-smi", "message": str(exc), "devices": []}
+    devices = []
+    for row in csv.reader(io.StringIO(result.stdout)):
+        if len(row) < 6:
+            continue
+        index, name, util, memory_total, memory_used, temperature = [part.strip() for part in row[:6]]
+        total_mib = int(float(memory_total or 0))
+        used_mib = int(float(memory_used or 0))
+        devices.append(
+            {
+                "index": int(index or 0),
+                "name": name,
+                "utilization_percent": float(util or 0.0),
+                "memory_total_bytes": total_mib * 1024 * 1024,
+                "memory_used_bytes": used_mib * 1024 * 1024,
+                "memory_used_percent": used_mib / max(total_mib, 1) * 100.0,
+                "temperature_c": float(temperature or 0.0),
+            }
+        )
+    return {"available": bool(devices), "source": "nvidia-smi", "message": "" if devices else "no devices", "devices": devices}
+
+
 class OrePipelineStore:
     def __init__(
         self,
@@ -1046,6 +1225,8 @@ class OrePipelineStore:
         self.processing_max_side = int(processing_max_side)
         self.panorama_max_side = int(panorama_max_side)
         self.preview_max_sides = preview_max_sides
+        self.started_at = time.time()
+        self.started_at_iso = utc_now_iso()
         self.artifacts: dict[str, Path] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
         self.batch_jobs: dict[str, dict[str, Any]] = {}
@@ -1062,9 +1243,7 @@ class OrePipelineStore:
             raise ApiError(HTTPStatus.BAD_REQUEST, "supported image formats: PNG, JPEG, TIFF, RAW")
         if len(data) > MAX_UPLOAD_BYTES:
             raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "uploaded image is too large")
-        upload_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{hashlib.sha1(data[:1048576]).hexdigest()[:10]}"
-        upload_dir = self.uploads_dir / upload_id
-        upload_dir.mkdir(parents=True, exist_ok=False)
+        upload_id, upload_dir = self._create_upload_dir(hashlib.sha1(data[:1048576]).hexdigest()[:10])
         original_path = upload_dir / safe_name(original_name)
         original_path.write_bytes(data)
         return self._register_upload_file(upload_id, upload_dir, original_path, original_name)
@@ -1075,12 +1254,22 @@ class OrePipelineStore:
         if suffix not in IMAGE_EXTENSIONS:
             raise ApiError(HTTPStatus.BAD_REQUEST, "supported image formats: PNG, JPEG, TIFF, RAW")
         digest = file_sha1(path)[:10]
-        upload_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{digest}"
-        upload_dir = self.uploads_dir / upload_id
-        upload_dir.mkdir(parents=True, exist_ok=False)
+        upload_id, upload_dir = self._create_upload_dir(digest)
         original_path = upload_dir / safe_name(original_name)
         hardlink_or_copy(path, original_path)
         return self._register_upload_file(upload_id, upload_dir, original_path, original_name)
+
+    def _create_upload_dir(self, digest: str) -> tuple[str, Path]:
+        with self.lock:
+            for _ in range(16):
+                upload_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000_000:09d}_{digest}"
+                upload_dir = self.uploads_dir / upload_id
+                try:
+                    upload_dir.mkdir(parents=True, exist_ok=False)
+                    return upload_id, upload_dir
+                except FileExistsError:
+                    time.sleep(0)
+        raise ApiError(HTTPStatus.CONFLICT, "could not allocate unique upload id")
 
     def _register_upload_file(self, upload_id: str, upload_dir: Path, original_path: Path, original_name: str) -> dict[str, Any]:
         width, height = image_dimensions(original_path)
@@ -1314,6 +1503,106 @@ class OrePipelineStore:
             self._run_job_guarded(run_id)
         return self.run_payload(run_id)
 
+    def prepare_run_from_apply(
+        self,
+        run_id: str,
+        preset: dict[str, Any],
+        *,
+        augmentation_settings: dict[str, Any] | None = None,
+        changed_step: str,
+    ) -> dict[str, Any]:
+        if changed_step not in {"augmentation", "preprocess"}:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "changed_step must be augmentation or preprocess")
+        parent = self._read_run(run_id)
+        status = str(parent.get("status") or "").lower()
+        if status not in {"complete", "prepared"}:
+            raise ApiError(HTTPStatus.CONFLICT, "run must be complete or prepared before applying pipeline settings")
+        upload_id = str((parent.get("input") or {}).get("upload_id") or "")
+        if not upload_id:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "run has no upload_id")
+        upload = self.prepare_upload(upload_id, preset, augmentation_settings)
+        if status == "complete":
+            target_run_id = f"apply_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000_000:09d}_{hashlib.sha1((run_id + changed_step).encode()).hexdigest()[:8]}"
+            target_run_dir = self.runs_dir / target_run_id
+            target_run_dir.mkdir(parents=True, exist_ok=False)
+            parent_run_id = run_id
+        else:
+            target_run_id = run_id
+            target_run_dir = self.runs_dir / target_run_id
+            parent_run_id = str((parent.get("derivation") or {}).get("parent_run_id") or run_id)
+            for relative in ("input", "display", "masks", "reports", "ml_pipeline"):
+                shutil.rmtree(target_run_dir / relative, ignore_errors=True)
+            with self.lock:
+                self.jobs.pop(target_run_id, None)
+
+        self._initialize_run_from_upload(
+            target_run_id,
+            target_run_dir,
+            upload,
+            preset,
+            curated_metadata=(parent.get("input") or {}).get("curated_metadata"),
+        )
+        metadata = self._read_run(target_run_id)
+        metadata["status"] = "prepared"
+        metadata["stage"] = "prepared"
+        metadata["progress"] = 0
+        metadata["eta_seconds"] = None
+        metadata["backend"] = parent.get("backend", self.backend)
+        metadata["derivation"] = {
+            "type": "apply_pipeline_settings",
+            "parent_run_id": parent_run_id,
+            "changed_step": changed_step,
+            "created_at": utc_now_iso(),
+            "operation": "prepare_from_augmentation_apply" if changed_step == "augmentation" else "prepare_from_preprocessing_apply",
+            "mutable_until_start": True,
+        }
+        self._preserve_parent_artifact_mask(parent, target_run_dir, metadata)
+        self._finalize_prepared_run_metadata(
+            metadata,
+            target_run_dir,
+            preprocessing_enabled=bool((upload.get("preprocess") or {}).get("enabled", True)),
+        )
+        self._write_json(target_run_dir / "run.json", metadata)
+        return self.run_payload(target_run_id)
+
+    def start_prepared_run(
+        self,
+        run_id: str,
+        *,
+        run_async: bool = True,
+        curated_metadata: Any = None,
+    ) -> dict[str, Any]:
+        run_dir = self.runs_dir / run_id
+        metadata = self._read_run(run_id)
+        if str(metadata.get("status") or "").lower() != "prepared":
+            raise ApiError(HTTPStatus.CONFLICT, "run is not prepared")
+        normalized_curated_metadata = normalize_curated_metadata_payload(curated_metadata)
+        if normalized_curated_metadata:
+            shutil.rmtree(run_dir / "metadata", ignore_errors=True)
+            metadata.get("input", {}).pop("curated_metadata", None)
+            metadata.get("input", {}).pop("curated_metadata_json", None)
+            self._attach_curated_metadata(metadata, run_dir, normalized_curated_metadata)
+        metadata["status"] = "queued"
+        metadata["stage"] = "queued"
+        metadata["progress"] = 1
+        metadata["eta_seconds"] = None
+        self._write_json(run_dir / "run.json", metadata)
+        with self.lock:
+            self.jobs[run_id] = {
+                "progress": 1,
+                "status": "queued",
+                "stage": "queued",
+                "started_at": time.time(),
+                "eta_seconds": None,
+                "cancel_requested": False,
+            }
+        if run_async:
+            thread = threading.Thread(target=self._run_job_guarded, args=(run_id,), daemon=True)
+            thread.start()
+        else:
+            self._run_job_guarded(run_id)
+        return self.run_payload(run_id)
+
     def create_edit_run(self, parent_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         parent = self._read_run(parent_run_id)
         parent_dir = self.runs_dir / parent_run_id
@@ -1395,6 +1684,106 @@ class OrePipelineStore:
                 }
             )
         return {"schema_version": "ore-pipeline-history-v0.1", "runs": runs}
+
+    def status_payload(self) -> dict[str, Any]:
+        runs_payload = self.list_runs()
+        batches_payload = self.list_batches()
+        runs = runs_payload.get("runs", [])
+        batches = batches_payload.get("batches", [])
+        run_status_counts: dict[str, int] = {}
+        for run in runs:
+            status = str(run.get("status") or "unknown")
+            run_status_counts[status] = run_status_counts.get(status, 0) + 1
+        batch_status_counts: dict[str, int] = {}
+        for batch in batches:
+            status = str(batch.get("status") or "unknown")
+            batch_status_counts[status] = batch_status_counts.get(status, 0) + 1
+        with self.lock:
+            active_runs = [
+                {"run_id": run_id, "status": job.get("status"), "progress": job.get("progress", 0)}
+                for run_id, job in self.jobs.items()
+                if str(job.get("status") or "") in BATCH_ACTIVE_STATUSES
+            ]
+            active_batches = [
+                {"batch_id": batch_id, "status": job.get("status"), "progress": job.get("progress", 0)}
+                for batch_id, job in self.batch_jobs.items()
+                if str(job.get("status") or "") in BATCH_ACTIVE_STATUSES
+            ]
+        runs_size = directory_size_summary(self.runs_dir)
+        batches_size = directory_size_summary(self.batches_dir)
+        uploads_size = directory_size_summary(self.uploads_dir)
+        disk = disk_status_payload(self.workspace_dir)
+        memory = memory_status_payload()
+        cpu = cpu_status_payload()
+        gpu = gpu_status_payload()
+        checks: list[dict[str, Any]] = []
+        if os.access(self.workspace_dir, os.W_OK):
+            checks.append({"key": "workspace_writable", "status": "ok", "message": str(self.workspace_dir)})
+        else:
+            checks.append({"key": "workspace_writable", "status": "error", "message": str(self.workspace_dir)})
+        if self.backend == "ml" and (not self.checkpoint or not self.checkpoint.exists()):
+            checks.append({"key": "checkpoint", "status": "error", "message": str(self.checkpoint or "")})
+        elif self.backend == "ml":
+            checks.append({"key": "checkpoint", "status": "ok", "message": str(self.checkpoint)})
+        else:
+            checks.append({"key": "backend", "status": "ok", "message": self.backend})
+        if disk["free_percent"] < 3:
+            checks.append({"key": "flash_free", "status": "error", "message": f"{disk['free_percent']:.1f}%"})
+        elif disk["free_percent"] < 10:
+            checks.append({"key": "flash_free", "status": "warning", "message": f"{disk['free_percent']:.1f}%"})
+        else:
+            checks.append({"key": "flash_free", "status": "ok", "message": f"{disk['free_percent']:.1f}%"})
+        memory_available = memory.get("available_bytes")
+        memory_total = memory.get("total_bytes")
+        if isinstance(memory_available, int) and isinstance(memory_total, int) and memory_total > 0:
+            available_percent = memory_available / memory_total * 100.0
+            if available_percent < 5:
+                checks.append({"key": "ram_available", "status": "error", "message": f"{available_percent:.1f}%"})
+            elif available_percent < 12:
+                checks.append({"key": "ram_available", "status": "warning", "message": f"{available_percent:.1f}%"})
+            else:
+                checks.append({"key": "ram_available", "status": "ok", "message": f"{available_percent:.1f}%"})
+        if cpu.get("load_percent_1m") is not None and float(cpu["load_percent_1m"]) > 200.0:
+            checks.append({"key": "cpu_load", "status": "warning", "message": f"{float(cpu['load_percent_1m']):.1f}%"})
+        if active_runs or active_batches:
+            checks.append({"key": "active_jobs", "status": "warning", "message": f"{len(active_runs)} runs, {len(active_batches)} series"})
+        overall = "ok"
+        if any(check["status"] == "error" for check in checks):
+            overall = "error"
+        elif any(check["status"] == "warning" for check in checks):
+            overall = "warning"
+        history_size = int(runs_size["size_bytes"]) + int(batches_size["size_bytes"])
+        return {
+            "schema_version": "ore-pipeline-status-v0.1",
+            "generated_at": utc_now_iso(),
+            "app": {
+                "started_at": self.started_at_iso,
+                "uptime_seconds": max(0.0, time.time() - self.started_at),
+                "backend": self.backend,
+                "checkpoint": str(self.checkpoint) if self.checkpoint else None,
+                "checkpoint_exists": bool(self.checkpoint and self.checkpoint.exists()),
+                "workspace_dir": str(self.workspace_dir),
+            },
+            "health": {"overall": overall, "checks": checks},
+            "cpu": cpu,
+            "gpu": gpu,
+            "ram": memory,
+            "flash": disk,
+            "history": {
+                "runs_total": len(runs),
+                "batches_total": len(batches),
+                "run_status_counts": run_status_counts,
+                "batch_status_counts": batch_status_counts,
+                "runs_size_bytes": int(runs_size["size_bytes"]),
+                "batches_size_bytes": int(batches_size["size_bytes"]),
+                "uploads_size_bytes": int(uploads_size["size_bytes"]),
+                "history_size_bytes": history_size,
+                "total_workspace_size_bytes": history_size + int(uploads_size["size_bytes"]),
+                "active_runs": active_runs,
+                "active_batches": active_batches,
+            },
+            "storage_scan": {"runs": runs_size, "batches": batches_size, "uploads": uploads_size},
+        }
 
     def app_settings(self) -> dict[str, Any]:
         if not self.settings_path.exists():
@@ -1527,6 +1916,50 @@ class OrePipelineStore:
         summary["updated_at"] = utc_now_iso()
         self._write_batch(summary)
         return self.batch_payload(batch_id)
+
+    def delete_batch(self, batch_id: str) -> dict[str, Any]:
+        summary = self._read_batch(batch_id)
+        if summary.get("status") in BATCH_ACTIVE_STATUSES:
+            raise ApiError(HTTPStatus.CONFLICT, "batch is still running")
+        with self.lock:
+            job_status = self.batch_jobs.get(batch_id, {}).get("status")
+            if job_status in BATCH_ACTIVE_STATUSES:
+                raise ApiError(HTTPStatus.CONFLICT, "batch is still running")
+        batch_dir = (self.batches_dir / batch_id).resolve()
+        batches_root = self.batches_dir.resolve()
+        if batch_dir == batches_root or not is_relative_to(batch_dir, batches_root):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid batch id")
+        if not (batch_dir / "batch_summary.json").exists():
+            raise ApiError(HTTPStatus.NOT_FOUND, f"unknown batch: {batch_id}")
+
+        run_ids = [str(item.get("run_id")) for item in summary.get("items", []) if item.get("run_id")]
+        run_dirs: list[tuple[str, Path]] = []
+        runs_root = self.runs_dir.resolve()
+        for run_id in run_ids:
+            run_dir = (self.runs_dir / run_id).resolve()
+            if run_dir == runs_root or not is_relative_to(run_dir, runs_root):
+                raise ApiError(HTTPStatus.BAD_REQUEST, f"invalid child run id: {run_id}")
+            if not (run_dir / "run.json").exists():
+                continue
+            with self.lock:
+                job_status = self.jobs.get(run_id, {}).get("status")
+                if job_status in BATCH_ACTIVE_STATUSES:
+                    raise ApiError(HTTPStatus.CONFLICT, "child run is still running")
+            run_dirs.append((run_id, run_dir))
+
+        with self.lock:
+            self.batch_jobs.pop(batch_id, None)
+            for run_id, _ in run_dirs:
+                self.jobs.pop(run_id, None)
+        for _, run_dir in run_dirs:
+            shutil.rmtree(run_dir)
+        shutil.rmtree(batch_dir)
+        return {
+            "removed_batch_id": batch_id,
+            "removed_run_ids": [run_id for run_id, _ in run_dirs],
+            "batches": self.list_batches()["batches"],
+            "history": self.list_runs()["runs"],
+        }
 
     def run_batch(self, batch_id: str, payload: dict[str, Any] | None = None, *, run_async: bool = True) -> dict[str, Any]:
         summary = self._read_batch(batch_id)
@@ -1865,41 +2298,11 @@ class OrePipelineStore:
 
     def pdf_report_path(self, run_id: str) -> Path:
         data = self._read_run(run_id)
+        run_dir = self.runs_dir / run_id
         path = self.runs_dir / run_id / "reports/ore_report.pdf"
-        if path.exists():
-            return path
         path.parent.mkdir(parents=True, exist_ok=True)
-        page = Image.new("RGB", (1240, 1754), "white")
-        draw = ImageDraw.Draw(page)
-        title_font = load_font(42)
-        body_font = load_font(27)
-        small_font = load_font(22)
-        y = 80
-        draw.text((80, y), "Отчет по классификации руды", fill=(20, 26, 36), font=title_font)
-        y += 72
-        draw.text((80, y), f"Run ID: {run_id}", fill=(58, 67, 82), font=small_font)
-        y += 40
-        draw.text((80, y), data.get("text_output") or "", fill=(20, 26, 36), font=body_font)
-        y += 80
-        raw_summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
-        summary = add_artifact_summary_fields(raw_summary, self._artifact_mask_for_summary(run_id)) if raw_summary else {}
-        metrics = metric_rows(summary, data.get("scale") or None) if summary else data.get("metrics", [])
-        for row in metrics:
-            value = f"{float(row['percent']):.1f}%" if row.get("percent") is not None else str(row.get("value"))
-            if row.get("area_um2") is not None:
-                value = f"{value}; {float(row['area_um2']):.1f} мкм²"
-            elif row.get("area_px") is not None:
-                value = f"{value}; {int(row['area_px'])} px"
-            draw.text((100 + int(row.get("level") or 0) * 28, y), row["label"], fill=(58, 67, 82), font=body_font)
-            draw.text((730, y), value, fill=(20, 26, 36), font=body_font)
-            y += 46
-        display = data.get("display", {})
-        preview_path = first_preview_path(display.get("preprocessed")) or first_preview_path(display.get("original"))
-        if preview_path and Path(preview_path).exists():
-            preview = Image.open(preview_path).convert("RGB")
-            preview.thumbnail((980, 760), Image.Resampling.BILINEAR)
-            page.paste(preview, (80, min(y + 40, 930)))
-        page.save(path, "PDF", resolution=150.0)
+        pages = build_pdf_report_pages(data, run_dir)
+        pages[0].save(path, "PDF", resolution=150.0, save_all=True, append_images=pages[1:])
         return path
 
     def _initialize_run_from_upload(
@@ -2375,6 +2778,73 @@ class OrePipelineStore:
         display_manifest = {"schema_version": "ore-pipeline-display-v0.1", "layers": layers}
         self._write_json(display_dir / "display.json", display_manifest)
 
+    def _build_prepared_display_layers(self, run_dir: Path, *, preprocessing_enabled: bool) -> None:
+        display_dir = run_dir / "display"
+        shutil.rmtree(display_dir, ignore_errors=True)
+        original = Image.open(run_dir / "input/original_for_analysis.png").convert("RGB")
+        layers = {
+            "original": save_preview_pyramid(original, display_dir / "original", "original", self.preview_max_sides),
+        }
+        augmented_path = run_dir / "input/augmented.png"
+        if augmented_path.exists():
+            layers["augmented"] = save_preview_pyramid(
+                Image.open(augmented_path).convert("RGB"),
+                display_dir / "augmented",
+                "augmented",
+                self.preview_max_sides,
+            )
+        if preprocessing_enabled:
+            layers["preprocessed"] = save_preview_pyramid(
+                Image.open(run_dir / "input/preprocessed.png").convert("RGB"),
+                display_dir / "preprocessed",
+                "preprocessed",
+                self.preview_max_sides,
+            )
+        display_manifest = {"schema_version": "ore-pipeline-display-v0.1", "layers": layers}
+        self._write_json(display_dir / "display.json", display_manifest)
+
+    def _preserve_parent_artifact_mask(self, parent: dict[str, Any], run_dir: Path, metadata: dict[str, Any]) -> None:
+        parent_input = parent.get("input") or {}
+        candidates = [
+            parent_input.get("artifact_mask_path"),
+            self.runs_dir / str(parent.get("run_id") or "") / "masks/artifact_mask.png",
+        ]
+        source_path = None
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = resolve_path(candidate)
+            if path.exists():
+                source_path = path
+                break
+        if source_path is None:
+            return
+        with Image.open(run_dir / "input/preprocessed.png") as image:
+            expected_shape = (image.size[1], image.size[0])
+        artifact_mask = read_binary_mask(source_path, expected_shape)
+        artifact_path = run_dir / "input/artifact_mask.png"
+        save_image(artifact_path, Image.fromarray(artifact_mask, mode="L"))
+        metadata.setdefault("input", {})["artifact_mask_path"] = str(artifact_path)
+
+    def _finalize_prepared_run_metadata(
+        self,
+        metadata: dict[str, Any],
+        run_dir: Path,
+        *,
+        preprocessing_enabled: bool,
+    ) -> None:
+        self._build_prepared_display_layers(run_dir, preprocessing_enabled=preprocessing_enabled)
+        display = json.loads((run_dir / "display/display.json").read_text(encoding="utf-8"))["layers"]
+        with Image.open(run_dir / "input/preprocessed.png") as image:
+            metadata["image"] = {"width": image.size[0], "height": image.size[1], "name": Path(metadata["input"]["original_artifact_path"]).name}
+        metadata["summary"] = {}
+        metadata["metrics"] = []
+        metadata["text_output"] = ""
+        metadata["display"] = display
+        metadata["masks"] = {}
+        metadata["reports"] = {}
+        metadata.pop("scale", None)
+
     def _finalize_run_metadata(self, metadata: dict[str, Any], run_dir: Path) -> None:
         summary = json.loads((run_dir / "reports/ore_summary.json").read_text(encoding="utf-8"))
         display = json.loads((run_dir / "display/display.json").read_text(encoding="utf-8"))["layers"]
@@ -2739,7 +3209,9 @@ class OrePipelineStore:
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
+        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(path)
 
 
 def first_preview_path(previews: Any) -> str | None:
@@ -2759,6 +3231,696 @@ def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         if Path(candidate).exists():
             return ImageFont.truetype(candidate, size=size)
     return ImageFont.load_default()
+
+
+def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont | ImageFont.ImageFont) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return int(bbox[2] - bbox[0])
+
+
+def wrap_text_lines(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    *,
+    max_width: int,
+) -> list[str]:
+    lines: list[str] = []
+    for raw_line in str(text).splitlines() or [""]:
+        current = ""
+        for word in raw_line.split(" "):
+            candidate = word if not current else f"{current} {word}"
+            if text_width(draw, candidate, font) <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = word
+                if text_width(draw, current, font) <= max_width:
+                    continue
+            chunks: list[str] = []
+            chunk = ""
+            for character in word:
+                candidate = f"{chunk}{character}"
+                if not chunk or text_width(draw, candidate, font) <= max_width:
+                    chunk = candidate
+                else:
+                    chunks.append(chunk)
+                    chunk = character
+            if chunk:
+                chunks.append(chunk)
+            if chunks:
+                lines.extend(chunks[:-1])
+                current = chunks[-1]
+        lines.append(current)
+    return lines
+
+
+def draw_wrapped_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    *,
+    fill: tuple[int, int, int],
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    max_width: int,
+    line_spacing: int = 8,
+) -> int:
+    x, y = xy
+    line_bbox = draw.textbbox((0, 0), "Ag", font=font)
+    line_height = int(line_bbox[3] - line_bbox[1])
+    for line in wrap_text_lines(draw, text, font, max_width=max_width):
+        draw.text((x, y), line, fill=fill, font=font)
+        y += line_height + line_spacing
+    return y - line_spacing
+
+
+def new_report_page(title: str, page_no: int) -> tuple[Image.Image, ImageDraw.ImageDraw, int]:
+    page = Image.new("RGB", REPORT_PAGE_SIZE, "white")
+    draw = ImageDraw.Draw(page)
+    title_font = load_font(34)
+    y = REPORT_MARGIN_TOP
+    draw.text((REPORT_MARGIN_X, y), title, fill=REPORT_TEXT, font=title_font)
+    draw.line((REPORT_MARGIN_X, 128, REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X, 128), fill=REPORT_LINE, width=2)
+    return page, draw, 158
+
+
+def add_report_footers(pages: list[Image.Image]) -> None:
+    footer_font = load_font(18)
+    total = len(pages)
+    for index, page in enumerate(pages, start=1):
+        draw = ImageDraw.Draw(page)
+        y = REPORT_PAGE_SIZE[1] - 58
+        draw.line((REPORT_MARGIN_X, y - 18, REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X, y - 18), fill=REPORT_LINE, width=1)
+        draw.text(
+            (REPORT_MARGIN_X, y),
+            "Отчет сформирован автоматически. Не является аккредитованным протоколом испытаний.",
+            fill=REPORT_MUTED,
+            font=footer_font,
+        )
+        page_text = f"Страница {index} из {total}"
+        draw.text(
+            (REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X - text_width(draw, page_text, footer_font), y),
+            page_text,
+            fill=REPORT_MUTED,
+            font=footer_font,
+        )
+
+
+def fit_report_image(image: Image.Image, max_width: int, max_height: int) -> Image.Image:
+    fitted = image.convert("RGB").copy()
+    fitted.thumbnail((int(max_width), int(max_height)), Image.Resampling.BILINEAR)
+    return fitted
+
+
+def draw_image_card(
+    page: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    *,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    title: str,
+    image: Image.Image,
+    caption: str = "",
+) -> int:
+    title_font = load_font(24)
+    small_font = load_font(18)
+    draw.text((x, y), title, fill=REPORT_TEXT, font=title_font)
+    image_top = y + 40
+    caption_height = 62 if caption else 0
+    image_box_height = max(120, height - 48 - caption_height)
+    draw.rectangle(
+        (x, image_top, x + width, image_top + image_box_height),
+        outline=REPORT_LINE,
+        width=2,
+    )
+    fitted = fit_report_image(image, width - 18, image_box_height - 18)
+    paste_x = x + (width - fitted.size[0]) // 2
+    paste_y = image_top + (image_box_height - fitted.size[1]) // 2
+    page.paste(fitted, (paste_x, paste_y))
+    bottom = image_top + image_box_height
+    if caption:
+        bottom = draw_wrapped_text(
+            draw,
+            (x, bottom + 12),
+            caption,
+            fill=REPORT_MUTED,
+            font=small_font,
+            max_width=width,
+            line_spacing=5,
+        )
+    return bottom
+
+
+def draw_report_legend(
+    draw: ImageDraw.ImageDraw,
+    x: int,
+    y: int,
+    entries: list[tuple[str, tuple[int, int, int]]],
+) -> int:
+    font = load_font(18)
+    cursor_x = x
+    cursor_y = y
+    for label, color in entries:
+        label_width = text_width(draw, label, font)
+        if cursor_x + 26 + label_width > REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X:
+            cursor_x = x
+            cursor_y += 34
+        draw.rectangle((cursor_x, cursor_y + 4, cursor_x + 18, cursor_y + 22), fill=color, outline=REPORT_LINE)
+        draw.text((cursor_x + 26, cursor_y), label, fill=REPORT_MUTED, font=font)
+        cursor_x += 46 + label_width
+    return cursor_y + 30
+
+
+def report_image_from_path(path: Path, fallback_size: tuple[int, int] = (640, 480)) -> Image.Image:
+    if path.exists():
+        return Image.open(path).convert("RGB")
+    return Image.new("RGB", fallback_size, REPORT_MASK_BACKGROUND)
+
+
+def report_mask_array(path: Path, size: tuple[int, int] | None = None) -> np.ndarray:
+    mask = Image.open(path).convert("L")
+    if size and mask.size != size:
+        mask = mask.resize(size, Image.Resampling.NEAREST)
+    return np.asarray(mask)
+
+
+def sulfide_non_sulfide_image(sulfide_mask_path: Path, size: tuple[int, int] | None = None) -> Image.Image:
+    mask = report_mask_array(sulfide_mask_path, size=size) > 0
+    image = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
+    image[:, :] = np.array(REPORT_NON_SULFIDE_COLOR, dtype=np.uint8)
+    image[mask] = np.array(REPORT_SULFIDE_COLOR, dtype=np.uint8)
+    return Image.fromarray(image, mode="RGB")
+
+
+def class_mask_image(final_mask: np.ndarray, class_id: int, color: tuple[int, int, int]) -> Image.Image:
+    image = np.zeros((final_mask.shape[0], final_mask.shape[1], 3), dtype=np.uint8)
+    image[:, :] = np.array(REPORT_MASK_BACKGROUND, dtype=np.uint8)
+    image[final_mask == class_id] = np.array(color, dtype=np.uint8)
+    return Image.fromarray(image, mode="RGB")
+
+
+def final_overlay_image(
+    base: Image.Image,
+    final_mask: np.ndarray,
+    *,
+    class_ids: set[int] | None = None,
+    artifact_mask: np.ndarray | None = None,
+) -> Image.Image:
+    base_rgba = base.convert("RGBA")
+    if final_mask.shape != (base_rgba.size[1], base_rgba.size[0]):
+        resized = Image.fromarray(final_mask.astype(np.uint8), mode="L").resize(base_rgba.size, Image.Resampling.NEAREST)
+        final_mask = np.asarray(resized)
+    overlay = np.zeros((final_mask.shape[0], final_mask.shape[1], 4), dtype=np.uint8)
+    allowed = class_ids or {1, 2, 3}
+    for class_id, rgba in CLASS_COLORS.items():
+        if class_id in allowed:
+            overlay[final_mask == class_id] = np.array(rgba, dtype=np.uint8)
+    if artifact_mask is not None and not class_ids:
+        if artifact_mask.shape != final_mask.shape:
+            artifact_mask = np.asarray(
+                Image.fromarray(artifact_mask.astype(np.uint8), mode="L").resize(base_rgba.size, Image.Resampling.NEAREST)
+            )
+        overlay[artifact_mask > 0] = np.array(ARTIFACT_COLOR, dtype=np.uint8)
+    return Image.alpha_composite(base_rgba, Image.fromarray(overlay, mode="RGBA")).convert("RGB")
+
+
+def report_preprocess_lines(data: dict[str, Any]) -> list[str]:
+    preprocess = data.get("preprocess") if isinstance(data.get("preprocess"), dict) else {}
+    preset = preprocess.get("preset") if isinstance(preprocess.get("preset"), dict) else {}
+    tiling = data.get("tiling") if isinstance(data.get("tiling"), dict) else {}
+    enabled = bool(preprocess.get("enabled", preset.get("preprocessing_enabled", preset.get("enabled", True))))
+    lines = [f"Предобработка: {'включена' if enabled else 'отключена'}."]
+    if enabled:
+        lines.append(f"Нормализация освещения: {'да' if preset.get('illumination_normalization') else 'нет'}.")
+        lines.append(f"Подавление шума: {'да' if preset.get('denoise') else 'нет'}.")
+        lines.append(f"Коррекция контраста: {'да' if preset.get('contrast_correction') else 'нет'}.")
+    else:
+        lines.append("Для анализа использована масштабированная копия исходного изображения без фильтров предобработки.")
+    if preset.get("panorama_scaling"):
+        mode = str(preset.get("panorama_scaling_mode") or PANORAMA_SCALING_MODE_MAX_SIDE)
+        if mode == PANORAMA_SCALING_MODE_SCALE_FACTOR:
+            value = preset.get("panorama_scale_factor", DEFAULT_PANORAMA_SCALE_FACTOR)
+            lines.append(f"Масштабирование панорамы: коэффициент {float(value):.2f}.")
+        else:
+            value = preset.get("panorama_max_side_px")
+            suffix = f" до {int(value)} px по длинной стороне" if value else ""
+            lines.append(f"Масштабирование панорамы: включено{suffix}.")
+    else:
+        lines.append("Масштабирование панорамы: отключено.")
+    image = data.get("image") if isinstance(data.get("image"), dict) else {}
+    if image.get("width") and image.get("height"):
+        lines.append(f"Размер анализа: {int(image['width'])} x {int(image['height'])} px.")
+    if tiling.get("tile_count"):
+        lines.append(f"Тайлинг: {int(tiling['tile_count'])} плиток.")
+    return lines
+
+
+def report_domain(data: dict[str, Any]) -> dict[str, Any]:
+    curated = (data.get("input") or {}).get("curated_metadata") if isinstance(data.get("input"), dict) else {}
+    return curated.get("domain") if isinstance(curated, dict) and isinstance(curated.get("domain"), dict) else {}
+
+
+def report_field(value: Any, default: str = "не указано") -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def report_source_image_name(data: dict[str, Any]) -> str:
+    input_data = data.get("input") if isinstance(data.get("input"), dict) else {}
+    for key in ("original_artifact_path", "original_source_path", "preprocessed_path"):
+        value = input_data.get(key)
+        if value:
+            path = Path(str(value))
+            if path.name:
+                return path.name
+    image = data.get("image") if isinstance(data.get("image"), dict) else {}
+    return report_field(image.get("name"))
+
+
+def report_scale_text(data: dict[str, Any]) -> str:
+    scale = data.get("scale") if isinstance(data.get("scale"), dict) else None
+    if scale:
+        return (
+            f"{float(scale['microns_per_source_pixel']):.6g} мкм/px; "
+            f"источник: {report_field(scale.get('scale_source'))}; "
+            f"статус: {report_field(scale.get('scale_confidence'))}"
+        )
+    return "не задана; физические площади не рассчитываются"
+
+
+def report_algorithm_text(data: dict[str, Any]) -> str:
+    backend = report_field(data.get("backend"), "heuristic")
+    if backend == "ml":
+        return "ML-сегментация с подключенным checkpoint; компонентные правила классификации"
+    return "эвристическая сегментация + компонентные правила классификации"
+
+
+def report_review_status(data: dict[str, Any], summary: dict[str, Any]) -> str:
+    domain = report_domain(data)
+    if domain.get("review_status"):
+        return report_field(domain.get("review_status"))
+    if summary.get("needs_expert_review"):
+        return "автоматическое заключение; требуется экспертная проверка"
+    return "автоматическое заключение; экспертная проверка не выполнена"
+
+
+def report_passport_rows(data: dict[str, Any], summary: dict[str, Any]) -> list[tuple[str, str]]:
+    domain = report_domain(data)
+    image = data.get("image") if isinstance(data.get("image"), dict) else {}
+    source_context = " / ".join(
+        part
+        for part in [
+            report_field(domain.get("deposit"), ""),
+            report_field(domain.get("area"), ""),
+            report_field(domain.get("task_label") or domain.get("ore_type"), ""),
+        ]
+        if part
+    )
+    return [
+        ("Номер отчета / run_id", report_field(data.get("run_id"))),
+        ("Дата формирования", report_field(data.get("completed_at") or data.get("created_at"))),
+        ("Образец / sample_id", report_field(domain.get("sample_id") or domain.get("run_label"))),
+        ("Источник изображения", report_source_image_name(data)),
+        ("Размер анализа", f"{int(image.get('width') or 0)} x {int(image.get('height') or 0)} px"),
+        ("Тип препарата", report_field(domain.get("preparation_type"), "полированный шлиф / аншлиф")),
+        ("Месторождение / участок / тип руды", report_field(source_context)),
+        ("Метод", "OM, автоматизированный анализ изображения"),
+        ("Модель / версия / параметры", report_algorithm_text(data)),
+        ("Масштаб / калибровка", report_scale_text(data)),
+        ("Статус экспертной проверки", report_review_status(data, summary)),
+    ]
+
+
+def draw_key_value_table(
+    draw: ImageDraw.ImageDraw,
+    rows: list[tuple[str, str]],
+    *,
+    x: int,
+    y: int,
+    width: int,
+) -> int:
+    key_font = load_font(19)
+    value_font = load_font(19)
+    key_width = 360
+    row_height = 43
+    for index, (key, value) in enumerate(rows):
+        fill = REPORT_TABLE_ALT if index % 2 else (255, 255, 255)
+        draw.rectangle((x, y, x + width, y + row_height), fill=fill, outline=REPORT_LINE)
+        draw.text((x + 12, y + 10), key, fill=REPORT_MUTED, font=key_font)
+        draw_wrapped_text(
+            draw,
+            (x + key_width + 12, y + 10),
+            value,
+            fill=REPORT_TEXT,
+            font=value_font,
+            max_width=width - key_width - 26,
+            line_spacing=3,
+        )
+        y += row_height
+    return y
+
+
+def report_mineralogical_conclusion(summary: dict[str, Any]) -> str:
+    ore_class = report_field(summary.get("ore_class_ru"), "тип руды не определен")
+    talc_pct = float(summary.get("talc_fraction") or 0.0) * 100.0
+    ordinary_pct = float(summary.get("ordinary_sulfide_fraction") or 0.0) * 100.0
+    fine_pct = float(summary.get("fine_sulfide_fraction") or 0.0) * 100.0
+    sulfide_pct = float(summary.get("sulfide_fraction") or 0.0) * 100.0
+    return (
+        f"Вещественный/минералогический вывод: изображение отнесено к классу \"{ore_class}\". "
+        f"В анализируемой области: сульфидные включения {sulfide_pct:.1f}%, "
+        f"тальковая зона {talc_pct:.1f}%; среди сульфидов обычные срастания {ordinary_pct:.1f}%, "
+        f"тонкие срастания {fine_pct:.1f}%. Вывод основан на OM RGB-изображении и масках автоматического анализа."
+    )
+
+
+def report_method_lines(data: dict[str, Any]) -> list[str]:
+    lines = [
+        "Исходные данные: цифровое OM-изображение полированного шлифа.",
+        "Предобработка: " + " ".join(report_preprocess_lines(data)),
+        "Сегментация: выделение сульфидной/несульфидной области и итоговых классов.",
+        "Классификация: компонентный анализ сульфидных включений и детерминированное правило типа руды.",
+        "Цвета классов: зеленый - обычные срастания, красный - тонкие срастания, синий - тальк.",
+    ]
+    return lines
+
+
+def report_qc_lines(data: dict[str, Any], summary: dict[str, Any]) -> list[str]:
+    lines = [
+        "Документ является демонстрационным автоматическим отчетом, не аккредитованным протоколом испытаний.",
+        "Химическое подтверждение EDS/WDS/XRF не выполнялось и не заявляется.",
+    ]
+    if not data.get("scale"):
+        lines.append("Калиброванный масштаб не задан: физические площади не рассчитываются.")
+    warnings = summary.get("warnings") if isinstance(summary.get("warnings"), list) else []
+    if warnings:
+        lines.append("Предупреждения алгоритма: " + "; ".join(str(item) for item in warnings))
+    talc_margin = summary.get("talc_margin")
+    if talc_margin is not None and abs(float(talc_margin)) < 0.03:
+        lines.append("Доля талька близка к порогу классификации; рекомендуется экспертная проверка.")
+    if summary.get("needs_expert_review"):
+        lines.append("Алгоритм выставил флаг необходимости экспертной проверки.")
+    else:
+        lines.append("Флаг обязательной экспертной проверки алгоритмом не выставлен; ручная проверка все равно не выполнялась.")
+    return lines
+
+
+def report_artifact_lines(data: dict[str, Any]) -> list[str]:
+    run_id = report_field(data.get("run_id"))
+    return [
+        f"Идентификатор запуска: {run_id}",
+        "В составе run-артефактов: run.json, reports/metrics.csv, reports/ore_summary.json, маски PNG и изображения предпросмотра.",
+        "В UI доступны View files и Download ZIP для проверки воспроизводимости.",
+    ]
+
+
+def report_denominator_label(value: str) -> str:
+    return {
+        "image": "все изображение",
+        "analyzed_area": "анализируемая область",
+        "sulfides": "сульфиды",
+    }.get(value, value or "")
+
+
+def report_metric_value(row: dict[str, Any]) -> str:
+    if row.get("percent") is not None:
+        return f"{float(row['percent']):.1f}%"
+    return str(row.get("value", ""))
+
+
+def report_metric_area(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if row.get("area_px") is not None:
+        parts.append(f"{int(row['area_px'])} px")
+    if row.get("area_um2") is not None:
+        parts.append(f"{float(row['area_um2']):.1f} мкм²")
+    return "; ".join(parts)
+
+
+def draw_metrics_table(
+    draw: ImageDraw.ImageDraw,
+    rows: list[dict[str, Any]],
+    *,
+    x: int,
+    y: int,
+    width: int,
+) -> int:
+    header_font = load_font(20)
+    body_font = load_font(19)
+    columns = [440, 160, 220, width - 820]
+    headers = ["Показатель", "Доля/значение", "Площадь", "База расчета"]
+    row_height = 50
+    draw.rectangle((x, y, x + width, y + row_height), fill=REPORT_TABLE_HEADER, outline=REPORT_LINE)
+    cursor_x = x
+    for header, column_width in zip(headers, columns):
+        draw.text((cursor_x + 12, y + 13), header, fill=REPORT_TEXT, font=header_font)
+        cursor_x += column_width
+    y += row_height
+    for index, row in enumerate(rows):
+        fill = REPORT_TABLE_ALT if index % 2 else (255, 255, 255)
+        draw.rectangle((x, y, x + width, y + row_height), fill=fill, outline=REPORT_LINE)
+        values = [
+            "  " * int(row.get("level") or 0) + str(row.get("label") or row.get("key") or ""),
+            report_metric_value(row),
+            report_metric_area(row),
+            report_denominator_label(str(row.get("denominator") or "")),
+        ]
+        cursor_x = x
+        for value, column_width in zip(values, columns):
+            draw_wrapped_text(
+                draw,
+                (cursor_x + 12, y + 10),
+                value,
+                fill=REPORT_TEXT,
+                font=body_font,
+                max_width=column_width - 20,
+                line_spacing=3,
+            )
+            cursor_x += column_width
+        y += row_height
+    return y
+
+
+def build_pdf_report_pages(data: dict[str, Any], run_dir: Path) -> list[Image.Image]:
+    title_font = load_font(31)
+    body_font = load_font(24)
+    small_font = load_font(20)
+    pages: list[Image.Image] = []
+
+    raw_summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+    artifact_path = run_dir / "masks/artifact_mask.png"
+    artifact_mask = report_mask_array(artifact_path) if artifact_path.exists() else None
+    summary = add_artifact_summary_fields(raw_summary, artifact_mask) if raw_summary else {}
+    metrics = metric_rows(summary, data.get("scale") or None) if summary else data.get("metrics", [])
+
+    original = report_image_from_path(run_dir / "input/original_for_analysis.png")
+    preprocessed_path = run_dir / "input/preprocessed.png"
+    preprocessed = report_image_from_path(preprocessed_path, fallback_size=original.size)
+    sulfide_mask_path = run_dir / "masks/sulfide_mask.png"
+    final_mask_path = run_dir / "masks/final_mask.png"
+    final_mask = report_mask_array(final_mask_path, size=preprocessed.size) if final_mask_path.exists() else np.zeros((preprocessed.size[1], preprocessed.size[0]), dtype=np.uint8)
+    if artifact_mask is not None and artifact_mask.shape != final_mask.shape:
+        artifact_mask = np.asarray(Image.fromarray(artifact_mask.astype(np.uint8), mode="L").resize(preprocessed.size, Image.Resampling.NEAREST))
+
+    page, draw, y = new_report_page("Демонстрационный отчет автоматизированного анализа шлифа", 1)
+    draw.text((REPORT_MARGIN_X, y), "Паспорт исследования", fill=REPORT_TEXT, font=title_font)
+    y += 42
+    y = draw_key_value_table(
+        draw,
+        report_passport_rows(data, summary),
+        x=REPORT_MARGIN_X,
+        y=y,
+        width=REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X * 2,
+    )
+    y += 34
+    draw.text((REPORT_MARGIN_X, y), "Заключение", fill=REPORT_TEXT, font=title_font)
+    y += 42
+    y = draw_wrapped_text(
+        draw,
+        (REPORT_MARGIN_X, y),
+        f"Заключение: {data.get('text_output') or ''}",
+        fill=REPORT_TEXT,
+        font=body_font,
+        max_width=REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X * 2,
+        line_spacing=9,
+    )
+    rule_text = summary.get("rule_text_ru") if isinstance(summary, dict) else ""
+    if rule_text:
+        y += 26
+        y = draw_wrapped_text(
+            draw,
+            (REPORT_MARGIN_X, y),
+            str(rule_text),
+            fill=REPORT_MUTED,
+            font=small_font,
+            max_width=REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X * 2,
+            line_spacing=7,
+        )
+    y += 36
+    draw.text((REPORT_MARGIN_X, y), "Результаты количественного анализа", fill=REPORT_TEXT, font=title_font)
+    y += 46
+    y = draw_metrics_table(draw, metrics, x=REPORT_MARGIN_X, y=y, width=REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X * 2)
+    y += 28
+    draw_wrapped_text(
+        draw,
+        (REPORT_MARGIN_X, y),
+        report_mineralogical_conclusion(summary),
+        fill=REPORT_MUTED,
+        font=small_font,
+        max_width=REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X * 2,
+        line_spacing=7,
+    )
+    pages.append(page)
+
+    page, draw, y = new_report_page("Фотодокументация: исходные данные и предобработка", 2)
+    draw.text((REPORT_MARGIN_X, y), "Выполненные операции", fill=REPORT_TEXT, font=title_font)
+    y += 44
+    for line in report_preprocess_lines(data):
+        y = draw_wrapped_text(draw, (REPORT_MARGIN_X, y), f"- {line}", fill=REPORT_MUTED, font=small_font, max_width=1080, line_spacing=6)
+        y += 10
+    y += 26
+    card_width = 520
+    card_height = 770
+    draw_image_card(
+        page,
+        draw,
+        x=REPORT_MARGIN_X,
+        y=y,
+        width=card_width,
+        height=card_height,
+        title="Исходное изображение",
+        image=original,
+        caption="Анализируемая копия исходного изображения.",
+    )
+    draw_image_card(
+        page,
+        draw,
+        x=REPORT_MARGIN_X + card_width + 40,
+        y=y,
+        width=card_width,
+        height=card_height,
+        title="После предобработки",
+        image=preprocessed,
+        caption="Изображение, использованное для сегментации и расчета метрик.",
+    )
+    pages.append(page)
+
+    page, draw, y = new_report_page("Фотодокументация: карты сегментации", 3)
+    if sulfide_mask_path.exists():
+        sulfide_image = sulfide_non_sulfide_image(sulfide_mask_path, size=preprocessed.size)
+    else:
+        sulfide_image = Image.new("RGB", preprocessed.size, REPORT_NON_SULFIDE_COLOR)
+    final_image = final_overlay_image(preprocessed, final_mask, artifact_mask=artifact_mask)
+    y = draw_report_legend(
+        draw,
+        REPORT_MARGIN_X,
+        y,
+        [
+            ("Сульфиды", REPORT_SULFIDE_COLOR),
+            ("Не сульфиды", REPORT_NON_SULFIDE_COLOR),
+            ("Обычные срастания", (30, 185, 85)),
+            ("Тонкие срастания", (230, 65, 65)),
+            ("Тальк", (40, 120, 245)),
+            ("Артефакты", ARTIFACT_COLOR[:3]),
+        ],
+    )
+    y += 34
+    draw_image_card(
+        page,
+        draw,
+        x=REPORT_MARGIN_X,
+        y=y,
+        width=card_width,
+        height=900,
+        title="Сульфиды / не сульфиды",
+        image=sulfide_image,
+        caption="Двухцветная карта бинарной сегментации.",
+    )
+    draw_image_card(
+        page,
+        draw,
+        x=REPORT_MARGIN_X + card_width + 40,
+        y=y,
+        width=card_width,
+        height=900,
+        title="Итоговая карта классов",
+        image=final_image,
+        caption="Цветная итоговая сегментация поверх предобработанного изображения.",
+    )
+    pages.append(page)
+
+    page, draw, y = new_report_page("Классы итоговой сегментации", 4)
+    row_height = 445
+    small_card_width = 500
+    small_card_height = 370
+    for class_id, label, _mask_name, color in REPORT_CLASS_SPECS:
+        draw.text((REPORT_MARGIN_X, y), label, fill=REPORT_TEXT, font=title_font)
+        y += 42
+        overlay = final_overlay_image(preprocessed, final_mask, class_ids={class_id})
+        mask = class_mask_image(final_mask, class_id, color)
+        draw_image_card(
+            page,
+            draw,
+            x=REPORT_MARGIN_X,
+            y=y,
+            width=small_card_width,
+            height=small_card_height,
+            title=f"Итоговое изображение: {label.lower()}",
+            image=overlay,
+        )
+        draw_image_card(
+            page,
+            draw,
+            x=REPORT_MARGIN_X + small_card_width + 60,
+            y=y,
+            width=small_card_width,
+            height=small_card_height,
+            title=f"Маска: {label.lower()}",
+            image=mask,
+        )
+        y += row_height
+    pages.append(page)
+    page, draw, y = new_report_page("Методика, контроль качества, экспертная проверка", 5)
+    draw.text((REPORT_MARGIN_X, y), "Методика автоматизированного анализа", fill=REPORT_TEXT, font=title_font)
+    y += 44
+    for line in report_method_lines(data):
+        y = draw_wrapped_text(draw, (REPORT_MARGIN_X, y), f"- {line}", fill=REPORT_MUTED, font=small_font, max_width=1080, line_spacing=6)
+        y += 10
+    y += 18
+    draw.text((REPORT_MARGIN_X, y), "Контроль качества и ограничения", fill=REPORT_TEXT, font=title_font)
+    y += 44
+    for line in report_qc_lines(data, summary):
+        y = draw_wrapped_text(draw, (REPORT_MARGIN_X, y), f"- {line}", fill=REPORT_MUTED, font=small_font, max_width=1080, line_spacing=6)
+        y += 10
+    y += 18
+    draw.text((REPORT_MARGIN_X, y), "Артефакты и воспроизводимость", fill=REPORT_TEXT, font=title_font)
+    y += 44
+    for line in report_artifact_lines(data):
+        y = draw_wrapped_text(draw, (REPORT_MARGIN_X, y), f"- {line}", fill=REPORT_MUTED, font=small_font, max_width=1080, line_spacing=6)
+        y += 10
+    y += 18
+    draw.text((REPORT_MARGIN_X, y), "Экспертная проверка", fill=REPORT_TEXT, font=title_font)
+    y += 44
+    draw_key_value_table(
+        draw,
+        [
+            ("Статус", report_review_status(data, summary)),
+            ("ФИО эксперта", "не заполнено"),
+            ("Дата проверки", "не заполнено"),
+            ("Комментарий", "не заполнено"),
+        ],
+        x=REPORT_MARGIN_X,
+        y=y,
+        width=REPORT_PAGE_SIZE[0] - REPORT_MARGIN_X * 2,
+    )
+    pages.append(page)
+    add_report_footers(pages)
+    return pages
 
 
 class OrePipelineHandler(BaseHTTPRequestHandler):
@@ -2805,11 +3967,14 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         if path == "/":
             self.send_redirect("/workspace")
             return
-        if path in {"/workspace", "/history", "/settings", "/batch"} or path.startswith("/batch/"):
+        if path in {"/workspace", "/history", "/history_series", "/settings", "/status", "/api", "/batch"} or path.startswith("/batch/"):
             self.send_html(render_html_page())
             return
         if path == "/api/settings":
             self.send_json(self.server.store.app_settings())
+            return
+        if path == "/api/status":
+            self.send_json(self.server.store.status_payload())
             return
         if path == "/api/batches":
             self.send_json(self.server.store.list_batches())
@@ -2905,6 +4070,27 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
                 )
             )
             return
+        if path.startswith("/api/runs/") and path.endswith("/prepare"):
+            run_id = urllib.parse.unquote(path.removeprefix("/api/runs/").removesuffix("/prepare"))
+            self.send_json(
+                self.server.store.prepare_run_from_apply(
+                    run_id,
+                    preset_from_payload(payload),
+                    augmentation_settings=augmentation_from_payload(payload),
+                    changed_step=str(payload.get("changed_step") or ""),
+                )
+            )
+            return
+        if path.startswith("/api/runs/") and path.endswith("/start"):
+            run_id = urllib.parse.unquote(path.removeprefix("/api/runs/").removesuffix("/start"))
+            self.send_json(
+                self.server.store.start_prepared_run(
+                    run_id,
+                    run_async=True,
+                    curated_metadata=payload.get("curated_metadata"),
+                )
+            )
+            return
         if path.startswith("/api/runs/") and path.endswith("/cancel"):
             run_id = urllib.parse.unquote(path.removeprefix("/api/runs/").removesuffix("/cancel"))
             self.send_json(self.server.store.cancel_run(run_id))
@@ -2940,6 +4126,9 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
             parts = [urllib.parse.unquote(part) for part in path.strip("/").split("/")]
             if len(parts) == 5 and parts[:2] == ["api", "batches"] and parts[3] == "items":
                 self.send_json(self.server.store.remove_batch_item(parts[2], parts[4]))
+                return
+            if len(parts) == 3 and parts[:2] == ["api", "batches"]:
+                self.send_json(self.server.store.delete_batch(parts[2]))
                 return
         if path.startswith("/api/runs/"):
             run_id = urllib.parse.unquote(path.removeprefix("/api/runs/"))
@@ -3180,8 +4369,8 @@ HTML_PAGE = r"""<!doctype html>
     main { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); min-height: calc(100vh - 57px); }
     aside { padding: 16px; border-right: 1px solid var(--line); background: var(--panel-alt); overflow: auto; }
     section.workspace { padding: 16px; min-width: 0; }
-    body[data-page="batch"] main, body[data-page="history"] main, body[data-page="settings"] main { grid-template-columns: 1fr; }
-    body[data-page="batch"] aside, body[data-page="history"] aside, body[data-page="settings"] aside { display: none; }
+    body[data-page="batch"] main, body[data-page="history"] main, body[data-page="settings"] main, body[data-page="status"] main, body[data-page="api"] main { grid-template-columns: 1fr; }
+    body[data-page="batch"] aside, body[data-page="history"] aside, body[data-page="settings"] aside, body[data-page="status"] aside, body[data-page="api"] aside { display: none; }
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
     .panel h2 { margin: 0 0 10px; font-size: 15px; }
     .drop-zone { border: 2px dashed #9aa6b6; border-radius: 8px; padding: 18px; min-height: 132px; display: grid; place-items: center; text-align: center; background: var(--drop-bg); cursor: pointer; }
@@ -3235,6 +4424,10 @@ HTML_PAGE = r"""<!doctype html>
     .class-toggles { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding: 0; }
     .class-toggles[hidden] { display: none; }
     .segmentation-legend-panel.right .class-toggles { align-items: flex-start; justify-content: flex-start; }
+    .splitter-overlay { position: absolute; z-index: 6; top: 0; bottom: 0; left: 50%; width: 0; pointer-events: none; transform: translateX(-50%); }
+    .splitter-overlay.hidden { display: none; }
+    .splitter-line { position: absolute; top: 0; bottom: 0; left: -2px; width: 4px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 70%, #ffffff); box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 0 12px rgba(0,0,0,.45); }
+    .splitter-handle { position: absolute; top: 50%; left: -12px; width: 24px; height: 72px; transform: translateY(-50%); border-radius: 999px; background: var(--accent); box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 8px 20px rgba(0,0,0,.4); }
     .overlay-opacity-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
     .overlay-opacity-control input { width: 116px; }
     .decision-rationale, .metrics-note { margin: 8px 0 0; line-height: 1.35; }
@@ -3280,6 +4473,49 @@ HTML_PAGE = r"""<!doctype html>
     .settings-field.full { grid-column: 1 / -1; }
     .settings-field span { font-size: 13px; color: var(--muted); font-weight: 650; }
     .settings-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .status-page { display: grid; gap: 14px; }
+    .status-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+    .status-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .status-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .status-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--history-bg); display: grid; gap: 6px; min-width: 0; }
+    .status-card h3 { margin: 0; font-size: 13px; color: var(--muted); }
+    .status-value { font-size: 22px; font-weight: 800; overflow-wrap: anywhere; }
+    .status-subvalue { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .health-pill { display: inline-flex; align-items: center; width: max-content; border-radius: 999px; padding: 4px 9px; font-weight: 800; font-size: 12px; color: #ffffff; background: var(--muted); }
+    .health-pill.ok { background: #1e9f58; }
+    .health-pill.warning { background: #b7791f; }
+    .health-pill.error { background: var(--danger); }
+    .status-table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+    .status-table { min-width: 720px; }
+    .status-table td:nth-child(2), .status-table th:nth-child(2) { text-align: right; white-space: nowrap; }
+    .status-table td:nth-child(3) { color: var(--muted); }
+    .api-page { display: grid; gap: 14px; }
+    .api-hero { display: grid; gap: 8px; }
+    .api-base { display: inline-flex; width: max-content; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+    .api-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; align-items: start; }
+    .api-docs-nav { position: sticky; top: 12px; display: grid; gap: 6px; max-height: calc(100vh - 92px); overflow: auto; }
+    .api-docs-nav a { display: block; padding: 8px 9px; border: 1px solid transparent; border-radius: 6px; color: var(--muted); font-size: 13px; text-decoration: none; }
+    .api-docs-nav a:hover { border-color: var(--line); color: var(--accent); background: var(--panel); }
+    .api-docs-list { display: grid; gap: 12px; min-width: 0; }
+    .api-endpoint { display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, 440px); gap: 14px; align-items: start; }
+    .api-endpoint-main, .api-sandbox { min-width: 0; }
+    .api-endpoint-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 9px; }
+    .api-method { min-width: 58px; padding: 4px 8px; border-radius: 5px; color: #ffffff; font-weight: 850; font-size: 12px; text-align: center; }
+    .api-method.get { background: #16834a; }
+    .api-method.post { background: var(--accent); }
+    .api-method.put { background: #8a5d12; }
+    .api-method.delete { background: var(--danger); }
+    .api-path { display: inline-block; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+    .api-endpoint h3 { margin: 0 0 7px; font-size: 17px; }
+    .api-summary { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+    .api-example { margin: 0; padding: 11px; border-radius: 7px; background: #101722; color: #d8e7ff; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .api-sandbox { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-alt); overflow: hidden; }
+    .api-sandbox-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--segmented-active-bg); font-weight: 800; }
+    .api-sandbox-body { display: grid; gap: 10px; padding: 12px; }
+    .api-sandbox-body label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 750; }
+    .api-sandbox-body textarea { min-height: 142px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .api-sandbox-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    .api-response { min-height: 118px; margin: 0; padding: 11px; border-radius: 7px; background: #0d1117; color: #d8e7ff; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
     .batch-page { display: grid; gap: 14px; }
     .batch-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
     .batch-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -3357,7 +4593,8 @@ HTML_PAGE = r"""<!doctype html>
     .hidden { display: none !important; }
     @media (max-width: 980px) {
       main, .result-grid, .modal-body { grid-template-columns: 1fr; }
-      .metadata-grid, .settings-grid, .batch-gallery { grid-template-columns: 1fr; }
+      .metadata-grid, .settings-grid, .batch-gallery, .status-grid, .api-layout, .api-endpoint { grid-template-columns: 1fr; }
+      .api-docs-nav { position: static; max-height: none; }
       .panorama-scaling-controls, .settings-panorama-controls { grid-template-columns: 1fr; }
       .panorama-scaling-controls { padding-left: 0; }
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -3396,6 +4633,8 @@ HTML_PAGE = r"""<!doctype html>
         <button class="tab" id="batchTab" data-i18n="batchTab">Серии</button>
         <button class="tab" id="historyTab" data-i18n="historyTab">История</button>
         <button class="tab" id="settingsTab" data-i18n="settingsTab">Настройки</button>
+        <button class="tab" id="statusTab" data-i18n="statusTab">Статус</button>
+        <button class="tab" id="apiTab" data-i18n="apiTab">API</button>
       </nav>
     </div>
   </header>
@@ -3525,6 +4764,10 @@ HTML_PAGE = r"""<!doctype html>
                 <label class="check"><input type="checkbox" data-legend-toggle="showBackground" checked> <span data-i18n="classBackground">фон</span></label>
               </div>
             </div>
+          </div>
+          <div id="splitterOverlay" class="splitter-overlay hidden" aria-hidden="true">
+            <div class="splitter-line"></div>
+            <div class="splitter-handle"></div>
           </div>
           <canvas id="mainCanvas"></canvas>
         </div>
@@ -3672,6 +4915,47 @@ HTML_PAGE = r"""<!doctype html>
               <button id="resetSettingsBtn" type="button" data-i18n="settingsReset">Сбросить по умолчанию</button>
               <span id="settingsStatus" class="muted"></span>
             </div>
+          </div>
+        </div>
+      </div>
+      <div id="statusView" class="hidden">
+        <div class="status-page">
+          <div class="panel">
+            <div class="status-head">
+              <div>
+                <h2 data-i18n="statusPage">Статус системы</h2>
+                <p id="statusGeneratedAt" class="muted" data-i18n="statusLoading">Загрузка статуса...</p>
+              </div>
+              <div class="status-actions">
+                <button id="refreshStatusBtn" type="button" data-i18n="statusRefresh">Обновить</button>
+              </div>
+            </div>
+          </div>
+          <div class="status-grid" id="statusCards"></div>
+          <div class="panel">
+            <h2 data-i18n="statusHealthChecks">Проверки здоровья</h2>
+            <div class="status-table-wrap">
+              <table id="statusHealthTable" class="status-table"></table>
+            </div>
+          </div>
+          <div class="panel">
+            <h2 data-i18n="statusHistoryStorage">История и хранилище</h2>
+            <div class="status-table-wrap">
+              <table id="statusStorageTable" class="status-table"></table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="apiView" class="hidden">
+        <div class="api-page">
+          <div class="panel api-hero">
+            <h2 data-i18n="apiPage">API</h2>
+            <p class="muted" data-i18n="apiIntro">Документация REST API для v2 UI: загрузки, запуски, серии, настройки, статус и выгрузка артефактов. Каждый блок ниже содержит песочницу, которая отправляет запрос в этот же сервер.</p>
+            <code class="api-base">GET /api</code>
+          </div>
+          <div class="api-layout">
+            <nav id="apiDocsNav" class="api-docs-nav" aria-label="API endpoints"></nav>
+            <div id="apiDocsList" class="api-docs-list"></div>
           </div>
         </div>
       </div>
@@ -3922,6 +5206,7 @@ HTML_PAGE = r"""<!doctype html>
       historyMode: 'all',
       historyRuns: [],
       historyBatches: [],
+      systemStatus: null,
       metadataTarget: {type: 'workspace', itemId: null},
       returnToBatchId: null,
       viewMode: 'original',
@@ -4018,6 +5303,300 @@ HTML_PAGE = r"""<!doctype html>
       preprocess: {...DEFAULT_PREPROCESS_PRESET},
       metadata_defaults: {}
     };
+    const API_REFERENCE = [
+      {
+        id: 'status',
+        group: 'Service',
+        method: 'GET',
+        path: '/api/status',
+        title: 'System status',
+        titleRu: 'Статус системы',
+        summary: 'Read backend mode, checkpoint path, health checks, CPU/GPU/RAM/flash status, active jobs, and workspace storage.',
+        summaryRu: 'Возвращает backend, путь чекпойнта, проверки здоровья, CPU/GPU/RAM/flash, активные задания и размер workspace.',
+        body: null,
+        response: {schema_version: 'ore-pipeline-status-v0.1', health: {overall: 'ok'}, app: {backend: 'heuristic'}}
+      },
+      {
+        id: 'upload',
+        group: 'Uploads',
+        method: 'POST',
+        path: '/api/uploads',
+        title: 'Upload image',
+        titleRu: 'Загрузка изображения',
+        summary: 'Upload one PNG/JPEG/TIFF/RAW-extension image as multipart/form-data field file.',
+        summaryRu: 'Загружает одно изображение PNG/JPEG/TIFF/RAW через multipart/form-data поле file.',
+        multipart: true,
+        body: null,
+        response: {schema_version: 'ore-pipeline-upload-v0.1', upload_id: '20260703_120000_abcdef1234', width: 160, height: 120}
+      },
+      {
+        id: 'get-upload',
+        group: 'Uploads',
+        method: 'GET',
+        path: '/api/uploads/{upload_id}',
+        sandboxPath: '/api/uploads/demo_upload_id',
+        title: 'Get upload',
+        titleRu: 'Получить загрузку',
+        summary: 'Read upload metadata, raw image metadata, display previews, preprocessing state, and optional artifact mask link.',
+        summaryRu: 'Возвращает метаданные загрузки, raw-метаданные изображения, превью, состояние предобработки и ссылку на маску артефактов.',
+        body: null,
+        response: {schema_version: 'ore-pipeline-upload-v0.1', upload_id: 'demo_upload_id', display: {original: []}}
+      },
+      {
+        id: 'preprocess-upload',
+        group: 'Uploads',
+        method: 'POST',
+        path: '/api/uploads/{upload_id}/preprocess',
+        sandboxPath: '/api/uploads/demo_upload_id/preprocess',
+        title: 'Apply upload preprocessing',
+        titleRu: 'Применить предобработку',
+        summary: 'Create or refresh augmentation/preprocessing artifacts for an uploaded image before a run starts.',
+        summaryRu: 'Создает или обновляет артефакты аугментации/предобработки для загруженного изображения до старта расчета.',
+        body: {
+          preprocessing_enabled: true,
+          illumination_normalization: true,
+          denoise: true,
+          contrast_correction: true,
+          panorama_scaling: true,
+          panorama_scaling_mode: 'max_side',
+          panorama_max_side_px: 1800,
+          augmentation: {enabled: false}
+        },
+        response: {schema_version: 'ore-pipeline-upload-v0.1', upload_id: 'demo_upload_id', preprocess: {enabled: true}}
+      },
+      {
+        id: 'start-run',
+        group: 'Runs',
+        method: 'POST',
+        path: '/api/runs/start',
+        title: 'Start run',
+        titleRu: 'Запустить расчет',
+        summary: 'Create an immutable run from an upload, preprocessing settings, optional augmentation, and optional curated metadata.',
+        summaryRu: 'Создает неизменяемый запуск из upload_id, настроек предобработки, опциональной аугментации и опциональных curated metadata.',
+        body: {
+          upload_id: 'demo_upload_id',
+          preprocessing_enabled: true,
+          illumination_normalization: true,
+          denoise: true,
+          contrast_correction: true,
+          panorama_scaling: true,
+          curated_metadata: {project: 'demo', scale_confidence: 'none'}
+        },
+        response: {run_id: 'run_20260703_120000_000000001_abcdef12', status: 'queued', progress: 1}
+      },
+      {
+        id: 'list-runs',
+        group: 'Runs',
+        method: 'GET',
+        path: '/api/runs',
+        title: 'List runs',
+        titleRu: 'Список запусков',
+        summary: 'List persisted immutable runs for the current workspace history.',
+        summaryRu: 'Возвращает историю сохраненных неизменяемых запусков текущего workspace.',
+        body: null,
+        response: {schema_version: 'ore-pipeline-history-v0.1', runs: []}
+      },
+      {
+        id: 'get-run',
+        group: 'Runs',
+        method: 'GET',
+        path: '/api/runs/{run_id}',
+        sandboxPath: '/api/runs/demo_run_id',
+        title: 'Get run',
+        titleRu: 'Получить запуск',
+        summary: 'Read run status, progress, input metadata, masks, display previews, metrics, downloads, and history.',
+        summaryRu: 'Возвращает статус, прогресс, входные метаданные, маски, превью, метрики, ссылки на выгрузки и историю.',
+        body: null,
+        response: {run_id: 'demo_run_id', status: 'complete', summary: {ore_class: 'row_ore'}, downloads: {artifacts_zip: '/api/runs/demo_run_id/artifacts.zip'}}
+      },
+      {
+        id: 'cancel-run',
+        group: 'Runs',
+        method: 'POST',
+        path: '/api/runs/{run_id}/cancel',
+        sandboxPath: '/api/runs/demo_run_id/cancel',
+        title: 'Cancel run',
+        titleRu: 'Остановить запуск',
+        summary: 'Request cooperative cancellation for a queued or running run.',
+        summaryRu: 'Запрашивает кооперативную остановку запуска в очереди или в работе.',
+        body: null,
+        response: {run_id: 'demo_run_id', status: 'canceling', progress: 42}
+      },
+      {
+        id: 'run-files',
+        group: 'Artifacts',
+        method: 'GET',
+        path: '/api/runs/{run_id}/files',
+        sandboxPath: '/api/runs/demo_run_id/files',
+        title: 'List run files',
+        titleRu: 'Файлы запуска',
+        summary: 'List immutable run files with byte sizes and image dimensions for browser review.',
+        summaryRu: 'Возвращает список файлов неизменяемого запуска с размерами в байтах и размерами изображений.',
+        body: null,
+        response: {run_id: 'demo_run_id', file_count: 12, files: [], downloads: {artifacts_zip: '/api/runs/demo_run_id/artifacts.zip'}}
+      },
+      {
+        id: 'run-artifacts-zip',
+        group: 'Artifacts',
+        method: 'GET',
+        path: '/api/runs/{run_id}/artifacts.zip',
+        sandboxPath: '/api/runs/demo_run_id/artifacts.zip',
+        title: 'Download run ZIP',
+        titleRu: 'Скачать ZIP запуска',
+        summary: 'Download every immutable run artifact as one ZIP archive.',
+        summaryRu: 'Скачивает все неизменяемые артефакты запуска одним ZIP-архивом.',
+        download: true,
+        body: null,
+        response: {content_type: 'application/zip', download_name: 'demo_run_id_artifacts.zip'}
+      },
+      {
+        id: 'run-metrics-csv',
+        group: 'Artifacts',
+        method: 'GET',
+        path: '/api/runs/{run_id}/metrics.csv',
+        sandboxPath: '/api/runs/demo_run_id/metrics.csv',
+        title: 'Download metrics CSV',
+        titleRu: 'Скачать CSV метрик',
+        summary: 'Download hierarchical run metrics with pixel areas, optional physical areas, and scale provenance.',
+        summaryRu: 'Скачивает иерархические метрики запуска с площадями в пикселях, опциональными физическими площадями и источником масштаба.',
+        body: null,
+        response: 'metric_id,label,area_px,area_um2,area_mm2'
+      },
+      {
+        id: 'run-report-pdf',
+        group: 'Artifacts',
+        method: 'GET',
+        path: '/api/runs/{run_id}/report.pdf',
+        sandboxPath: '/api/runs/demo_run_id/report.pdf',
+        title: 'Download PDF report',
+        titleRu: 'Скачать PDF отчет',
+        summary: 'Generate and download the current five-page lab-style demonstration report for a run.',
+        summaryRu: 'Генерирует и скачивает текущий пятистраничный демонстрационный лабораторный отчет по запуску.',
+        download: true,
+        body: null,
+        response: {content_type: 'application/pdf', download_name: 'demo_run_id_report.pdf'}
+      },
+      {
+        id: 'create-series',
+        group: 'Series',
+        method: 'POST',
+        path: '/api/batches',
+        title: 'Create Series',
+        titleRu: 'Создать серию',
+        summary: 'Create a persisted Series draft. Route/storage names remain batch for compatibility.',
+        summaryRu: 'Создает сохраненный черновик серии. Технические route/storage имена остаются batch для совместимости.',
+        body: {settings: {preprocess: {...DEFAULT_PREPROCESS_PRESET}, augmentation: {enabled: false}}},
+        response: {schema_version: 'ore-pipeline-batch-v0.1', batch_id: 'batch_20260703_120000_000000001', status: 'draft', items: []}
+      },
+      {
+        id: 'get-series',
+        group: 'Series',
+        method: 'GET',
+        path: '/api/batches/{batch_id}',
+        sandboxPath: '/api/batches/demo_batch_id',
+        title: 'Get Series',
+        titleRu: 'Получить серию',
+        summary: 'Read a Series draft or completed Series with item upload previews, child run links, settings, and progress.',
+        summaryRu: 'Возвращает черновик или завершенную серию с превью изображений, ссылками на дочерние запуски, настройками и прогрессом.',
+        body: null,
+        response: {schema_version: 'ore-pipeline-batch-v0.1', batch_id: 'demo_batch_id', status: 'draft', items: []}
+      },
+      {
+        id: 'add-series-items',
+        group: 'Series',
+        method: 'POST',
+        path: '/api/batches/{batch_id}/items',
+        sandboxPath: '/api/batches/demo_batch_id/items',
+        title: 'Add Series items',
+        titleRu: 'Добавить изображения в серию',
+        summary: 'Attach uploaded images to a draft Series by upload_id, with optional per-image curated metadata.',
+        summaryRu: 'Добавляет загруженные изображения в черновик серии по upload_id, с опциональными метаданными на изображение.',
+        body: {upload_ids: ['demo_upload_id'], items: [{upload_id: 'demo_upload_id', curated_metadata: {sample_id: 'A-01'}}]},
+        response: {schema_version: 'ore-pipeline-batch-v0.1', batch_id: 'demo_batch_id', items: []}
+      },
+      {
+        id: 'run-series',
+        group: 'Series',
+        method: 'POST',
+        path: '/api/batches/{batch_id}/run',
+        sandboxPath: '/api/batches/demo_batch_id/run',
+        title: 'Run Series',
+        titleRu: 'Запустить серию',
+        summary: 'Start sequential processing for a draft Series with shared preprocessing and augmentation settings.',
+        summaryRu: 'Запускает последовательную обработку черновика серии с общими настройками предобработки и аугментации.',
+        body: {preprocess: {...DEFAULT_PREPROCESS_PRESET}, augmentation: {enabled: false}},
+        response: {schema_version: 'ore-pipeline-batch-v0.1', batch_id: 'demo_batch_id', status: 'queued', progress: 1}
+      },
+      {
+        id: 'cancel-series',
+        group: 'Series',
+        method: 'POST',
+        path: '/api/batches/{batch_id}/cancel',
+        sandboxPath: '/api/batches/demo_batch_id/cancel',
+        title: 'Cancel Series',
+        titleRu: 'Остановить серию',
+        summary: 'Request cooperative cancellation for an active sequential Series job.',
+        summaryRu: 'Запрашивает кооперативную остановку активной последовательной обработки серии.',
+        body: null,
+        response: {schema_version: 'ore-pipeline-batch-v0.1', batch_id: 'demo_batch_id', status: 'canceling'}
+      },
+      {
+        id: 'series-results-csv',
+        group: 'Series',
+        method: 'GET',
+        path: '/api/batches/{batch_id}/results.csv',
+        sandboxPath: '/api/batches/demo_batch_id/results.csv',
+        title: 'Download Series CSV',
+        titleRu: 'Скачать CSV серии',
+        summary: 'Download the per-item Series results table after sequential processing finishes.',
+        summaryRu: 'Скачивает таблицу результатов по изображениям серии после завершения последовательной обработки.',
+        body: null,
+        response: 'batch_id,item_id,run_id,status,ore_class'
+      },
+      {
+        id: 'list-series',
+        group: 'Series',
+        method: 'GET',
+        path: '/api/batches',
+        title: 'List Series',
+        titleRu: 'Список серий',
+        summary: 'List persisted Series summaries for the history page.',
+        summaryRu: 'Возвращает краткую историю сохраненных серий.',
+        body: null,
+        response: {schema_version: 'ore-pipeline-batch-history-v0.1', batches: []}
+      },
+      {
+        id: 'settings',
+        group: 'Settings',
+        method: 'GET',
+        path: '/api/settings',
+        title: 'Read settings',
+        titleRu: 'Получить настройки',
+        summary: 'Read server-backed UI defaults for language, theme, preprocessing, tiling, and session metadata.',
+        summaryRu: 'Возвращает серверные настройки UI: язык, тему, предобработку, тайлинг и шаблон метаданных сессии.',
+        body: null,
+        response: {schema_version: 'ore-pipeline-app-settings-v0.1', language: 'ru', theme: 'system'}
+      },
+      {
+        id: 'save-settings',
+        group: 'Settings',
+        method: 'PUT',
+        path: '/api/settings',
+        title: 'Save settings',
+        titleRu: 'Сохранить настройки',
+        summary: 'Persist app defaults for every browser that opens the same workspace.',
+        summaryRu: 'Сохраняет настройки приложения для всех браузеров, открывающих тот же workspace.',
+        body: {
+          schema_version: 'ore-pipeline-app-settings-v0.1',
+          language: 'ru',
+          theme: 'system',
+          show_tiling: false,
+          preprocess: {...DEFAULT_PREPROCESS_PRESET},
+          metadata_defaults: {}
+        },
+        response: {schema_version: 'ore-pipeline-app-settings-v0.1', updated_at: '2026-07-03T12:00:00+00:00'}
+      }
+    ];
     let statusMessage = {key: 'statusWaiting', params: {}};
     let settingsStatusMessage = null;
     let uploadWarningMessage = null;
@@ -4041,6 +5620,22 @@ HTML_PAGE = r"""<!doctype html>
         batchTab: 'Серии',
         historyTab: 'История',
         settingsTab: 'Настройки',
+        statusTab: 'Статус',
+        apiTab: 'API',
+        apiPage: 'API',
+        apiIntro: 'Документация REST API для v2 UI: загрузки, запуски, серии, настройки, статус и выгрузка артефактов. Каждый блок ниже содержит песочницу, которая отправляет запрос в этот же сервер.',
+        apiSandbox: 'Песочница',
+        apiRequestUrl: 'URL запроса',
+        apiRequestJson: 'JSON запроса',
+        apiNoBody: 'Тело запроса не требуется.',
+        apiFileField: 'Файл изображения',
+        apiRunRequest: 'Выполнить запрос',
+        apiSandboxIdle: 'Ожидание',
+        apiSandboxRunning: 'Выполнение',
+        apiSandboxDone: 'Готово',
+        apiSandboxError: 'Ошибка',
+        apiSandboxChooseFile: 'Выберите файл изображения.',
+        apiExampleResponse: 'Пример ответа',
         batchPage: 'Серии',
         batchNew: 'Новая серия',
         batchAddImages: 'Добавить изображения',
@@ -4088,6 +5683,49 @@ HTML_PAGE = r"""<!doctype html>
         settingsLoadFailed: 'Не удалось загрузить настройки: {error}',
         settingsSaveFailed: 'Не удалось сохранить настройки: {error}',
         settingsResetConfirm: 'Сбросить системные настройки по умолчанию?',
+        statusPage: 'Статус системы',
+        statusLoading: 'Загрузка статуса...',
+        statusRefresh: 'Обновить',
+        statusUpdatedAt: 'Обновлено: {date}',
+        statusLoadFailed: 'Не удалось загрузить статус: {error}',
+        statusHealthChecks: 'Проверки здоровья',
+        statusHistoryStorage: 'История и хранилище',
+        statusOverall: 'Состояние',
+        statusCpu: 'CPU',
+        statusGpu: 'GPU',
+        statusRam: 'RAM',
+        statusFlash: 'Flash',
+        statusHistorySize: 'Размер истории',
+        statusRuns: 'Запуски',
+        statusSeries: 'Серии',
+        statusBackend: 'Backend',
+        statusUptime: 'Uptime',
+        statusOk: 'OK',
+        statusWarning: 'Внимание',
+        statusErrorHealth: 'Ошибка',
+        statusGpuNotDetected: 'GPU не обнаружен',
+        statusGpuDevice: 'GPU {index}: {name}',
+        statusGpuUtil: '{util}% · {used} / {total}',
+        statusCpuValue: '{load}% load · {cpus} CPU',
+        statusRamValue: '{used} / {total}',
+        statusFlashValue: '{used} / {total}',
+        statusHistoryValue: '{size}',
+        statusRunsValue: '{count} запусков',
+        statusSeriesValue: '{count} серий',
+        statusBackendValue: '{backend}',
+        statusUptimeValue: '{seconds} с',
+        statusCheck: 'Проверка',
+        statusValue: 'Значение',
+        statusMessage: 'Сообщение',
+        statusStorageItem: 'Раздел',
+        statusStorageSize: 'Размер',
+        statusStorageDetails: 'Детали',
+        statusStorageRuns: 'запуски',
+        statusStorageSeries: 'серии',
+        statusStorageUploads: 'загрузки',
+        statusStorageTotalWorkspace: 'всего workspace',
+        statusActiveJobs: 'Активные задания',
+        statusNoActiveJobs: 'нет активных заданий',
         inputImage: 'Входное изображение',
         dropImageHere: 'Перетащите изображение сюда',
         dropImageHelp: 'или нажмите, чтобы открыть PNG, JPEG, TIFF, RAW',
@@ -4258,6 +5896,8 @@ HTML_PAGE = r"""<!doctype html>
         historyBatchProgress: 'Прогресс',
         historyBatchCounts: 'Итоги',
         historyOpenBatch: 'Открыть',
+        confirmRemoveBatch: 'Удалить серию {batchId} и ее запуски?',
+        statusBatchRemoved: 'Серия {batchId} удалена из истории.',
         editRecalculate: 'Редактирование и пересчет',
         close: 'Закрыть',
         tool: 'Инструмент',
@@ -4293,6 +5933,8 @@ HTML_PAGE = r"""<!doctype html>
         statusImageLoaded: 'Изображение загружено.',
         statusAugmentationUpdated: 'Аугментированный предпросмотр обновлен.',
         statusPreprocessUpdated: 'Предобработанный предпросмотр обновлен.',
+        statusAugmentationPreparedRun: 'Создан новый запуск {runId} с обновленной аугментацией. Нажмите Старт, чтобы продолжить расчет.',
+        statusPreprocessPreparedRun: 'Создан новый запуск {runId} с обновленной предобработкой. Нажмите Старт, чтобы продолжить расчет.',
         statusProgress: '{stage} · {progress}%{eta}',
         statusEta: ' · осталось {seconds} с',
         statusFailed: 'Ошибка: {error}',
@@ -4306,6 +5948,7 @@ HTML_PAGE = r"""<!doctype html>
         stageRunning: 'выполнение',
         stageCanceling: 'остановка',
         stageCanceled: 'остановлено',
+        stagePrepared: 'подготовлено',
         stageComplete: 'готово',
         stageFailed: 'ошибка',
         stagePreprocessing: 'предобработка',
@@ -4379,6 +6022,22 @@ HTML_PAGE = r"""<!doctype html>
         batchTab: 'Series',
         historyTab: 'History',
         settingsTab: 'Settings',
+        statusTab: 'Status',
+        apiTab: 'API',
+        apiPage: 'API',
+        apiIntro: 'REST API documentation for the v2 UI: uploads, runs, series, settings, status, and artifact export. Each block below includes a sandbox that sends requests to this same server.',
+        apiSandbox: 'Sandbox',
+        apiRequestUrl: 'Request URL',
+        apiRequestJson: 'Request JSON',
+        apiNoBody: 'No request body required.',
+        apiFileField: 'Image file',
+        apiRunRequest: 'Run request',
+        apiSandboxIdle: 'Idle',
+        apiSandboxRunning: 'Running',
+        apiSandboxDone: 'Done',
+        apiSandboxError: 'Error',
+        apiSandboxChooseFile: 'Choose an image file.',
+        apiExampleResponse: 'Example response',
         batchPage: 'Series',
         batchNew: 'New Series',
         batchAddImages: 'Add images',
@@ -4426,6 +6085,49 @@ HTML_PAGE = r"""<!doctype html>
         settingsLoadFailed: 'Could not load settings: {error}',
         settingsSaveFailed: 'Could not save settings: {error}',
         settingsResetConfirm: 'Reset system settings to defaults?',
+        statusPage: 'System Status',
+        statusLoading: 'Loading status...',
+        statusRefresh: 'Refresh',
+        statusUpdatedAt: 'Updated: {date}',
+        statusLoadFailed: 'Could not load status: {error}',
+        statusHealthChecks: 'Health checks',
+        statusHistoryStorage: 'History and storage',
+        statusOverall: 'Health',
+        statusCpu: 'CPU',
+        statusGpu: 'GPU',
+        statusRam: 'RAM',
+        statusFlash: 'Flash',
+        statusHistorySize: 'History size',
+        statusRuns: 'Runs',
+        statusSeries: 'Series',
+        statusBackend: 'Backend',
+        statusUptime: 'Uptime',
+        statusOk: 'OK',
+        statusWarning: 'Warning',
+        statusErrorHealth: 'Error',
+        statusGpuNotDetected: 'GPU not detected',
+        statusGpuDevice: 'GPU {index}: {name}',
+        statusGpuUtil: '{util}% · {used} / {total}',
+        statusCpuValue: '{load}% load · {cpus} CPU',
+        statusRamValue: '{used} / {total}',
+        statusFlashValue: '{used} / {total}',
+        statusHistoryValue: '{size}',
+        statusRunsValue: '{count} runs',
+        statusSeriesValue: '{count} series',
+        statusBackendValue: '{backend}',
+        statusUptimeValue: '{seconds}s',
+        statusCheck: 'Check',
+        statusValue: 'Value',
+        statusMessage: 'Message',
+        statusStorageItem: 'Item',
+        statusStorageSize: 'Size',
+        statusStorageDetails: 'Details',
+        statusStorageRuns: 'runs',
+        statusStorageSeries: 'series',
+        statusStorageUploads: 'uploads',
+        statusStorageTotalWorkspace: 'total workspace',
+        statusActiveJobs: 'Active jobs',
+        statusNoActiveJobs: 'no active jobs',
         inputImage: 'Input image',
         dropImageHere: 'Drop image here',
         dropImageHelp: 'or click to open PNG, JPEG, TIFF, RAW',
@@ -4596,6 +6298,8 @@ HTML_PAGE = r"""<!doctype html>
         historyBatchProgress: 'Progress',
         historyBatchCounts: 'Counts',
         historyOpenBatch: 'Open',
+        confirmRemoveBatch: 'Remove series {batchId} and its runs?',
+        statusBatchRemoved: 'Series {batchId} removed from history.',
         editRecalculate: 'Edit & Recalculate',
         close: 'Close',
         tool: 'Tool',
@@ -4631,6 +6335,8 @@ HTML_PAGE = r"""<!doctype html>
         statusImageLoaded: 'Image loaded.',
         statusAugmentationUpdated: 'Augmented preview updated.',
         statusPreprocessUpdated: 'Preprocessing preview updated.',
+        statusAugmentationPreparedRun: 'Created new run {runId} with updated augmentation. Press Start to continue evaluation.',
+        statusPreprocessPreparedRun: 'Created new run {runId} with updated preprocessing. Press Start to continue evaluation.',
         statusProgress: '{stage} · {progress}%{eta}',
         statusEta: ' · ETA {seconds}s',
         statusFailed: 'Failed: {error}',
@@ -4644,6 +6350,7 @@ HTML_PAGE = r"""<!doctype html>
         stageRunning: 'running',
         stageCanceling: 'stopping',
         stageCanceled: 'stopped',
+        stagePrepared: 'prepared',
         stageComplete: 'complete',
         stageFailed: 'failed',
         stagePreprocessing: 'preprocessing',
@@ -4741,6 +6448,215 @@ HTML_PAGE = r"""<!doctype html>
       const precision = unitIndex === 0 ? 0 : (scaled >= 10 ? 1 : 2);
       return `${scaled.toFixed(precision)} ${units[unitIndex]}`;
     }
+    function formatCount(value) {
+      return Number(value || 0).toLocaleString(localeCode());
+    }
+    function formatPercentValue(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(1) : '—';
+    }
+    function healthLabel(status) {
+      const normalized = String(status || 'ok').toLowerCase();
+      if (normalized === 'error') return t('statusErrorHealth');
+      if (normalized === 'warning') return t('statusWarning');
+      return t('statusOk');
+    }
+    function healthPill(status) {
+      const normalized = ['ok', 'warning', 'error'].includes(String(status || '').toLowerCase()) ? String(status).toLowerCase() : 'ok';
+      return `<span class="health-pill ${escapeHtml(normalized)}">${escapeHtml(healthLabel(normalized))}</span>`;
+    }
+    function statusCard(titleKey, value, subvalue = '') {
+      return `<div class="status-card"><h3>${escapeHtml(t(titleKey))}</h3><div class="status-value">${value}</div><div class="status-subvalue">${escapeHtml(subvalue || '')}</div></div>`;
+    }
+    function statusCountsText(counts) {
+      const entries = Object.entries(counts || {}).sort(([left], [right]) => left.localeCompare(right));
+      return entries.length ? entries.map(([key, value]) => `${key}: ${formatCount(value)}`).join(' · ') : '—';
+    }
+    function renderSystemStatus(payload = state.systemStatus) {
+      state.systemStatus = payload;
+      if (!$('statusCards')) return;
+      if (!payload) {
+        $('statusCards').innerHTML = '';
+        $('statusHealthTable').innerHTML = '';
+        $('statusStorageTable').innerHTML = '';
+        return;
+      }
+      $('statusGeneratedAt').textContent = t('statusUpdatedAt', {date: formatDate(payload.generated_at)});
+      const health = payload.health || {};
+      const cpu = payload.cpu || {};
+      const gpu = payload.gpu || {};
+      const ram = payload.ram || {};
+      const flash = payload.flash || {};
+      const history = payload.history || {};
+      const app = payload.app || {};
+      const gpuValue = gpu.available && Array.isArray(gpu.devices) && gpu.devices.length
+        ? gpu.devices.map(device => escapeHtml(t('statusGpuDevice', {index: device.index, name: device.name}))).join('<br>')
+        : escapeHtml(t('statusGpuNotDetected'));
+      const gpuSubvalue = gpu.available && Array.isArray(gpu.devices) && gpu.devices.length
+        ? gpu.devices.map(device => t('statusGpuUtil', {
+            util: formatPercentValue(device.utilization_percent),
+            used: formatBytes(device.memory_used_bytes),
+            total: formatBytes(device.memory_total_bytes)
+          })).join(' · ')
+        : (gpu.message || '');
+      $('statusCards').innerHTML = [
+        statusCard('statusOverall', healthPill(health.overall), t('statusActiveJobs') + ': ' + (
+          ((history.active_runs || []).length || (history.active_batches || []).length)
+            ? `${(history.active_runs || []).length} / ${(history.active_batches || []).length}`
+            : t('statusNoActiveJobs')
+        )),
+        statusCard('statusCpu', escapeHtml(t('statusCpuValue', {load: formatPercentValue(cpu.load_percent_1m), cpus: cpu.logical_cpus || '—'})), `1m ${formatPercentValue(cpu.load_average_1m)} · 5m ${formatPercentValue(cpu.load_average_5m)} · 15m ${formatPercentValue(cpu.load_average_15m)}`),
+        statusCard('statusGpu', gpuValue, gpuSubvalue),
+        statusCard('statusRam', escapeHtml(t('statusRamValue', {used: formatBytes(ram.used_bytes), total: formatBytes(ram.total_bytes)})), `${formatPercentValue(ram.used_percent)}%`),
+        statusCard('statusFlash', escapeHtml(t('statusFlashValue', {used: formatBytes(flash.used_bytes), total: formatBytes(flash.total_bytes)})), `${formatPercentValue(flash.free_percent)}% free · ${flash.path || ''}`),
+        statusCard('statusHistorySize', escapeHtml(t('statusHistoryValue', {size: formatBytes(history.history_size_bytes)})), `${t('statusStorageUploads')}: ${formatBytes(history.uploads_size_bytes)}`),
+        statusCard('statusRuns', escapeHtml(t('statusRunsValue', {count: formatCount(history.runs_total)})), statusCountsText(history.run_status_counts)),
+        statusCard('statusSeries', escapeHtml(t('statusSeriesValue', {count: formatCount(history.batches_total)})), statusCountsText(history.batch_status_counts)),
+        statusCard('statusBackend', escapeHtml(t('statusBackendValue', {backend: app.backend || '—'})), app.checkpoint || ''),
+        statusCard('statusUptime', escapeHtml(t('statusUptimeValue', {seconds: Math.round(Number(app.uptime_seconds || 0))})), app.started_at ? formatDate(app.started_at) : '')
+      ].join('');
+      const checks = Array.isArray(health.checks) ? health.checks : [];
+      $('statusHealthTable').innerHTML = `<thead><tr><th>${escapeHtml(t('statusCheck'))}</th><th>${escapeHtml(t('statusValue'))}</th><th>${escapeHtml(t('statusMessage'))}</th></tr></thead><tbody>` + checks.map(check => (
+        `<tr><td>${escapeHtml(check.key || '')}</td><td>${healthPill(check.status)}</td><td>${escapeHtml(check.message || '')}</td></tr>`
+      )).join('') + '</tbody>';
+      const storageRows = [
+        [t('statusStorageRuns'), history.runs_size_bytes, `${formatCount(history.runs_total)} ${t('statusRuns').toLowerCase()}`],
+        [t('statusStorageSeries'), history.batches_size_bytes, `${formatCount(history.batches_total)} ${t('statusSeries').toLowerCase()}`],
+        [t('statusStorageUploads'), history.uploads_size_bytes, ''],
+        [t('statusStorageTotalWorkspace'), history.total_workspace_size_bytes, app.workspace_dir || '']
+      ];
+      $('statusStorageTable').innerHTML = `<thead><tr><th>${escapeHtml(t('statusStorageItem'))}</th><th>${escapeHtml(t('statusStorageSize'))}</th><th>${escapeHtml(t('statusStorageDetails'))}</th></tr></thead><tbody>` + storageRows.map(row => (
+        `<tr><td>${escapeHtml(row[0])}</td><td>${escapeHtml(formatBytes(row[1]))}</td><td>${escapeHtml(row[2])}</td></tr>`
+      )).join('') + '</tbody>';
+    }
+    async function loadSystemStatus() {
+      if (!$('statusGeneratedAt')) return;
+      $('statusGeneratedAt').textContent = t('statusLoading');
+      try {
+        const response = await fetch('/api/status');
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'status load failed');
+        renderSystemStatus(payload);
+      } catch (error) {
+        $('statusGeneratedAt').textContent = t('statusLoadFailed', {error: error.message || t('unknownError')});
+      }
+    }
+    function apiEndpointText(endpoint, key) {
+      if (currentLanguage() === 'ru') return endpoint[`${key}Ru`] || endpoint[key] || '';
+      return endpoint[key] || endpoint[`${key}Ru`] || '';
+    }
+    function apiJson(value) {
+      return JSON.stringify(value, null, 2);
+    }
+    function apiMethodClass(method) {
+      return String(method || '').toLowerCase();
+    }
+    function renderApiDocs() {
+      if (!$('apiDocsList') || !$('apiDocsNav')) return;
+      const groups = [];
+      API_REFERENCE.forEach(endpoint => {
+        if (!groups.includes(endpoint.group)) groups.push(endpoint.group);
+      });
+      $('apiDocsNav').innerHTML = groups.map(group => {
+        const links = API_REFERENCE.filter(endpoint => endpoint.group === group).map(endpoint => (
+          `<a href="#api-${escapeHtml(endpoint.id)}"><strong>${escapeHtml(endpoint.method)}</strong> ${escapeHtml(apiEndpointText(endpoint, 'title'))}</a>`
+        )).join('');
+        return `<div><div class="muted" style="font-weight:800;margin:4px 9px">${escapeHtml(group)}</div>${links}</div>`;
+      }).join('');
+      $('apiDocsList').innerHTML = API_REFERENCE.map(endpoint => {
+        const bodyMarkup = endpoint.multipart
+          ? `<label>${escapeHtml(t('apiFileField'))}<input class="api-file-input" type="file" accept=".png,.jpg,.jpeg,.tif,.tiff,.raw,.dng,.cr2,.cr3,.nef,.arw,.orf,.rw2,.raf,.pef,.srw,image/png,image/jpeg,image/tiff"></label>`
+          : endpoint.body == null
+            ? `<div class="empty-body">${escapeHtml(t('apiNoBody'))}</div>`
+            : `<label>${escapeHtml(t('apiRequestJson'))}<textarea class="api-request-body" spellcheck="false">${escapeHtml(apiJson(endpoint.body))}</textarea></label>`;
+        return `
+          <section class="panel api-endpoint" id="api-${escapeHtml(endpoint.id)}" data-api-endpoint="${escapeHtml(endpoint.id)}">
+            <div class="api-endpoint-main">
+              <div class="api-endpoint-head">
+                <span class="api-method ${escapeHtml(apiMethodClass(endpoint.method))}">${escapeHtml(endpoint.method)}</span>
+                <code class="api-path">${escapeHtml(endpoint.path)}</code>
+              </div>
+              <h3>${escapeHtml(apiEndpointText(endpoint, 'title'))}</h3>
+              <p class="api-summary">${escapeHtml(apiEndpointText(endpoint, 'summary'))}</p>
+              <p class="muted" style="font-weight:800;margin:0 0 6px">${escapeHtml(t('apiExampleResponse'))}</p>
+              <pre class="api-example">${escapeHtml(apiJson(endpoint.response))}</pre>
+            </div>
+            <aside class="api-sandbox" data-api-sandbox="${escapeHtml(endpoint.id)}">
+              <div class="api-sandbox-head">
+                <span>${escapeHtml(t('apiSandbox'))}</span>
+                <span>${escapeHtml(endpoint.method)}</span>
+              </div>
+              <div class="api-sandbox-body">
+                <label>${escapeHtml(t('apiRequestUrl'))}<input class="api-request-url" type="text" value="${escapeHtml(endpoint.sandboxPath || endpoint.path)}"></label>
+                ${bodyMarkup}
+                <div class="api-sandbox-actions">
+                  <button type="button" class="primary" data-api-run="${escapeHtml(endpoint.id)}">${escapeHtml(t('apiRunRequest'))}</button>
+                  <span class="muted api-sandbox-status">${escapeHtml(t('apiSandboxIdle'))}</span>
+                </div>
+                <pre class="api-response">HTTP</pre>
+              </div>
+            </aside>
+          </section>
+        `;
+      }).join('');
+      attachApiSandboxHandlers();
+    }
+    function apiFormattedResponse(status, text) {
+      let body = text || '';
+      try {
+        body = JSON.stringify(JSON.parse(text), null, 2);
+      } catch (_) {}
+      return `HTTP ${status}\n${body}`;
+    }
+    function attachApiSandboxHandlers() {
+      document.querySelectorAll('[data-api-run]').forEach(button => {
+        button.addEventListener('click', () => runApiSandbox(button.dataset.apiRun));
+      });
+    }
+    async function runApiSandbox(endpointId) {
+      const endpoint = API_REFERENCE.find(item => item.id === endpointId);
+      const box = document.querySelector(`[data-api-sandbox="${endpointId}"]`);
+      if (!endpoint || !box) return;
+      const statusNode = box.querySelector('.api-sandbox-status');
+      const output = box.querySelector('.api-response');
+      const url = box.querySelector('.api-request-url').value || endpoint.path;
+      statusNode.textContent = t('apiSandboxRunning');
+      output.textContent = '';
+      try {
+        const options = {method: endpoint.method};
+        if (endpoint.multipart) {
+          const fileInput = box.querySelector('.api-file-input');
+          if (!fileInput || !fileInput.files.length) throw new Error(t('apiSandboxChooseFile'));
+          const form = new FormData();
+          form.append('file', fileInput.files[0]);
+          options.body = form;
+        } else if (endpoint.method !== 'GET') {
+          const bodyInput = box.querySelector('.api-request-body');
+          if (bodyInput) {
+            const raw = bodyInput.value.trim();
+            options.headers = {'Content-Type': 'application/json'};
+            options.body = raw ? JSON.stringify(JSON.parse(raw)) : '{}';
+          }
+        }
+        const response = await fetch(url, options);
+        let text = '';
+        if (endpoint.download) {
+          const blob = await response.blob();
+          text = JSON.stringify({
+            content_type: blob.type || response.headers.get('Content-Type') || 'application/octet-stream',
+            size_bytes: blob.size,
+            disposition: response.headers.get('Content-Disposition') || null
+          }, null, 2);
+        } else {
+          text = await response.text();
+        }
+        output.textContent = apiFormattedResponse(response.status, text);
+        statusNode.textContent = response.ok ? t('apiSandboxDone') : t('apiSandboxError');
+      } catch (error) {
+        output.textContent = String(error && error.stack ? error.stack : error);
+        statusNode.textContent = t('apiSandboxError');
+      }
+    }
     function oreClassText(summary) {
       const oreClass = String((summary && summary.ore_class) || '');
       if (oreClass === 'talcose_ore') return t('oreClassTalcose');
@@ -4836,8 +6752,10 @@ HTML_PAGE = r"""<!doctype html>
       updateAugmentationValueLabels();
       updateAugmentationSummary();
       updatePreprocessSummary();
+      renderApiDocs();
       renderBatch();
       renderSettingsForm(currentAppSettings());
+      renderSystemStatus();
       renderMetadataStatus();
       if ($('metadataDialog') && $('metadataDialog').open) {
         renderMetadataRawTable();
@@ -5360,6 +7278,13 @@ HTML_PAGE = r"""<!doctype html>
     function runIsActive(run) {
       return Boolean(run && ACTIVE_RUN_STATUSES.has(String(run.status || '').toLowerCase()));
     }
+    function runIsPrepared(run) {
+      return Boolean(run && String(run.status || '').toLowerCase() === 'prepared');
+    }
+    function runCanBePreparedFromApply(run) {
+      const status = String((run && run.status) || '').toLowerCase();
+      return Boolean(run && run.run_id && (status === 'complete' || status === 'prepared'));
+    }
     function updateRunControls(run = state.run) {
       const active = runIsActive(run);
       $('startBtn').classList.toggle('hidden', active);
@@ -5551,6 +7476,12 @@ HTML_PAGE = r"""<!doctype html>
       setLegendPanel('sideClassLegend', 'sideSulfideClassToggles', 'sideFinalClassToggles', rightLayer);
       syncClassVisibilityControls();
     }
+    function updateSplitterOverlay() {
+      const active = state.sideLayer !== 'none' && sideLayerAvailable(state.sideLayer);
+      const overlay = $('splitterOverlay');
+      overlay.classList.toggle('hidden', !active);
+      overlay.style.left = `${Math.round(state.splitter * 10000) / 100}%`;
+    }
     function tilingManifest() {
       const source = displaySource();
       const tiling = source && source.tiling;
@@ -5578,6 +7509,7 @@ HTML_PAGE = r"""<!doctype html>
         btn.classList.toggle('active', btn.dataset.sideLayer === state.sideLayer);
       });
       updateSegmentationToggleVisibility();
+      updateSplitterOverlay();
       if ($('showTiling')) {
         const available = tilingAvailable();
         $('showTiling').disabled = !available;
@@ -5715,6 +7647,7 @@ HTML_PAGE = r"""<!doctype html>
     }
     async function drawSideBySide(display) {
       const divider = Math.floor(canvas.width * state.splitter);
+      updateSplitterOverlay();
       await drawCompositeLayer(display, state.viewMode, 0, divider);
       await drawCompositeLayer(display, state.sideLayer, divider, canvas.width - divider);
       ctx.fillStyle = cssColor('--line') || '#ffffff';
@@ -5791,6 +7724,7 @@ HTML_PAGE = r"""<!doctype html>
       }
       if (state.dragSplitter) {
         state.splitter = Math.max(0.12, Math.min(0.88, point.x / canvas.width));
+        updateSplitterOverlay();
       } else {
         state.pan.x += point.x - state.last.x;
         state.pan.y += point.y - state.last.y;
@@ -6124,6 +8058,17 @@ HTML_PAGE = r"""<!doctype html>
         ...state.curatedMetadata,
         raw_summary: rawMetadataSummaryForUpload(state.upload || {}, (state.curatedMetadata && state.curatedMetadata.raw_summary) || {})
       });
+    }
+    function clearResultsPanel() {
+      $('resultPanel').classList.add('hidden');
+      $('textOutput').textContent = '';
+      $('decisionRationale').textContent = '';
+      $('metricsTable').innerHTML = '';
+      $('metricsDenominatorNote').textContent = '';
+      $('csvLink').removeAttribute('href');
+      $('pdfLink').removeAttribute('href');
+      $('runFilesZipLink').removeAttribute('href');
+      $('runFilesBtn').disabled = true;
     }
     async function saveMetadataFromDialog() {
       const domain = collectMetadataDomain();
@@ -6519,16 +8464,31 @@ HTML_PAGE = r"""<!doctype html>
       state.returnToBatchId = batchId || (state.batch && state.batch.batch_id) || null;
       await loadRun(runId, {returnToBatchId: state.returnToBatchId});
     }
-    async function applyUploadPreview({buttonId, targetView, statusKey}) {
+    async function refreshWorkspaceUpload(uploadId) {
+      if (!uploadId) return null;
+      const uploadResponse = await fetch(`/api/uploads/${encodeURIComponent(uploadId)}`);
+      const uploadPayload = await uploadResponse.json();
+      if (!uploadResponse.ok) throw new Error(uploadPayload.error || 'upload load failed');
+      state.upload = uploadPayload;
+      renderUploadCard(uploadPayload);
+      return uploadPayload;
+    }
+    async function applyUploadPreview({buttonId, targetView, statusKey, preparedStatusKey, changedStep}) {
       if (!state.upload) return;
       const button = buttonId ? $(buttonId) : null;
       if (button) button.disabled = true;
       setUploadWarning(null);
       startPreviewPreparationProgress(18, 96);
       try {
-        const response = await fetch(`/api/uploads/${encodeURIComponent(state.upload.upload_id)}/preprocess`, {
-          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...presetPayload(), augmentation: augmentationPayload()})
-        });
+        const body = JSON.stringify({...presetPayload(), augmentation: augmentationPayload(), changed_step: changedStep});
+        const applyingToPreparedRun = runCanBePreparedFromApply(state.run);
+        const response = applyingToPreparedRun
+          ? await fetch(`/api/runs/${encodeURIComponent(state.run.run_id)}/prepare`, {
+              method: 'POST', headers: {'Content-Type': 'application/json'}, body
+            })
+          : await fetch(`/api/uploads/${encodeURIComponent(state.upload.upload_id)}/preprocess`, {
+              method: 'POST', headers: {'Content-Type': 'application/json'}, body
+            });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'preprocess failed');
         stopUploadProgressTimer();
@@ -6536,13 +8496,25 @@ HTML_PAGE = r"""<!doctype html>
         setTimeout(() => {
           if (uploadProgressMessage && uploadProgressMessage.key === 'uploadProgressComplete') setUploadProgress(null);
         }, 900);
-        state.upload = payload;
-        renderUploadCard(payload);
+        if (payload.run_id) {
+          state.run = payload;
+          activePollRunId = null;
+          state.curatedMetadata = normalizeMetadataPayload((payload.input && payload.input.curated_metadata) || state.curatedMetadata || null);
+          await refreshWorkspaceUpload((payload.input && payload.input.upload_id) || state.upload.upload_id);
+          clearResultsPanel();
+          updateRunControls(payload);
+          await refreshHistory();
+          setStatus(preparedStatusKey, {runId: payload.run_id});
+        } else {
+          state.upload = payload;
+          renderUploadCard(payload);
+          setStatus(statusKey);
+        }
         applyShowTilingDefault();
         setViewMode(targetView);
         setSideLayer('none');
-        setStatus(statusKey);
         setProgress(0);
+        updateViewControls();
         drawMain();
       } catch (error) {
         clearUploadProgress();
@@ -6564,7 +8536,9 @@ HTML_PAGE = r"""<!doctype html>
       await applyUploadPreview({
         buttonId: 'applyAugmentationBtn',
         targetView: 'augmented',
-        statusKey: 'statusAugmentationUpdated'
+        statusKey: 'statusAugmentationUpdated',
+        preparedStatusKey: 'statusAugmentationPreparedRun',
+        changedStep: 'augmentation'
       });
     });
     $('applyPreprocessBtn').addEventListener('click', async () => {
@@ -6575,7 +8549,9 @@ HTML_PAGE = r"""<!doctype html>
       await applyUploadPreview({
         buttonId: 'applyPreprocessBtn',
         targetView: 'preprocessed',
-        statusKey: 'statusPreprocessUpdated'
+        statusKey: 'statusPreprocessUpdated',
+        preparedStatusKey: 'statusPreprocessPreparedRun',
+        changedStep: 'preprocess'
       });
     });
     $('startBtn').addEventListener('click', async () => {
@@ -6587,10 +8563,15 @@ HTML_PAGE = r"""<!doctype html>
       setProgress(1);
       setStatus('statusProgress', {stage: stageLabel('queued'), progress: 1, eta: ''});
       try {
-        const startPayload = {upload_id: state.upload.upload_id, ...presetPayload(), augmentation: augmentationPayload()};
+        const startPayload = runIsPrepared(state.run)
+          ? {}
+          : {upload_id: state.upload.upload_id, ...presetPayload(), augmentation: augmentationPayload()};
         const curatedMetadata = currentMetadataPayloadForSubmission();
         if (curatedMetadata) startPayload.curated_metadata = curatedMetadata;
-        const response = await fetch('/api/runs/start', {
+        const startUrl = runIsPrepared(state.run)
+          ? `/api/runs/${encodeURIComponent(state.run.run_id)}/start`
+          : '/api/runs/start';
+        const response = await fetch(startUrl, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(startPayload)
         });
@@ -6642,6 +8623,7 @@ HTML_PAGE = r"""<!doctype html>
       if (normalized === 'queued') return t('stageQueued');
       if (normalized === 'canceling') return t('stageCanceling');
       if (normalized === 'canceled') return t('stageCanceled');
+      if (normalized === 'prepared') return t('stagePrepared');
       if (normalized === 'complete') return t('stageComplete');
       if (normalized === 'failed') return t('stageFailed');
       if (normalized === 'running') return t('stageRunning');
@@ -6761,6 +8743,7 @@ HTML_PAGE = r"""<!doctype html>
       document.querySelectorAll('[data-delete-run]').forEach(btn => btn.addEventListener('click', () => removeRun(btn.dataset.deleteRun)));
       document.querySelectorAll('[data-preview-run]').forEach(btn => btn.addEventListener('click', () => openHistoryPreview(btn.dataset.previewUrl, btn.dataset.previewTitle)));
       document.querySelectorAll('[data-open-batch]').forEach(btn => btn.addEventListener('click', () => showBatch(true, btn.dataset.openBatch)));
+      document.querySelectorAll('[data-delete-batch]').forEach(btn => btn.addEventListener('click', () => removeBatch(btn.dataset.deleteBatch)));
     }
     function renderHistoryPage() {
       document.querySelectorAll('#historyModeButtons button').forEach(btn => btn.classList.toggle('active', btn.dataset.historyMode === state.historyMode));
@@ -6793,7 +8776,7 @@ HTML_PAGE = r"""<!doctype html>
           <td class="numeric">${escapeHtml(String(batch.items_count || 0))}</td>
           <td class="numeric">${escapeHtml(Math.round(Number(batch.progress || 0)) + '%')}</td>
           <td>${escapeHtml(batchCountsText(batch))}</td>
-          <td><div class="history-actions"><button data-open-batch="${escapeHtml(batch.batch_id || '')}">${escapeHtml(t('historyOpenBatch'))}</button></div></td>
+          <td><div class="history-actions"><button data-open-batch="${escapeHtml(batch.batch_id || '')}">${escapeHtml(t('historyOpenBatch'))}</button><button class="danger" data-delete-batch="${escapeHtml(batch.batch_id || '')}">${escapeHtml(t('historyRemove'))}</button></div></td>
         </tr>`;
       }).join('');
       return `<div class="history-table-wrap"><table class="history-table">
@@ -6936,6 +8919,22 @@ HTML_PAGE = r"""<!doctype html>
       setStatus('statusRunRemoved', {runId});
       await refreshHistory();
     }
+    async function removeBatch(batchId) {
+      if (!batchId || !window.confirm(t('confirmRemoveBatch', {batchId}))) return;
+      const response = await fetch(`/api/batches/${encodeURIComponent(batchId)}`, {method: 'DELETE'});
+      const payload = await response.json();
+      if (!response.ok) {
+        window.alert(t('statusFailed', {error: payload.error || t('unknownError')}));
+        return;
+      }
+      if (state.batch && state.batch.batch_id === batchId) {
+        state.batch = null;
+        state.batchPollId = null;
+      }
+      if (state.returnToBatchId === batchId) state.returnToBatchId = null;
+      setStatus('statusBatchRemoved', {batchId});
+      await refreshHistory();
+    }
     async function loadRun(runId, options = {}) {
       const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`);
       const payload = await response.json();
@@ -6965,40 +8964,65 @@ HTML_PAGE = r"""<!doctype html>
       applyAugmentationToControls({...((runAugmentation && runAugmentation.settings) || {}), enabled: runAugmentation.enabled === true}, {save: true});
       applyShowTilingDefault();
       updateRunControls(payload);
-      renderResults(payload);
+      if (payload.status === 'complete') renderResults(payload);
+      else clearResultsPanel();
       setSideLayer('none');
-      setViewMode('final');
+      if (payload.status === 'complete') setViewMode('final');
+      else if (layerAvailable('preprocessed')) setViewMode('preprocessed');
+      else if (layerAvailable('augmented')) setViewMode('augmented');
+      else setViewMode('original');
       setProgress(payload.status === 'complete' ? 100 : (payload.progress || 0));
       setStatus(upload ? 'statusRunLoaded' : 'statusRunLoadedNoUpload', {runId: payload.run_id});
       showWorkspace(true);
       resetWindowScroll();
       if (runIsActive(payload)) pollRun(payload.run_id);
     }
-    const PAGE_SLUGS = {workspace: '/workspace', batch: '/batch', history: '/history', settings: '/settings'};
-    function pageFromLocation() {
+    const PAGE_SLUGS = {workspace: '/workspace', batch: '/batch', history: '/history', historySeries: '/history_series', settings: '/settings', status: '/status', api: '/api'};
+    function historySlugForMode(mode) {
+      return mode === 'batches' ? PAGE_SLUGS.historySeries : PAGE_SLUGS.history;
+    }
+    function historyModeFromState(mode) {
+      return ['all', 'single', 'batches'].includes(mode) ? mode : null;
+    }
+    function pageFromLocation(historyMode = null) {
       if (window.location.pathname === PAGE_SLUGS.batch || window.location.pathname.startsWith(`${PAGE_SLUGS.batch}/`)) return 'batch';
-      if (window.location.pathname === PAGE_SLUGS.history) return 'history';
+      if (window.location.pathname === PAGE_SLUGS.historySeries) {
+        state.historyMode = 'batches';
+        return 'history';
+      }
+      if (window.location.pathname === PAGE_SLUGS.history) {
+        const restoredMode = historyModeFromState(historyMode);
+        state.historyMode = restoredMode && restoredMode !== 'batches' ? restoredMode : (state.historyMode === 'batches' ? 'all' : state.historyMode);
+        return 'history';
+      }
       if (window.location.pathname === PAGE_SLUGS.settings) return 'settings';
+      if (window.location.pathname === PAGE_SLUGS.status) return 'status';
+      if (window.location.pathname === PAGE_SLUGS.api) return 'api';
       return 'workspace';
     }
     function resetWindowScroll() {
       requestAnimationFrame(() => window.scrollTo({top: 0, left: 0, behavior: 'auto'}));
     }
     function setPage(page, options = {}) {
-      const nextPage = ['workspace', 'batch', 'history', 'settings'].includes(page) ? page : 'workspace';
+      const nextPage = ['workspace', 'batch', 'history', 'settings', 'status', 'api'].includes(page) ? page : 'workspace';
       const batchId = options.batchId || (nextPage === 'batch' ? batchIdFromLocation() : null);
-      const slug = nextPage === 'batch' && batchId ? `/batch/${encodeURIComponent(batchId)}` : PAGE_SLUGS[nextPage];
+      const slug = nextPage === 'batch' && batchId ? `/batch/${encodeURIComponent(batchId)}` : (nextPage === 'history' ? historySlugForMode(state.historyMode) : PAGE_SLUGS[nextPage]);
       document.body.dataset.page = nextPage;
       $('workspaceView').classList.toggle('hidden', nextPage !== 'workspace');
       $('batchView').classList.toggle('hidden', nextPage !== 'batch');
       $('historyView').classList.toggle('hidden', nextPage !== 'history');
       $('settingsView').classList.toggle('hidden', nextPage !== 'settings');
+      $('statusView').classList.toggle('hidden', nextPage !== 'status');
+      $('apiView').classList.toggle('hidden', nextPage !== 'api');
       $('workspaceTab').classList.toggle('active', nextPage === 'workspace');
       $('batchTab').classList.toggle('active', nextPage === 'batch');
       $('historyTab').classList.toggle('active', nextPage === 'history');
       $('settingsTab').classList.toggle('active', nextPage === 'settings');
+      $('statusTab').classList.toggle('active', nextPage === 'status');
+      $('apiTab').classList.toggle('active', nextPage === 'api');
       if (options.push && window.location.pathname !== slug) {
-        window.history.pushState({page: nextPage}, '', slug);
+        const historyState = nextPage === 'history' ? {page: nextPage, historyMode: state.historyMode} : {page: nextPage};
+        window.history.pushState(historyState, '', slug);
       }
       if (nextPage === 'batch') {
         if (batchId && (!state.batch || state.batch.batch_id !== batchId)) {
@@ -7018,6 +9042,8 @@ HTML_PAGE = r"""<!doctype html>
       }
       if (nextPage === 'history') refreshHistory();
       if (nextPage === 'settings') renderSettingsForm(currentAppSettings());
+      if (nextPage === 'status') loadSystemStatus();
+      if (nextPage === 'api') renderApiDocs();
       resizeCanvas();
       if (options.resetScroll) resetWindowScroll();
     }
@@ -7025,14 +9051,25 @@ HTML_PAGE = r"""<!doctype html>
     function showBatch(push = false, batchId = null) { setPage('batch', {push, batchId}); }
     function showHistory(push = false) { setPage('history', {push}); }
     function showSettings(push = false) { setPage('settings', {push}); }
+    function showStatus(push = false) { setPage('status', {push}); }
+    function showApi(push = false) { setPage('api', {push}); }
     $('workspaceTab').addEventListener('click', () => showWorkspace(true));
     $('batchTab').addEventListener('click', () => showBatch(true, state.batch && state.batch.batch_id));
     $('historyTab').addEventListener('click', () => showHistory(true));
     $('settingsTab').addEventListener('click', () => showSettings(true));
+    $('statusTab').addEventListener('click', () => showStatus(true));
+    $('apiTab').addEventListener('click', () => showApi(true));
+    $('refreshStatusBtn').addEventListener('click', loadSystemStatus);
     document.querySelectorAll('#historyModeButtons button').forEach(btn => btn.addEventListener('click', () => {
       state.historyMode = btn.dataset.historyMode || 'all';
       renderHistoryPage();
       attachHistoryActions();
+      if (document.body.dataset.page === 'history') {
+        const slug = historySlugForMode(state.historyMode);
+        if (window.location.pathname !== slug) {
+          window.history.pushState({page: 'history', historyMode: state.historyMode}, '', slug);
+        }
+      }
     }));
     $('newBatchBtn').addEventListener('click', () => {
       state.batch = null;
@@ -7058,7 +9095,7 @@ HTML_PAGE = r"""<!doctype html>
     $('saveSettingsBtn').addEventListener('click', saveSettingsFromPage);
     $('resetSettingsBtn').addEventListener('click', resetSettingsFromPage);
     ['settingsPanoramaScaling','settingsPanoramaScalingMode'].forEach(id => $(id).addEventListener('change', () => updatePanoramaScalingControls('settings')));
-    window.addEventListener('popstate', () => setPage(pageFromLocation(), {push: false}));
+    window.addEventListener('popstate', event => setPage(pageFromLocation(event.state && event.state.historyMode), {push: false}));
     loadAppSettings();
     setPage(pageFromLocation(), {push: false});
     refreshHistory();
