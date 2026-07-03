@@ -1,0 +1,19 @@
+{
+  "dataset_manifest": "outputs/talc_non_sulfide_dataset_v0/manifest.json",
+  "model": "resunet",
+  "out_dir": "models/talc_segmentation/resunet_non_sulfide_20260703_local",
+  "epochs": 3,
+  "batch_size": 4,
+  "num_workers": 0,
+  "lr": 0.0003,
+  "weight_decay": 0.0001,
+  "base_channels": 16,
+  "device": "auto",
+  "amp": false,
+  "pretrained_model": null,
+  "allow_random_init": false,
+  "max_steps_per_epoch": 80,
+  "seed": 20260703,
+  "task": "binary_talc_non_sulfide",
+  "device_resolved": "mps"
+}
