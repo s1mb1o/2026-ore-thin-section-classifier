@@ -1,0 +1,23 @@
+name: nornikel-ore-pipeline-ui
+
+services:
+  ore-pipeline-ui:
+    image: nornikel/ore-pipeline-ui:v2
+    build:
+      context: .
+      dockerfile: docker/ore-pipeline-ui/Dockerfile
+    ports:
+      - "${ORE_UI_PUBLIC_PORT:-8080}:8080"
+    environment:
+      ORE_UI_HOST: 0.0.0.0
+      ORE_UI_PORT: 8080
+      ORE_UI_WORKSPACE: /data/ore_pipeline_ui
+      ORE_UI_BACKEND: "${ORE_UI_BACKEND:-heuristic}"
+      ORE_UI_CHECKPOINT: "${ORE_UI_CHECKPOINT:-}"
+      ORE_UI_PROCESSING_MAX_SIDE: "${ORE_UI_PROCESSING_MAX_SIDE:-2600}"
+      ORE_UI_PANORAMA_MAX_SIDE: "${ORE_UI_PANORAMA_MAX_SIDE:-1800}"
+      ORE_UI_PREVIEW_MAX_SIDES: "${ORE_UI_PREVIEW_MAX_SIDES:-1024,2048,4096}"
+    volumes:
+      - ./outputs/ore_pipeline_ui:/data/ore_pipeline_ui
+      - ./models:/app/models:ro
+    restart: unless-stopped

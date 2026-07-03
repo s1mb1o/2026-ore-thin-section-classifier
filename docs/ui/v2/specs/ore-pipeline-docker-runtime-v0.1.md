@@ -1,0 +1,44 @@
+# Ore Pipeline Docker Runtime v0.1
+
+Date: 2026-07-03
+
+## Goal
+
+Provide a Docker image for running the v2 ore pipeline browser GUI on the Nornickel VM. This is an operational demo/runtime path for `apps/ore_pipeline_web.py`, not the main model-training or benchmark path.
+
+## Runtime Contract
+
+- The container starts the web UI on `0.0.0.0:8080` by default.
+- The host maps a public VM port to container port `8080`.
+- On the organizer VM, launch may require `sudo docker compose` if Docker socket access is not granted to the default user.
+- The app stores uploads, settings, immutable runs, batches, masks, CSV files, and PDF reports in `/data/ore_pipeline_ui`.
+- The default backend is `heuristic` so the UI can run without GPU, Torch, Transformers, or checkpoints.
+- RAW upload decoding is supported when `rawpy` can decode the camera file; otherwise the existing UI error asks the user to convert to TIFF, PNG, or JPEG.
+- The Docker build must not copy the official dataset symlink, generated outputs, or model checkpoints into the image.
+
+## Configuration
+
+Environment variables:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ORE_UI_HOST` | `0.0.0.0` | Bind address inside the container |
+| `ORE_UI_PORT` | `8080` | Port inside the container |
+| `ORE_UI_WORKSPACE` | `/data/ore_pipeline_ui` | Persistent UI workspace |
+| `ORE_UI_BACKEND` | `heuristic` | `heuristic` or `ml` |
+| `ORE_UI_CHECKPOINT` | empty | Optional checkpoint path for `ml` backend |
+| `ORE_UI_PROCESSING_MAX_SIDE` | `2600` | Analysis-scale longest-side limit |
+| `ORE_UI_PANORAMA_MAX_SIDE` | `1800` | Panorama preprocessing longest-side limit |
+| `ORE_UI_PREVIEW_MAX_SIDES` | `1024,2048,4096` | Preview pyramid side sizes |
+| `ORE_UI_PUBLIC_PORT` | `8080` | Host port used by Compose |
+
+## Volumes
+
+- `./outputs/ore_pipeline_ui:/data/ore_pipeline_ui` persists app state across restarts.
+- `./models:/app/models:ro` makes local checkpoints available if an ML-capable derived image is used.
+
+## Non-goals
+
+- Do not install the full training stack in this image.
+- Do not bundle the official dataset or generated outputs.
+- Do not make this the primary judged inference path; it is a deployable GUI convenience for the VM.
