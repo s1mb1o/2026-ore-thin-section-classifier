@@ -87,13 +87,27 @@ def build_workspace(
     output_dir: Path,
     *,
     overwrite: bool = False,
+    append: bool = False,
+    id_prefix: str = "",
+    label: str | None = None,
 ) -> dict:
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     taken_ids: set[str] = set()
     samples: list[dict] = []
+    manifest_path = output_dir / "manifest.json"
+    if append and manifest_path.exists():
+        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for summary in existing.get("samples", []):
+            sample_id = str(summary.get("image_id") or "")
+            if sample_id and (samples_dir / sample_id / "conversion_summary.json").exists():
+                taken_ids.add(sample_id)
+                samples.append(summary)
+    existing_paths = {s.get("image_path") for s in samples}
     for image_path in images:
-        sample_id = unique_sample_id(image_path.stem, taken_ids)
+        if str(image_path) in existing_paths:
+            continue
+        sample_id = unique_sample_id(f"{id_prefix}{image_path.stem}", taken_ids)
         sample_dir = samples_dir / sample_id
         summary_path = sample_dir / "conversion_summary.json"
         if summary_path.exists() and not overwrite:
@@ -122,12 +136,13 @@ def build_workspace(
             "image_path": str(image_path),
             "original_path": str(source_copy),
             "source_folder": str(image_path.parent),
+            "folder_label": label,
             "width": int(width),
             "height": int(height),
             "candidate_talc_pixels": 0,
             "final_talc_pixels": 0,
             "overlap_pixels": 0,
-            "status": "scratch_unlabeled",
+            "status": f"scratch_{label}" if label else "scratch_unlabeled",
             "paths": {
                 "source_image": str(source_copy),
                 "final_talc_mask": str(final_mask_path),
@@ -170,6 +185,9 @@ def main() -> int:
     )
     parser.add_argument("--limit", type=int, default=None, help="Global cap on the number of samples.")
     parser.add_argument("--overwrite", action="store_true", help="Regenerate existing samples (keeps nothing).")
+    parser.add_argument("--append", action="store_true", help="Keep existing workspace samples and add new ones.")
+    parser.add_argument("--id-prefix", default="", help="Prefix for new sample ids, e.g. 'row_'.")
+    parser.add_argument("--label", default=None, help="Ground-truth source label stored per sample, e.g. 'row_ch2'.")
     args = parser.parse_args()
 
     images = collect_images(args.images, per_dir_limit=args.per_dir_limit, shuffle_seed=args.shuffle_seed)
@@ -178,7 +196,14 @@ def main() -> int:
     if not images:
         raise SystemExit("no images found for the given --images inputs")
 
-    manifest = build_workspace(images, args.output_dir, overwrite=args.overwrite)
+    manifest = build_workspace(
+        images,
+        args.output_dir,
+        overwrite=args.overwrite,
+        append=args.append,
+        id_prefix=args.id_prefix,
+        label=args.label,
+    )
     print(
         json.dumps(
             {
