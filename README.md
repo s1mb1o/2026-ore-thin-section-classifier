@@ -131,11 +131,12 @@ Run one image through the current end-to-end path:
 ```bash
 python3 scripts/run_ore_pipeline.py \
   --image "dataset/Фото руд по сортам. ч1/Рядовые руды/2539589-1.JPG" \
-  --checkpoint models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/best.pt \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
   --out-dir outputs/demo_ore_pipeline \
   --tile-size 1024 \
   --stride 768 \
-  --batch-size 4
+  --batch-size 4 \
+  --auto-talc-candidate
 ```
 
 The pipeline writes:
@@ -143,14 +144,37 @@ The pipeline writes:
 - binary sulfide mask;
 - confidence heatmap;
 - sulfide overlay preview;
+- automatic talc candidate mask/overlay/summary, or a provided `--talc-mask`;
 - component ordinary/fine CSV;
 - intergrowth overlay preview;
 - deterministic ore summary JSON.
 
+Run the full image-level balanced split and compute organizer-facing
+classification metrics:
+
+```bash
+python3 scripts/run_official_batch.py \
+  --split-json outputs/official_balanced_eval_split.json \
+  --dataset-root dataset \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/evaluations/b2_official_balanced_auto_talc \
+  --tile-size 1024 \
+  --stride 768 \
+  --batch-size 1 \
+  --device auto \
+  --overwrite
+```
+
+```bash
+python3 scripts/evaluate_ore_classification.py \
+  --summary-csv outputs/evaluations/b2_official_balanced_auto_talc/summary.csv \
+  --out-json outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.json \
+  --out-md outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.md
+```
+
 ## Next Implementation Steps
 
-1. Compare SegFormer-B2/B1/B0 and heuristic segmentation outputs to build the first disagreement queue.
+1. Run the B2 official balanced batch and inspect `ore_classification_metrics.md`.
 2. Calibrate component-level ordinary/fine thresholds against the balanced labelled split.
-3. Review and accept/fix the generated talc masks from `outputs/talc_blue_line_conversion`.
-4. Use the Streamlit binary QA app to record accepted/rejected/uncertain mask verdicts.
-5. Wire accepted talc masks into `run_ore_pipeline.py` before claiming talcose image-level quality.
+3. Compare SegFormer-B2/B1/B0 and heuristic segmentation outputs to build the first disagreement queue if time permits.
+4. Use accepted talc masks from `outputs/talc_blue_line_conversion` via `--talc-mask` when stronger talc claims are needed; otherwise keep `--auto-talc-candidate` framed as a conservative candidate.

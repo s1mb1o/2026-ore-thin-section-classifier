@@ -6,6 +6,8 @@ This is the shared handoff file for the clean v2 Nornickel hackathon workspace.
 
 Canonical active workdir: `/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2`. Start new local work in this v2 checkout, not in the older `../2026_Nornikel_Hackaton` repository unless explicitly requested.
 
+GitHub repository: `https://github.com/s1mb1o/2026-ore-thin-section-classifier` (private).
+
 ## Required Read Order
 
 1. `~/.claude/CLAUDE.md`
@@ -77,6 +79,7 @@ Source dataset facts from the original repository handoff:
 - `docs/notes/2026-07-03-heuristic-segmentation-subproject.md`: separate non-neural segmentation baseline, smoke result, limits, and intended use as a disagreement source.
 - `docs/notes/2026-07-03-gpu-training-status.md`: current binary sulfide dataset, gx10 ResUNet job, and zelda blocker.
 - `docs/notes/talc-blue-line-conversion.md`: v2 talc blue-line converter/review note.
+- `docs/specs/talc-mask-review-web-app-v0.1.md`: draft review spec for replacing the unreliable Streamlit mask-editing UI with a talc-only local Python/HTML/JS/canvas app that starts directly from the raw `Области оталькования` folder, pairs MS Paint annotated images with same-filename originals, creates/reuses the talc conversion workspace, supports brush/eraser/polygon/rectangle/SAM2 talc-mask editing, undo, `Save`, and `Save and next`.
 - `docs/notes/2026-07-02-domain-datasets-search.md`: official dataset inventory and external dataset context.
 - `docs/notes/2026-07-02-targeted-om-datasets-models.md`: targeted OM sulfide/talc dataset/model review.
 - `docs/notes/2026-07-02-telegram-shlif-captains-chat.md`: organizer confirmations.
@@ -87,13 +90,14 @@ Source dataset facts from the original repository handoff:
 2. Use the local SegFormer-B2 mirror at `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/` as the default sulfide checkpoint.
 3. Keep the local SegFormer-B1 mirror at `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/` as the faster fallback checkpoint.
 4. Use `outputs/official_balanced_eval_split.json` for balanced labelled-class evaluation; keep weak-label metrics separate from image-level class metrics.
-5. Review `outputs/manual_review/b2_balanced_review_pack/` first: it contains 9 B2 review panels, 8 uncertainty crop candidates, `feedback_template.csv`, and Streamlit-ready run directories. Use it to mark mask errors, ordinary/fine disagreements, and talc issues.
-6. Calibrate component ordinary/fine thresholds using the six-image B1 pack, the new B2 review pack, and the balanced split; current visual packs show rule disagreements that should not be hidden.
-7. Compare SegFormer-B1/B0 predictions against `heuristic_segmentation/` outputs and surface disagreement areas as the next sulfide QA queue.
+5. Run `scripts/run_official_batch.py` with the B2 checkpoint on the balanced split, then run `scripts/evaluate_ore_classification.py` on the produced `summary.csv`.
+6. Calibrate component ordinary/fine thresholds using the batch F1/AUC output, the six-image B1 pack, the B2 review pack, and the balanced split; current visual packs show rule disagreements that should not be hidden.
+7. Compare SegFormer-B1/B0 predictions against `heuristic_segmentation/` outputs and surface disagreement areas as the next sulfide QA queue if time permits.
 8. Wire the reusable demo libraries into pipeline outputs: `source_fusion` -> `review_queue` -> `component_reports` -> `report_cards`, with `curation` for split/label QA and `scribble_classifier` as an optional reviewer-assist source.
 9. Use the research mindstorm note to prioritize the remaining differentiating features: robustness certificate, illumination/flat-field artifact, high-loss pseudo-label cleanup, annotation-budget simulation, OIA-style report protocol, and MIL over sulfide components.
-10. Use `apps/sulfide_qa_streamlit.py` as a file-based QA app with overlays, confidence heatmaps, review panels, disagreement layers, and JSON verdicts.
-11. Review and accept/fix talc masks from `outputs/talc_blue_line_conversion` in `apps/talc_review_streamlit.py`.
+10. Keep `outputs/manual_review/b2_balanced_review_pack/` available as optional QA evidence, but the current implementation path no longer blocks on manual review.
+11. Review and accept/fix talc masks from `outputs/talc_blue_line_conversion` in `apps/talc_review_streamlit.py` only if the automatic talc candidate is not good enough for demo claims.
+12. Review `docs/specs/talc-mask-review-web-app-v0.1.md` before implementing the custom browser/canvas replacement for the Streamlit talc review UI.
 
 ## Known Risks
 
@@ -114,12 +118,16 @@ Source dataset facts from the original repository handoff:
 - `scripts/evaluate_binary_sulfide.py` reports IoU, F1, AUC, Hausdorff, and HD95. SegFormer-B1 best eval: sulfide IoU `0.971548`, F1 `0.985569`, AUC `0.998522`, HD95 mean `26.25 px` on 512 sampled val tiles.
 - `scripts/infer_binary_sulfide.py` runs overlapping tiled inference and writes `sulfide_mask.png`, `confidence.png`, `overlay_preview.jpg`, and `summary.json`.
 - `scripts/analyze_ore_from_masks.py` computes connected-component ordinary/fine features, ore class rule output, `component_features.csv`, and intergrowth overlay.
-- `scripts/run_ore_pipeline.py` runs image -> sulfide mask -> ore summary in one command.
+- `src/ore_classifier/talc_candidate.py` provides a conservative automatic talc candidate mask from optical RGB plus sulfide exclusion. This is a runtime candidate, not expert talc ground truth.
+- `scripts/run_ore_pipeline.py` runs image -> sulfide mask -> optional provided/automatic talc mask -> ore summary in one command. Use `--auto-talc-candidate` for the current no-manual-review path, or `--talc-mask` for accepted masks.
+- `scripts/run_official_batch.py` runs the full pipeline over `outputs/official_balanced_eval_split.json` and writes `summary.csv/json` with source labels, predicted ore class, fractions, artifact paths, and failures.
+- `scripts/evaluate_ore_classification.py` computes image-level accuracy, per-class precision/recall/F1, macro/weighted F1, confusion matrix, and one-vs-rest AUC from the batch `summary.csv`.
 - `scripts/build_official_balanced_eval_split.py` generated `outputs/official_balanced_eval_split.json` / `.csv` with `129` samples per ordinary/fine/talcose class; panoramas are listed separately as unlabelled.
 - Final B2 demo output exists under `outputs/inference_demo/b2_final_row_2539589_1/`: final B2 inference on official row ore image, sulfide fraction `0.296259`, component summary, confidence map, and overlays.
 - B2 manual review pack exists under `outputs/manual_review/b2_balanced_review_pack/`: 9 balanced official-class samples, `review_panel.jpg` per run, source previews, sulfide overlays, confidence heatmaps, ordinary/fine overlays, `8` uncertainty crop candidates, `review_manifest.csv/json`, `review_candidates.csv`, and `feedback_template.csv`. Source subset copy exists under `outputs/manual_review/source_dataset_subset/`.
-- Manual review pack generator: `scripts/prepare_manual_review_pack.py`. The Streamlit sulfide QA app now displays optional `review_panel`, `source_preview`, and `confidence_heatmap` paths when present.
-- Local smoke tests passed for ResUNet and SegFormer-B0 on `outputs/smoke_binary_sulfide_dataset`; full local unit tests now cover `31` tests.
+- Manual review pack generator: `scripts/prepare_manual_review_pack.py`. The Streamlit sulfide QA app now displays optional `review_panel`, `source_preview`, and `confidence_heatmap` paths when present. It also shows the run source image and inferred source `dataset/...` path for the original image, using `review_manifest.csv` when available.
+- Auto-talc full-path smoke output exists under `outputs/commit_smoke_ore_pipeline_auto_talc/`, and one-image official batch/eval smoke output exists under `outputs/commit_smoke_official_batch/`.
+- Local smoke tests passed for ResUNet and SegFormer-B0 on `outputs/smoke_binary_sulfide_dataset`; full local unit tests now cover `36` tests.
 - gx10 ResUNet training is active in `tmux nornickel_v2_resunet`.
 - zelda SegFormer-B2 training completed 30 epochs; best validation sulfide IoU is `0.974381` at epoch 20, with final epoch 30 IoU `0.969119`.
 - zelda SegFormer-B1 training completed 30 epochs; best validation sulfide IoU is `0.971548` at epoch 16, with final epoch 30 IoU `0.964032`.
@@ -145,7 +153,7 @@ Source dataset facts from the original repository handoff:
 - `src/ore_classifier/component_reports.py` adds association contacts, sulfide liberation proxies, and deterministic ore-decision margin flags.
 - `src/ore_classifier/report_cards.py` renders model cards, dataset cards, and run fact sheets for reproducibility/provenance outputs.
 - `src/ore_classifier/scribble_classifier.py` provides an ilastik/Labkit-style nearest-centroid pixel classifier from sparse foreground/background scribbles.
-- Full local unit tests now cover `31` tests with `python3 -m unittest discover -s tests -p 'test_*.py' -v`.
+- Full local unit tests now cover `36` tests with `python3 -m unittest discover -s tests -p 'test_*.py' -v`.
 
 ## Implemented Talc Block
 

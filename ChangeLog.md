@@ -2,6 +2,13 @@
 
 ## 2026-07-03
 
+- Added the private GitHub repository location for the clean v2 workspace: `s1mb1o/2026-ore-thin-section-classifier`.
+- Added the automatic full-path ore batch implementation: `src/ore_classifier/talc_candidate.py`, `scripts/run_ore_pipeline.py --auto-talc-candidate/--talc-mask`, `scripts/run_official_batch.py`, and `scripts/evaluate_ore_classification.py`.
+- Added regression tests for the talc candidate mask and image-level ore classification evaluator; local `unittest` now covers `36` tests.
+- Smoke-tested the auto-talc one-image pipeline and one-image official batch path with the commit smoke ResUNet checkpoint under `outputs/commit_smoke_ore_pipeline_auto_talc/` and `outputs/commit_smoke_official_batch/`.
+- Added `docs/specs/talc-mask-review-web-app-v0.1.md`, a draft review spec for replacing the unreliable Streamlit mask-editing flow with a talc-only local `http.server` + generated HTML/CSS + vanilla JS/canvas application that pairs MS Paint annotated talc images with same-filename originals, creates/reuses an automatic conversion workspace, supports brush/eraser/polygon/rectangle/SAM2 talc-mask editing, undo, `Save`, and `Save and next`.
+- Added original-image path display to the sulfide QA UI: each run now shows the copied run source image, the source `dataset/...` path when it can be inferred from `review_manifest.csv`, and stores the same path metadata in saved review JSON.
+- Fixed a talc Streamlit crash where `st.segmented_control` could return `None` for the canvas tool after session-state migration; segmented controls now drop invalid saved values and fall back to their default option.
 - Fixed the talc Streamlit canvas compatibility shim for Streamlit 1.50: `streamlit-drawable-canvas` now gets the legacy `streamlit.elements.image.image_to_url` wrapper even when Streamlit exposes `LayoutConfig` instead of `create_layout_config`.
 - Documented the canonical v2 iteration workdir in `AGENTS.md` and `docs/session-sync.md`: `/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2`.
 - Added `requirements-ui.txt` for Streamlit-only review tools and documented that the full `requirements.txt` needs Python >=3.10; this fixes the Python 3.9 `.venv` install failure on `transformers>=5.12.1`.

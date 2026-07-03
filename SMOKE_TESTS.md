@@ -84,7 +84,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 Expected:
 
-- Unit tests pass; current local result is `31` tests.
+- Unit tests pass; current local result is `36` tests.
 - Coverage includes `source_fusion`, `review_queue`, `curation`, `component_reports`, `report_cards`, and `scribble_classifier`.
 - These tests use synthetic inputs and do not require GPU, Streamlit, SAM2, or external datasets.
 
@@ -163,12 +163,35 @@ python3 scripts/evaluate_binary_sulfide.py \
 python3 scripts/run_ore_pipeline.py \
   --image outputs/commit_smoke_binary_sulfide_dataset/tiles/train/images/official_heuristic_014709cbad4a_384_0.jpg \
   --checkpoint outputs/commit_smoke_train_resunet/best.pt \
-  --out-dir outputs/commit_smoke_ore_pipeline \
+  --out-dir outputs/commit_smoke_ore_pipeline_auto_talc \
   --tile-size 64 \
   --stride 32 \
   --batch-size 2 \
   --device cpu \
-  --preview-max-side 256
+  --preview-max-side 256 \
+  --auto-talc-candidate
+```
+
+```bash
+python3 scripts/run_official_batch.py \
+  --split-json outputs/official_balanced_eval_split.json \
+  --dataset-root dataset \
+  --checkpoint outputs/commit_smoke_train_resunet/best.pt \
+  --out-dir outputs/commit_smoke_official_batch \
+  --max-total 1 \
+  --tile-size 512 \
+  --stride 512 \
+  --batch-size 2 \
+  --device cpu \
+  --preview-max-side 256 \
+  --overwrite
+```
+
+```bash
+python3 scripts/evaluate_ore_classification.py \
+  --summary-csv outputs/commit_smoke_official_batch/summary.csv \
+  --out-json outputs/commit_smoke_official_batch/ore_classification_metrics.json \
+  --out-md outputs/commit_smoke_official_batch/ore_classification_metrics.md
 ```
 
 ```bash
@@ -181,8 +204,9 @@ python3 scripts/build_official_balanced_eval_split.py \
 Expected:
 
 - Evaluation JSON includes `iou_sulfide`, `f1_sulfide`, `auc_sulfide`, `hausdorff_px_mean`, and `hd95_px_mean`.
-- The pipeline writes `binary_sulfide/sulfide_mask.png`, `binary_sulfide/confidence.png`, `binary_sulfide/overlay_preview.jpg`, `ore_analysis/ore_summary.json`, `ore_analysis/component_features.csv`, and `ore_analysis/intergrowth_overlay_preview.jpg`.
+- The pipeline writes `binary_sulfide/sulfide_mask.png`, `binary_sulfide/confidence.png`, `binary_sulfide/overlay_preview.jpg`, `talc_candidate/talc_candidate_mask.png`, `talc_candidate/talc_candidate_summary.json`, `ore_analysis/ore_summary.json`, `ore_analysis/component_features.csv`, and `ore_analysis/intergrowth_overlay_preview.jpg`.
 - Balanced official split contains `387` labelled images: `129` ordinary, `129` fine, `129` talcose; the `14` panoramas remain listed separately as unlabelled stress-test images.
+- The one-image official batch smoke writes `summary.csv`, `summary.json`, `failures.json`, and image-level classification metrics JSON/Markdown. On a one-class smoke sample, AUC may be `null`; full balanced evaluation is needed for meaningful F1/AUC.
 
 ## Manual Review Pack Smoke
 

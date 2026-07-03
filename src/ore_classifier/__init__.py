@@ -10,4 +10,5 @@ __all__: list[str] = [
     "scribble_classifier",
     "source_fusion",
     "talc_blue_line_converter",
+    "talc_candidate",
 ]

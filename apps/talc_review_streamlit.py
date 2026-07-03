@@ -222,10 +222,13 @@ def reset_invalid_choice(key: str, valid_options: list[str], default: str) -> No
 
 
 def segmented_choice(label: str, options: list[str], *, default: str, key: str) -> str:
-    reset_invalid_choice(key, options, default)
+    if key in st.session_state and st.session_state[key] not in options:
+        st.session_state.pop(key, None)
     if key in st.session_state:
-        return st.segmented_control(label, options, key=key)
-    return st.segmented_control(label, options, default=default, key=key)
+        value = st.segmented_control(label, options, key=key)
+    else:
+        value = st.segmented_control(label, options, default=default, key=key)
+    return value if value in options else default
 
 
 def set_flash(level: str, message: str) -> None:

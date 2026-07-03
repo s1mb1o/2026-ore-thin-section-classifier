@@ -73,7 +73,41 @@ python3 scripts/run_ore_pipeline.py \
   --image "dataset/Фото руд по сортам. ч1/Рядовые руды/DSCN2176.JPG" \
   --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
   --out-dir outputs/inference_demo/local_dscn2176_b2 \
-  --device auto
+  --device auto \
+  --auto-talc-candidate
+```
+
+Use an accepted talc mask instead of the automatic candidate when available:
+
+```bash
+python3 scripts/run_ore_pipeline.py \
+  --image "dataset/Фото руд по сортам. ч1/Оталькованные руды/example.JPG" \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/inference_demo/example_with_accepted_talc \
+  --device auto \
+  --talc-mask outputs/talc_blue_line_conversion/example/final_talc_mask.png
+```
+
+## Official Batch Metrics
+
+```bash
+python3 scripts/run_official_batch.py \
+  --split-json outputs/official_balanced_eval_split.json \
+  --dataset-root dataset \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/evaluations/b2_official_balanced_auto_talc \
+  --tile-size 1024 \
+  --stride 768 \
+  --batch-size 1 \
+  --device auto \
+  --overwrite
+```
+
+```bash
+python3 scripts/evaluate_ore_classification.py \
+  --summary-csv outputs/evaluations/b2_official_balanced_auto_talc/summary.csv \
+  --out-json outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.json \
+  --out-md outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.md
 ```
 
 ## Sulfide QA UI

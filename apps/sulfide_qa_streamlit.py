@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,7 @@ def main() -> None:
     summary = read_json(run["summary_path"])
     binary_summary = load_optional(run.get("binary_summary"))
     ore_summary = load_optional(run.get("ore_summary"))
+    show_source_paths(summary, run)
 
     top_cols = st.columns(4)
     if binary_summary:
@@ -65,17 +67,23 @@ def discover_runs(root: Path) -> list[dict]:
     runs = []
     if not root.exists():
         return runs
+    manifest_index = read_review_manifest_index(root)
     for path in sorted(root.rglob("pipeline_summary.json")):
         data = read_json(path)
+        label = str(path.parent.relative_to(root))
+        run_id = safe_id(path.parent.relative_to(root))
+        manifest_row = manifest_index.get(run_id) or manifest_index.get(label) or {}
+        source_paths = source_paths_for_run(data, manifest_row)
         runs.append(
             {
-                "id": safe_id(path.parent.relative_to(root)),
-                "label": str(path.parent.relative_to(root)),
+                "id": run_id,
+                "label": label,
                 "root": path.parent,
                 "summary_path": path,
                 "binary_summary": Path(data["paths"]["binary_sulfide_summary"]),
                 "ore_summary": Path(data["paths"]["ore_summary"]),
                 "images": pipeline_images(data["paths"]),
+                "source_paths": source_paths,
             }
         )
     for path in sorted(root.rglob("summary.json")):
@@ -93,6 +101,7 @@ def discover_runs(root: Path) -> list[dict]:
                 "summary_path": path,
                 "binary_summary": path,
                 "ore_summary": None,
+                "source_paths": source_paths_for_run(data, {}),
                 "images": {
                     "sulfide_overlay": Path(paths["overlay_preview"]) if paths.get("overlay_preview") else None,
                     "confidence": Path(paths["confidence"]) if paths.get("confidence") else None,
@@ -101,6 +110,66 @@ def discover_runs(root: Path) -> list[dict]:
             }
         )
     return runs
+
+
+def read_review_manifest_index(runs_root: Path) -> dict[str, dict]:
+    manifest_path = runs_root.parent / "review_manifest.csv"
+    if not manifest_path.exists():
+        return {}
+    with manifest_path.open(encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    index: dict[str, dict] = {}
+    for row in rows:
+        review_id = row.get("review_id", "")
+        if review_id:
+            index[review_id] = row
+    return index
+
+
+def source_paths_for_run(summary: dict, manifest_row: dict) -> dict[str, str]:
+    source_image = manifest_row.get("image_path") or summary.get("image") or ""
+    relative_path = manifest_row.get("relative_path") or infer_dataset_relative_path(source_image)
+    source_dataset_path = str(Path("dataset") / relative_path) if relative_path else ""
+    return {
+        "source_image": source_image,
+        "dataset_relative_path": relative_path,
+        "source_dataset_path": source_dataset_path,
+    }
+
+
+def infer_dataset_relative_path(source_image: str) -> str:
+    if not source_image:
+        return ""
+    path = Path(source_image)
+    for prefix in (Path("dataset"), Path("outputs/manual_review/source_dataset_subset")):
+        try:
+            return str(path.relative_to(prefix))
+        except ValueError:
+            continue
+    parts = path.parts
+    if "dataset" in parts:
+        index = parts.index("dataset")
+        return str(Path(*parts[index + 1 :]))
+    return ""
+
+
+def show_source_paths(summary: dict, run: dict) -> None:
+    source_paths = run.get("source_paths", {})
+    source_image = source_paths.get("source_image") or summary.get("image")
+    source_dataset_path = source_paths.get("source_dataset_path")
+    dataset_relative_path = source_paths.get("dataset_relative_path")
+    if not source_image and not source_dataset_path:
+        return
+    with st.expander("Original image paths", expanded=True):
+        if source_image:
+            st.markdown("**Run source image**")
+            st.code(source_image)
+        if source_dataset_path:
+            st.markdown("**Source dataset path**")
+            st.code(source_dataset_path)
+        if dataset_relative_path:
+            st.markdown("**Dataset relative path**")
+            st.code(dataset_relative_path)
 
 
 def pipeline_images(paths: dict) -> dict:
@@ -140,6 +209,7 @@ def save_review_form(review_path: Path, existing: dict, run: dict) -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "run_id": run["id"],
             "run_root": str(run["root"]),
+            "source_paths": run.get("source_paths", {}),
             "status": status,
             "error_types": error_types,
             "note": note,
