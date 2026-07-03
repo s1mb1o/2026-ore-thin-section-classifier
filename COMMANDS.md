@@ -152,6 +152,15 @@ python3 scripts/evaluate_ore_classification.py \
   --out-md outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_classification_metrics.md
 ```
 
+Cross-validate a tabular image-level ore classifier from the same batch outputs:
+
+```bash
+python3 scripts/evaluate_ore_feature_classifier.py \
+  --summary-csv outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/summary.csv \
+  --out-json outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_feature_classifier_cv.json \
+  --out-md outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_feature_classifier_cv.md
+```
+
 Merge a class-sharded official batch before evaluation:
 
 ```bash

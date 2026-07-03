@@ -123,7 +123,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 Expected:
 
-- Unit tests pass; current local result is `53` tests.
+- Unit tests pass; current local result is `55` tests.
 - Coverage includes `source_fusion`, `review_queue`, `curation`, `component_reports`, `report_cards`, and `scribble_classifier`.
 - These tests use synthetic inputs and do not require GPU, Streamlit, SAM2, or external datasets.
 
@@ -265,6 +265,7 @@ Expected:
 - Raw balanced official split contains `387` labelled images: `129` ordinary, `129` fine, `129` talcose. Preferred deconflicted split contains `345` labelled images: `115` per class after excluding label-conflict hashes and duplicate hashes. The `14` panoramas remain listed separately as unlabelled stress-test images.
 - The one-image official batch smoke writes `summary.csv`, `summary.json`, `failures.json`, and image-level classification metrics JSON/Markdown. On a one-class smoke sample, AUC may be `null`; full balanced evaluation is needed for meaningful F1/AUC.
 - `scripts/merge_official_batch_shards.py` combines class-sharded `run_official_batch.py` outputs, rejects duplicate `run_id` values, and writes combined `summary.csv`, `summary.json`, and `failures.json`.
+- `scripts/evaluate_ore_feature_classifier.py` cross-validates image-level classifiers from `summary.csv` plus per-run `component_features.csv`; use the full balanced split, not the one-image smoke, for meaningful F1/AUC.
 
 ## Ore Rule Calibration Smoke
 

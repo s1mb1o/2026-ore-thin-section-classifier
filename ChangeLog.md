@@ -2,6 +2,7 @@
 
 ## 2026-07-03
 
+- Added `scripts/evaluate_ore_feature_classifier.py` and tests: a 5-fold image-level ExtraTrees classifier over B2 batch fractions/component aggregates reached macro F1 `0.7439`, weighted F1 `0.7439`, accuracy `0.7420`, and macro AUC OVR `0.8802` on the 345-image deconflicted balanced split; local `unittest` now covers `55` tests.
 - Updated the talc browser review Brush interaction: left mouse draws talc, right mouse erases while Brush remains selected, the browser context menu is suppressed during brush/eraser strokes, and local `unittest` now covers `53` tests.
 - Optimized component analysis by computing ordinary/fine morphology on padded component bounding boxes instead of full-frame masks per component; this targets the zelda fine-shard CPU bottleneck observed during the deconflicted B2 batch, and local `unittest` now covers `53` tests.
 - Added `scripts/merge_official_batch_shards.py` and tests so the live class-sharded zelda B2 run can be combined into one `summary.csv/json` plus `failures.json` before image-level F1/AUC evaluation and threshold calibration.

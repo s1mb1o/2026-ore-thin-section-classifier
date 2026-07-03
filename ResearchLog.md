@@ -18,6 +18,7 @@
 - Wired calibration artifacts back into the runnable pipeline: `--rule-config-json` accepts `ore_rule_calibration.json` in `scripts/analyze_ore_from_masks.py`, `scripts/run_ore_pipeline.py`, and `scripts/run_official_batch.py`, so a selected `best_config` can be applied to later batches or demos without manually copying four threshold flags.
 - Added a reproducible merge step for sharded official batches (`scripts/merge_official_batch_shards.py`), replacing the previous one-off combine snippet with a tested command before evaluation/calibration.
 - During the live zelda sharded B2 batch, fine-intergrowth CPU analysis was slower than GPU inference because component morphology ran on a full-frame mask for every component. The component feature path now crops each component to its padded bounding box before morphology.
+- Completed the zelda B2 deconflicted balanced batch: `345` rows, `0` failures. The deterministic rule scored macro F1 `0.1849` and macro AUC OVR `0.4264`; grid-search calibration improved macro F1 only to `0.2743`. A cross-validated ExtraTrees classifier over the extracted image/component features reached macro F1 `0.7439` and macro AUC OVR `0.8802`, making the feature-classifier path the strongest current image-level F1/AUC artifact.
 
 ### Heuristic segmentation baseline
 
