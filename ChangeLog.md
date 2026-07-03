@@ -2,6 +2,7 @@
 
 ## 2026-07-03
 
+- Updated the talc browser review Brush interaction: left mouse draws talc, right mouse erases while Brush remains selected, the browser context menu is suppressed during brush/eraser strokes, and local `unittest` now covers `53` tests.
 - Optimized component analysis by computing ordinary/fine morphology on padded component bounding boxes instead of full-frame masks per component; this targets the zelda fine-shard CPU bottleneck observed during the deconflicted B2 batch, and local `unittest` now covers `53` tests.
 - Added `scripts/merge_official_batch_shards.py` and tests so the live class-sharded zelda B2 run can be combined into one `summary.csv/json` plus `failures.json` before image-level F1/AUC evaluation and threshold calibration.
 - Added calibrated-rule config plumbing end-to-end: `--rule-config-json` is now accepted by `scripts/analyze_ore_from_masks.py`, `scripts/run_ore_pipeline.py`, and `scripts/run_official_batch.py`; calibration artifacts from `scripts/calibrate_ore_rules.py` can be applied directly, explicit CLI thresholds override the file, batch summaries record the applied rule thresholds, and local `unittest` now covers `52` tests.

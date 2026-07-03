@@ -84,6 +84,7 @@ Expected:
 - The `Theme` selector supports `System`, `Light`, and `Dark`; explicit dark/light choices update the UI immediately and persist across reloads.
 - Opening a sample auto-creates or reuses `current_talc_mask.png`.
 - The canvas edits the talc mask itself with brush, eraser, polygon, rectangle, and optional SAM2 prompt tools.
+- In Brush mode, left mouse draws talc and right mouse erases without opening the browser context menu.
 - Polygon draft editing supports click-to-add, edge-click-to-insert, point drag, right-click-point-to-delete, and status-line confirmation for add/insert/remove.
 - `Protect sulfides while drawing` is enabled by default; add tools cannot add new talc pixels on the sulfide mask, `Current on sulfide px` is shown for existing overlap, and `Subtract sulfides from mask` removes overlap and autosaves.
 - `Save` writes `reviewed/reviewed_talc_mask.png`, `reviewed/reviewed_ignore_mask.png`, `reviewed/reviewed_overlay.png`, `reviewed/review_patch.json`, and `reviewed/review_summary.json`.

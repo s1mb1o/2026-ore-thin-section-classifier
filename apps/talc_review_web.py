@@ -728,7 +728,7 @@ def render_html_page() -> str:
     <button id="resetBtn" class="danger-button">Reset to autodetected</button>
     <details class="advanced-box">
       <summary>Interaction help</summary>
-      <p>Brush adds talc. Eraser removes talc. Polygon: click empty space to add points, click an edge to insert a point, drag points to move them, right-click a point to delete it, then apply. Rectangle can be resized by corners or edges before apply. SAM2 is optional and adds its proposed region to the talc mask.</p>
+      <p>Brush: left mouse adds talc, right mouse erases. Eraser removes talc. Polygon: click empty space to add points, click an edge to insert a point, drag points to move them, right-click a point to delete it, then apply. Rectangle can be resized by corners or edges before apply. SAM2 is optional and adds its proposed region to the talc mask.</p>
     </details>
   </aside>
 </div>
@@ -902,6 +902,8 @@ const state = {
   rect: { active: false, x1: 0, y1: 0, x2: 0, y2: 0, handle: null },
   drawing: false,
   lastPoint: null,
+  activeStrokeMode: null,
+  activePointerButton: 0,
   activeEditBaseline: null,
   samBox: null
 };
@@ -1311,6 +1313,19 @@ function drawMaskLine(from, to, mode) {
   maskCtx.restore();
 }
 
+function strokeModeForPointer(event) {
+  if (state.tool === 'brush') {
+    if (event.button === 0) return 'brush';
+    if (event.button === 2) return 'eraser';
+    return null;
+  }
+  if (state.tool === 'eraser') {
+    if (event.button === 0 || event.button === 2) return 'eraser';
+    return null;
+  }
+  return null;
+}
+
 function fillPolygon(points) {
   if (points.length < 3) return false;
   const baselineData = captureMaskData();
@@ -1552,7 +1567,7 @@ function mergePositiveMaskImage(img) {
 }
 
 viewer.addEventListener('contextmenu', (event) => {
-  if (state.tool === 'polygon') event.preventDefault();
+  if (state.tool === 'polygon' || state.tool === 'brush' || state.tool === 'eraser') event.preventDefault();
 });
 
 viewer.addEventListener('pointerdown', async (event) => {
@@ -1563,18 +1578,24 @@ viewer.addEventListener('pointerdown', async (event) => {
     removePolygonPoint(nearestPolygonPoint(point));
     return;
   }
-  viewer.setPointerCapture(event.pointerId);
-  if (state.tool === 'brush' || state.tool === 'eraser') {
+  const strokeMode = strokeModeForPointer(event);
+  if (strokeMode) {
+    event.preventDefault();
+    viewer.setPointerCapture(event.pointerId);
     state.activeEditBaseline = captureMaskData();
     pushUndo();
     state.drawing = true;
+    state.activeStrokeMode = strokeMode;
+    state.activePointerButton = event.button;
     state.lastPoint = point;
-    drawMaskLine(point, point, state.tool);
+    drawMaskLine(point, point, strokeMode);
     refreshCurrentTint();
     updateMetrics();
     draw();
     return;
   }
+  if (event.button !== 0) return;
+  viewer.setPointerCapture(event.pointerId);
   if (state.tool === 'polygon') {
     const index = nearestPolygonPoint(point);
     if (event.altKey && removePolygonPoint(index)) return;
@@ -1621,7 +1642,7 @@ viewer.addEventListener('pointermove', (event) => {
   if (!state.sample || !state.sample.editable) return;
   const point = imagePointFromEvent(event);
   if (state.drawing && state.lastPoint) {
-    drawMaskLine(state.lastPoint, point, state.tool);
+    drawMaskLine(state.lastPoint, point, state.activeStrokeMode || state.tool);
     state.lastPoint = point;
     refreshCurrentTint();
     updateMetrics();
@@ -1648,11 +1669,20 @@ viewer.addEventListener('pointermove', (event) => {
 
 viewer.addEventListener('pointerup', (event) => {
   if (state.drawing) {
+    const editType = state.activeStrokeMode || state.tool;
     state.drawing = false;
     state.lastPoint = null;
-    state.edits.push({ type: state.tool, brush_size: Number(els.brushSize.value), at: new Date().toISOString() });
-    afterMaskEdit(state.tool, state.activeEditBaseline);
+    state.edits.push({
+      type: editType,
+      source_tool: state.tool,
+      mouse_button: state.activePointerButton,
+      brush_size: Number(els.brushSize.value),
+      at: new Date().toISOString()
+    });
+    afterMaskEdit(editType, state.activeEditBaseline);
     state.activeEditBaseline = null;
+    state.activeStrokeMode = null;
+    state.activePointerButton = 0;
   }
   if (state.tool === 'polygon') state.polygon.dragIndex = null;
   if (state.tool === 'rectangle') state.rect.handle = null;

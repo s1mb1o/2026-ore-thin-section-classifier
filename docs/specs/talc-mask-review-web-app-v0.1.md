@@ -244,7 +244,8 @@ shows whether any overlap still exists.
 Required controls:
 
 - Pan and zoom by mouse/trackpad, plus reset view.
-- Brush add.
+- Brush add with left mouse.
+- Brush erase with right mouse.
 - Eraser/remove.
 - Filled polygon.
 - Filled rectangle.
@@ -256,8 +257,9 @@ Required controls:
 - Save and next.
 - Apply draft to `Talc mask`.
 
-Brush width applies only to brush and eraser. Polygon, rectangle, and SAM2
-operate on filled regions.
+Brush width applies only to brush and eraser. In Brush mode, left mouse adds
+talc and right mouse erases without opening the browser context menu. Polygon,
+rectangle, and SAM2 operate on filled regions.
 
 Edits update the current working talc mask. The app should auto-save this
 working mask after each applied edit so leaving and reopening a sample does not
@@ -580,7 +582,7 @@ Required checks:
 - The app can review all `42` talc samples after creating or reusing the
   conversion workspace.
 - The app edits the current talc mask, not blue annotation strokes.
-- Brush draws talc; eraser removes talc.
+- Brush left mouse draws talc; Brush right mouse erases; Eraser removes talc.
 - Polygon, rectangle, and SAM2 are direct filled-area tools for drawing talc.
 - Sulfide protection is enabled by default; additive tools cannot add new talc
   pixels on the sulfide mask unless the reviewer disables protection.
