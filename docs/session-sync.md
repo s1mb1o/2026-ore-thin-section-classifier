@@ -71,6 +71,7 @@ Source dataset facts from the original repository handoff:
 - `docs/notes/2026-07-03-research-mindstorm-improvements.ru.md`: research-backed Russian mindstorm for killer features, training upgrades, annotation strategy, and presentation framing.
 - `docs/notes/2026-07-03-reusable-demo-libraries.md`: shared libraries for source fusion, active-review queues, dataset curation, component reports, report cards, and scribble classifiers.
 - `docs/notes/2026-07-03-b1-visual-validation-pack.md`: six-image final-B1 visual sanity pack and calibration finding for ordinary/fine rules.
+- `docs/notes/2026-07-03-b2-manual-review-pack.md`: current B2 manual review pack, visual panels, heatmaps, uncertainty crops, feedback template, and Streamlit review command.
 - `docs/notes/2026-07-03-heuristic-segmentation-subproject.md`: separate non-neural segmentation baseline, smoke result, limits, and intended use as a disagreement source.
 - `docs/notes/2026-07-03-gpu-training-status.md`: current binary sulfide dataset, gx10 ResUNet job, and zelda blocker.
 - `docs/notes/talc-blue-line-conversion.md`: v2 talc blue-line converter/review note.
@@ -84,12 +85,13 @@ Source dataset facts from the original repository handoff:
 2. Use the local SegFormer-B2 mirror at `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/` as the default sulfide checkpoint.
 3. Keep the local SegFormer-B1 mirror at `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/` as the faster fallback checkpoint.
 4. Use `outputs/official_balanced_eval_split.json` for balanced labelled-class evaluation; keep weak-label metrics separate from image-level class metrics.
-5. Calibrate component ordinary/fine thresholds using the six-image visual pack plus the balanced split; current visual pack shows rule disagreements on 2 of 4 ordinary/fine examples.
-6. Compare SegFormer-B1/B0 predictions against `heuristic_segmentation/` outputs and surface disagreement areas as the first sulfide QA queue.
-7. Wire the reusable demo libraries into pipeline outputs: `source_fusion` -> `review_queue` -> `component_reports` -> `report_cards`, with `curation` for split/label QA and `scribble_classifier` as an optional reviewer-assist source.
-8. Use the research mindstorm note to prioritize the remaining differentiating features: robustness certificate, illumination/flat-field artifact, high-loss pseudo-label cleanup, annotation-budget simulation, OIA-style report protocol, and MIL over sulfide components.
-9. Use `apps/sulfide_qa_streamlit.py` as a file-based QA app with overlays, confidence heatmaps, disagreement layers, and JSON verdicts.
-10. Review and accept/fix talc masks from `outputs/talc_blue_line_conversion` in `apps/talc_review_streamlit.py`.
+5. Review `outputs/manual_review/b2_balanced_review_pack/` first: it contains 9 B2 review panels, 8 uncertainty crop candidates, `feedback_template.csv`, and Streamlit-ready run directories. Use it to mark mask errors, ordinary/fine disagreements, and talc issues.
+6. Calibrate component ordinary/fine thresholds using the six-image B1 pack, the new B2 review pack, and the balanced split; current visual packs show rule disagreements that should not be hidden.
+7. Compare SegFormer-B1/B0 predictions against `heuristic_segmentation/` outputs and surface disagreement areas as the next sulfide QA queue.
+8. Wire the reusable demo libraries into pipeline outputs: `source_fusion` -> `review_queue` -> `component_reports` -> `report_cards`, with `curation` for split/label QA and `scribble_classifier` as an optional reviewer-assist source.
+9. Use the research mindstorm note to prioritize the remaining differentiating features: robustness certificate, illumination/flat-field artifact, high-loss pseudo-label cleanup, annotation-budget simulation, OIA-style report protocol, and MIL over sulfide components.
+10. Use `apps/sulfide_qa_streamlit.py` as a file-based QA app with overlays, confidence heatmaps, review panels, disagreement layers, and JSON verdicts.
+11. Review and accept/fix talc masks from `outputs/talc_blue_line_conversion` in `apps/talc_review_streamlit.py`.
 
 ## Known Risks
 
@@ -100,6 +102,7 @@ Source dataset facts from the original repository handoff:
 - Talc annotations are drawn as colored lines, so mask extraction needs pairing checks and visual QA.
 - Very large panoramas require overlapping tiling and streamed stitching; full-image probability tensors can exceed practical memory.
 - Zelda `root@161.104.48.181` initially booted without a visible NVIDIA GPU, then recovered after retry/reboot. Re-check `nvidia-smi` after any restart before assuming CUDA is available.
+- The local macOS Python environment may not load zelda-trained SegFormer checkpoints because installed `transformers` can use a different module namespace. For B2 review-pack generation, zelda with `transformers 5.12.1` was used successfully.
 
 ## Implemented Binary Sulfide Block
 
@@ -112,6 +115,8 @@ Source dataset facts from the original repository handoff:
 - `scripts/run_ore_pipeline.py` runs image -> sulfide mask -> ore summary in one command.
 - `scripts/build_official_balanced_eval_split.py` generated `outputs/official_balanced_eval_split.json` / `.csv` with `129` samples per ordinary/fine/talcose class; panoramas are listed separately as unlabelled.
 - Final B2 demo output exists under `outputs/inference_demo/b2_final_row_2539589_1/`: final B2 inference on official row ore image, sulfide fraction `0.296259`, component summary, confidence map, and overlays.
+- B2 manual review pack exists under `outputs/manual_review/b2_balanced_review_pack/`: 9 balanced official-class samples, `review_panel.jpg` per run, source previews, sulfide overlays, confidence heatmaps, ordinary/fine overlays, `8` uncertainty crop candidates, `review_manifest.csv/json`, `review_candidates.csv`, and `feedback_template.csv`. Source subset copy exists under `outputs/manual_review/source_dataset_subset/`.
+- Manual review pack generator: `scripts/prepare_manual_review_pack.py`. The Streamlit sulfide QA app now displays optional `review_panel`, `source_preview`, and `confidence_heatmap` paths when present.
 - Local smoke tests passed for ResUNet and SegFormer-B0 on `outputs/smoke_binary_sulfide_dataset`; full local unit tests now cover `31` tests.
 - gx10 ResUNet training is active in `tmux nornickel_v2_resunet`.
 - zelda SegFormer-B2 training completed 30 epochs; best validation sulfide IoU is `0.974381` at epoch 20, with final epoch 30 IoU `0.969119`.

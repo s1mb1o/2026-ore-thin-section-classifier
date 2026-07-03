@@ -4,6 +4,26 @@ Utility CLIs for dataset manifests, pseudo-label generation, training launchers,
 
 Keep heavy GPU training jobs outside Streamlit. Streamlit may emit the exact command, but training should run as a separate script on the selected GPU host.
 
+## Manual Review Pack
+
+Prepare a balanced B2 review pack with review panels, probability heatmaps,
+uncertainty crops, and spreadsheet feedback templates:
+
+```bash
+python3 scripts/prepare_manual_review_pack.py \
+  --per-label 3 \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/manual_review/b2_balanced_review_pack \
+  --device auto \
+  --batch-size 1 \
+  --overwrite
+```
+
+If the local Python environment cannot load a SegFormer checkpoint because of a
+`transformers` namespace mismatch, run the same command on the training host
+that produced the checkpoint and rsync `outputs/manual_review/b2_balanced_review_pack`
+back locally.
+
 ## Talc Blue-Line Conversion
 
 ```bash

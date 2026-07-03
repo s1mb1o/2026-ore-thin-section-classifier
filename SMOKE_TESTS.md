@@ -184,6 +184,34 @@ Expected:
 - The pipeline writes `binary_sulfide/sulfide_mask.png`, `binary_sulfide/confidence.png`, `binary_sulfide/overlay_preview.jpg`, `ore_analysis/ore_summary.json`, `ore_analysis/component_features.csv`, and `ore_analysis/intergrowth_overlay_preview.jpg`.
 - Balanced official split contains `387` labelled images: `129` ordinary, `129` fine, `129` talcose; the `14` panoramas remain listed separately as unlabelled stress-test images.
 
+## Manual Review Pack Smoke
+
+Run from the v2 root after a compatible B2 checkpoint is available:
+
+```bash
+python3 scripts/prepare_manual_review_pack.py \
+  --per-label 1 \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/manual_review/smoke_b2_review_pack \
+  --device auto \
+  --batch-size 1 \
+  --overwrite
+```
+
+Expected:
+
+- `review_manifest.csv`, `review_manifest.json`, `feedback_template.csv`, and `review_candidates.csv` exist.
+- Each `runs/*` directory contains `pipeline_summary.json`, `review_panel.jpg`, `source_preview.jpg`, `binary_sulfide/confidence_heatmap.jpg`, sulfide mask/overlay, and ordinary/fine overlay.
+- The generated pack can be opened with:
+
+```bash
+streamlit run apps/sulfide_qa_streamlit.py -- \
+  --runs-dir outputs/manual_review/smoke_b2_review_pack/runs \
+  --review-dir outputs/manual_review/smoke_b2_review_pack/reviews
+```
+
+Note: on macOS, local `transformers` may not load the zelda-trained SegFormer-B2 checkpoint because of module namespace drift. In that case, run the same command on zelda and rsync the generated pack back.
+
 ## Planned Pipeline Checks
 
 - Streamlit QA app opens the pseudo-label manifest and saves a JSON patch.

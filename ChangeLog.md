@@ -2,6 +2,7 @@
 
 ## 2026-07-03
 
+- Added `scripts/prepare_manual_review_pack.py` and generated a B2 manual review pack under `outputs/manual_review/b2_balanced_review_pack/`: `9` balanced official-class samples, review panels, source previews, sulfide overlays, probability heatmaps, ordinary/fine overlays, `8` uncertainty crop candidates, `review_manifest.csv/json`, `review_candidates.csv`, and `feedback_template.csv`. The Streamlit sulfide QA app now displays optional review panels, source previews, and heatmaps when present.
 - Added the runnable ore pipeline: official-metric evaluator (`IoU`, `F1`, `AUC`, Hausdorff/HD95), tiled binary sulfide inference, component-level ordinary/fine analysis, one-command `run_ore_pipeline.py`, balanced official eval split JSON/CSV, and model/data/run cards under `docs/cards/`. SegFormer-B2 on zelda completed as the current default checkpoint with val sulfide IoU `0.974381`, F1 `0.987024`, AUC `0.998811`, and HD95 mean `23.57 px`; the final B2 demo output is saved under `outputs/inference_demo/b2_final_row_2539589_1/`.
 - Added SegFormer-B2 support and completed B2 on zelda as the current best binary sulfide checkpoint: val sulfide IoU `0.974381`, F1 `0.987024`, AUC `0.998811`, HD95 mean `23.57 px`.
 - Added a six-image final-B1 visual validation pack note at `docs/notes/2026-07-03-b1-visual-validation-pack.md`; the masks/overlays render, but the current deterministic ordinary/fine thresholds need calibration before image-level class claims.

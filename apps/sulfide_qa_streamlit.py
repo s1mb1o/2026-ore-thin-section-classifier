@@ -75,12 +75,7 @@ def discover_runs(root: Path) -> list[dict]:
                 "summary_path": path,
                 "binary_summary": Path(data["paths"]["binary_sulfide_summary"]),
                 "ore_summary": Path(data["paths"]["ore_summary"]),
-                "images": {
-                    "sulfide_overlay": Path(data["paths"]["sulfide_overlay_preview"]),
-                    "intergrowth_overlay": Path(data["paths"]["intergrowth_overlay_preview"]),
-                    "confidence": Path(data["paths"]["confidence"]),
-                    "sulfide_mask": Path(data["paths"]["sulfide_mask"]),
-                },
+                "images": pipeline_images(data["paths"]),
             }
         )
     for path in sorted(root.rglob("summary.json")):
@@ -106,6 +101,19 @@ def discover_runs(root: Path) -> list[dict]:
             }
         )
     return runs
+
+
+def pipeline_images(paths: dict) -> dict:
+    images = {
+        "review_panel": paths.get("review_panel"),
+        "source_preview": paths.get("source_preview"),
+        "sulfide_overlay": paths.get("sulfide_overlay_preview"),
+        "intergrowth_overlay": paths.get("intergrowth_overlay_preview"),
+        "confidence_heatmap": paths.get("confidence_heatmap"),
+        "confidence": paths.get("confidence"),
+        "sulfide_mask": paths.get("sulfide_mask"),
+    }
+    return {name: Path(path) for name, path in images.items() if path}
 
 
 def show_images(run: dict) -> None:
