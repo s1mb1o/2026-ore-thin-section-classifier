@@ -143,6 +143,8 @@ app should show a clear setup screen with the exact direct-input command.
   autodetected talc region, the current talc mask, and optional display-only
   evidence layers such as sulfide overlap or silicate support.
 - Edit the talc mask directly, not the pen strokes.
+- Protect talc-mask edits from sulfide overlap by default and provide an
+  explicit manual action to subtract sulfide pixels from the current mask.
 - Save reviewed masks under each sample's `reviewed/` directory.
 - Preserve an auditable edit patch with vector geometry and/or mask deltas.
 - Keep SAM2 optional and lazy-loaded.
@@ -229,6 +231,13 @@ Overlay toggles:
 - SAM2 preview mask, when available.
 
 Layer opacity must be adjustable without rerunning Python.
+
+The right panel must include a default-on `Protect sulfides while drawing`
+control. When enabled, additive tools clip newly applied talc pixels against
+the loaded sulfide mask without silently changing pre-existing overlap. A
+separate `Subtract sulfides from mask` command removes any existing talc pixels
+on the sulfide mask and autosaves the working mask. `Current on sulfide px`
+shows whether any overlap still exists.
 
 ### Canvas Interaction
 
@@ -519,6 +528,11 @@ Required checks:
 - Brush/eraser modify only the talc mask.
 - Undo restores prior mask state.
 - Applying an edit updates/autosaves `current_talc_mask`.
+- With sulfide protection enabled, brush/polygon/rectangle/SAM2 additions over
+  sulfide pixels are clipped and the status line reports newly protected pixels
+  without silently cleaning older overlap.
+- `Subtract sulfides from mask` removes existing overlap, autosaves, and leaves
+  `Current on sulfide px` at zero.
 - `Save` writes reviewed masks and patch JSON.
 - `Save and next` writes reviewed masks and patch JSON, then selects the next
   sample in the queue.
@@ -568,6 +582,10 @@ Required checks:
 - The app edits the current talc mask, not blue annotation strokes.
 - Brush draws talc; eraser removes talc.
 - Polygon, rectangle, and SAM2 are direct filled-area tools for drawing talc.
+- Sulfide protection is enabled by default; additive tools cannot add new talc
+  pixels on the sulfide mask unless the reviewer disables protection.
+- Manual sulfide subtraction is available and autosaves the current working
+  mask.
 - Undo is available for editing mistakes.
 - `Save` and `Save and next` are both available.
 - SAM2 is available as a canvas tool and optional dependency.

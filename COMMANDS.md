@@ -114,12 +114,30 @@ python3 scripts/run_ore_pipeline.py \
 
 ## Official Batch Metrics
 
+Audit duplicate-content label conflicts and build the preferred deconflicted
+balanced split:
+
+```bash
+python3 scripts/audit_official_labels.py \
+  --official-manifest outputs/official_manifest.json \
+  --dataset-root dataset \
+  --out-dir outputs/official_label_audit
+
+python3 scripts/build_official_balanced_eval_split.py \
+  --official-manifest outputs/official_manifest.json \
+  --label-audit-json outputs/official_label_audit/summary.json \
+  --exclude-conflicts \
+  --dedupe-sha256 \
+  --out-json outputs/official_balanced_eval_split_deconflicted.json \
+  --out-csv outputs/official_balanced_eval_split_deconflicted.csv
+```
+
 ```bash
 python3 scripts/run_official_batch.py \
-  --split-json outputs/official_balanced_eval_split.json \
+  --split-json outputs/official_balanced_eval_split_deconflicted.json \
   --dataset-root dataset \
   --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
-  --out-dir outputs/evaluations/b2_official_balanced_auto_talc \
+  --out-dir outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed \
   --tile-size 1024 \
   --stride 768 \
   --batch-size 1 \
@@ -129,9 +147,9 @@ python3 scripts/run_official_batch.py \
 
 ```bash
 python3 scripts/evaluate_ore_classification.py \
-  --summary-csv outputs/evaluations/b2_official_balanced_auto_talc/summary.csv \
-  --out-json outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.json \
-  --out-md outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.md
+  --summary-csv outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/summary.csv \
+  --out-json outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_classification_metrics.json \
+  --out-md outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_classification_metrics.md
 ```
 
 Calibrate deterministic talc/ordinary/fine rule thresholds from the completed
@@ -139,9 +157,9 @@ batch without rerunning B2 inference:
 
 ```bash
 python3 scripts/calibrate_ore_rules.py \
-  --summary-csv outputs/evaluations/b2_official_balanced_auto_talc/summary.csv \
-  --out-json outputs/evaluations/b2_official_balanced_auto_talc/ore_rule_calibration.json \
-  --out-md outputs/evaluations/b2_official_balanced_auto_talc/ore_rule_calibration.md
+  --summary-csv outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/summary.csv \
+  --out-json outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_rule_calibration.json \
+  --out-md outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_rule_calibration.md
 ```
 
 ## Sulfide QA UI

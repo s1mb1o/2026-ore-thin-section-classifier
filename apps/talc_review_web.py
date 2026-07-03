@@ -714,6 +714,10 @@ def render_html_page() -> str:
       <label><input type="checkbox" id="layerOverlap" checked> Sulfide overlap</label>
       <label><input type="checkbox" id="layerIgnore"> Ignore/uncertain</label>
     </div>
+    <div class="guard-controls">
+      <label><input type="checkbox" id="protectSulfides" checked> Protect sulfides while drawing</label>
+      <button id="subtractSulfidesBtn" class="small-button full-width">Subtract sulfides from mask</button>
+    </div>
     <div id="metricsBox" class="metrics"></div>
     <label class="field-label">Reviewer</label>
     <input id="reviewerInput" class="text-input" placeholder="optional">
@@ -863,6 +867,9 @@ button, input, select, textarea { font: inherit; }
 .status-line { min-height: 32px; padding: 8px 12px; font-size: 13px; color: var(--muted); background: var(--panel); border-top: 1px solid var(--line); }
 .field-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; margin: 12px 0 4px; }
 .layers { display: grid; gap: 7px; margin-top: 10px; font-size: 13px; }
+.guard-controls { border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 8px; margin-top: 12px; padding: 10px; font-size: 13px; }
+.guard-controls label { display: flex; align-items: center; gap: 7px; }
+.small-button.full-width { width: 100%; }
 .metrics { border: 1px solid var(--line); border-radius: 8px; margin-top: 12px; overflow: hidden; }
 .metric-row { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .metric-row:last-child { border-bottom: 0; }
@@ -888,12 +895,14 @@ const state = {
   dirty: false,
   images: {},
   staticTints: {},
+  sulfideGuardLoaded: false,
   undoStack: [],
   edits: [],
   polygon: { points: [], dragIndex: null },
   rect: { active: false, x1: 0, y1: 0, x2: 0, y2: 0, handle: null },
   drawing: false,
   lastPoint: null,
+  activeEditBaseline: null,
   samBox: null
 };
 
@@ -901,6 +910,8 @@ const viewer = document.getElementById('viewerCanvas');
 const ctx = viewer.getContext('2d', { willReadFrequently: true });
 const maskCanvas = document.createElement('canvas');
 const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+const sulfideGuardCanvas = document.createElement('canvas');
+const sulfideGuardCtx = sulfideGuardCanvas.getContext('2d', { willReadFrequently: true });
 const currentTintCanvas = document.createElement('canvas');
 const currentTintCtx = currentTintCanvas.getContext('2d', { willReadFrequently: true });
 const emptyState = document.getElementById('emptyState');
@@ -926,6 +937,8 @@ const els = {
   saveBtn: document.getElementById('saveBtn'),
   saveNextBtn: document.getElementById('saveNextBtn'),
   resetBtn: document.getElementById('resetBtn'),
+  protectSulfides: document.getElementById('protectSulfides'),
+  subtractSulfidesBtn: document.getElementById('subtractSulfidesBtn'),
   applyPolygonBtn: document.getElementById('applyPolygonBtn'),
   cancelPolygonBtn: document.getElementById('cancelPolygonBtn'),
   applyRectBtn: document.getElementById('applyRectBtn'),
@@ -1118,15 +1131,70 @@ function countCurrentMaskPixels() {
   return count;
 }
 
+function captureMaskData() {
+  return maskCtx.getImageData(0, 0, state.imageW, state.imageH);
+}
+
+function hasSulfideGuard() {
+  return state.sulfideGuardLoaded && sulfideGuardCanvas.width === state.imageW && sulfideGuardCanvas.height === state.imageH;
+}
+
+function countCurrentSulfideOverlapPixels() {
+  if (!hasSulfideGuard()) return 0;
+  const mask = maskCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  const guard = sulfideGuardCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  let count = 0;
+  for (let i = 0; i < mask.length; i += 4) {
+    const maskActive = mask[i] > 0 || mask[i + 1] > 0 || mask[i + 2] > 0;
+    const guardActive = guard[i] > 0 || guard[i + 1] > 0 || guard[i + 2] > 0;
+    if (maskActive && guardActive) count += 1;
+  }
+  return count;
+}
+
+function removeSulfidePixelsFromMask(baselineData = null) {
+  if (!hasSulfideGuard()) return 0;
+  const maskData = maskCtx.getImageData(0, 0, state.imageW, state.imageH);
+  const mask = maskData.data;
+  const guard = sulfideGuardCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  const baseline = baselineData ? baselineData.data : null;
+  let removed = 0;
+  for (let i = 0; i < mask.length; i += 4) {
+    const maskActive = mask[i] > 0 || mask[i + 1] > 0 || mask[i + 2] > 0;
+    const guardActive = guard[i] > 0 || guard[i + 1] > 0 || guard[i + 2] > 0;
+    const baselineActive = baseline && (baseline[i] > 0 || baseline[i + 1] > 0 || baseline[i + 2] > 0);
+    if (maskActive && guardActive && !baselineActive) {
+      mask[i] = 0;
+      mask[i + 1] = 0;
+      mask[i + 2] = 0;
+      mask[i + 3] = 255;
+      removed += 1;
+    }
+  }
+  if (removed > 0) maskCtx.putImageData(maskData, 0, 0);
+  return removed;
+}
+
+function enforceSulfideProtection(kind, baselineData = null) {
+  if (!els.protectSulfides.checked) return 0;
+  const removed = removeSulfidePixelsFromMask(baselineData);
+  if (removed > 0) {
+    state.edits.push({ type: 'protect_sulfides', tool: kind, removed_pixels: removed, at: new Date().toISOString() });
+  }
+  return removed;
+}
+
 function updateMetrics() {
   if (!state.sample) return;
   const metrics = state.sample.metrics;
   const currentPixels = countCurrentMaskPixels();
+  const currentSulfidePixels = countCurrentSulfideOverlapPixels();
   els.metricsBox.innerHTML = `
     <div class="metric-row"><span>Current talc px</span><strong>${formatInt(currentPixels)}</strong></div>
     <div class="metric-row"><span>Autodetected px</span><strong>${formatInt(metrics.autodetected_talc_pixels)}</strong></div>
     <div class="metric-row"><span>Candidate px</span><strong>${formatInt(metrics.candidate_talc_pixels)}</strong></div>
     <div class="metric-row"><span>Sulfide overlap px</span><strong>${formatInt(metrics.overlap_pixels)}</strong></div>
+    <div class="metric-row"><span>Current on sulfide px</span><strong>${formatInt(currentSulfidePixels)}</strong></div>
     <div class="metric-row"><span>Unsaved edits</span><strong>${state.dirty ? 'yes' : 'no'}</strong></div>`;
 }
 
@@ -1245,6 +1313,7 @@ function drawMaskLine(from, to, mode) {
 
 function fillPolygon(points) {
   if (points.length < 3) return false;
+  const baselineData = captureMaskData();
   pushUndo();
   maskCtx.save();
   maskCtx.fillStyle = '#fff';
@@ -1256,13 +1325,14 @@ function fillPolygon(points) {
   maskCtx.restore();
   state.edits.push({ type: 'polygon_add_talc', points: points.map((p) => [Math.round(p.x), Math.round(p.y)]), at: new Date().toISOString() });
   state.polygon.points = [];
-  afterMaskEdit('polygon');
+  afterMaskEdit('polygon', baselineData);
   return true;
 }
 
 function fillRectangle(rect) {
   const r = normalizedRect(rect);
   if (r.x2 - r.x1 < 2 || r.y2 - r.y1 < 2) return false;
+  const baselineData = captureMaskData();
   pushUndo();
   maskCtx.save();
   maskCtx.fillStyle = '#fff';
@@ -1270,26 +1340,53 @@ function fillRectangle(rect) {
   maskCtx.restore();
   state.edits.push({ type: 'rectangle_add_talc', x1: Math.round(r.x1), y1: Math.round(r.y1), x2: Math.round(r.x2), y2: Math.round(r.y2), at: new Date().toISOString() });
   state.rect.active = false;
-  afterMaskEdit('rectangle');
+  afterMaskEdit('rectangle', baselineData);
   return true;
 }
 
-function afterMaskEdit(kind) {
+function afterMaskEdit(kind, baselineData = null) {
+  const protectedPixels = enforceSulfideProtection(kind, baselineData);
   state.dirty = true;
   refreshCurrentTint();
   updateMetrics();
   draw();
-  autosave(kind).catch((err) => setStatus(`Autosave failed: ${err.message}`, true));
+  const message = protectedPixels > 0
+    ? `Autosaved ${kind}; protected ${formatInt(protectedPixels)} sulfide px.`
+    : undefined;
+  autosave(kind, message).catch((err) => setStatus(`Autosave failed: ${err.message}`, true));
 }
 
-async function autosave(reason) {
+async function autosave(reason, message) {
   if (!state.sampleId) return;
   await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/autosave`, {
     mask_png: maskCanvas.toDataURL('image/png'),
     edits: state.edits,
     reason
   });
-  setStatus(`Autosaved ${reason}.`);
+  setStatus(message || `Autosaved ${reason}.`);
+}
+
+async function subtractSulfidesFromMask() {
+  if (!state.sampleId) return;
+  if (!hasSulfideGuard()) {
+    setStatus('No sulfide mask is available for this sample.', true);
+    return;
+  }
+  pushUndo();
+  const removed = removeSulfidePixelsFromMask();
+  if (removed === 0) {
+    state.undoStack.pop();
+    updateMetrics();
+    draw();
+    setStatus('No talc pixels overlap the sulfide mask.');
+    return;
+  }
+  state.edits.push({ type: 'subtract_sulfides', removed_pixels: removed, at: new Date().toISOString() });
+  state.dirty = true;
+  refreshCurrentTint();
+  updateMetrics();
+  draw();
+  await autosave('subtract sulfides', `Autosaved sulfide subtraction; removed ${formatInt(removed)} px.`);
 }
 
 async function saveReview(moveNext) {
@@ -1427,10 +1524,11 @@ async function runSam2(promptGeometry) {
     setStatus('SAM2 returned a mask, but the browser could not load it.', true);
     return;
   }
+  const baselineData = captureMaskData();
   pushUndo();
   mergePositiveMaskImage(img);
   state.edits.push({ type: 'sam2_add_talc', prompt_geometry: promptGeometry, score: result.summary.score, at: new Date().toISOString() });
-  afterMaskEdit('sam2');
+  afterMaskEdit('sam2', baselineData);
 }
 
 function mergePositiveMaskImage(img) {
@@ -1467,6 +1565,7 @@ viewer.addEventListener('pointerdown', async (event) => {
   }
   viewer.setPointerCapture(event.pointerId);
   if (state.tool === 'brush' || state.tool === 'eraser') {
+    state.activeEditBaseline = captureMaskData();
     pushUndo();
     state.drawing = true;
     state.lastPoint = point;
@@ -1552,7 +1651,8 @@ viewer.addEventListener('pointerup', (event) => {
     state.drawing = false;
     state.lastPoint = null;
     state.edits.push({ type: state.tool, brush_size: Number(els.brushSize.value), at: new Date().toISOString() });
-    afterMaskEdit(state.tool);
+    afterMaskEdit(state.tool, state.activeEditBaseline);
+    state.activeEditBaseline = null;
   }
   if (state.tool === 'polygon') state.polygon.dragIndex = null;
   if (state.tool === 'rectangle') state.rect.handle = null;
@@ -1586,6 +1686,9 @@ els.filterSelect.addEventListener('change', renderQueue);
 els.brushSize.addEventListener('input', () => { els.brushSizeValue.textContent = `${els.brushSize.value} px`; });
 els.zoomSlider.addEventListener('input', () => { state.zoom = Number(els.zoomSlider.value) / 100; applyZoom(); });
 els.themeSelect.addEventListener('change', () => applyTheme(els.themeSelect.value));
+els.subtractSulfidesBtn.addEventListener('click', () => {
+  subtractSulfidesFromMask().catch((err) => setStatus(`Sulfide subtraction failed: ${err.message}`, true));
+});
 els.fitBtn.addEventListener('click', fitToViewer);
 els.undoBtn.addEventListener('click', () => undo().catch((err) => setStatus(`Undo failed: ${err.message}`, true)));
 els.saveBtn.addEventListener('click', () => saveReview(false).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
@@ -1640,7 +1743,7 @@ async function loadSample(sampleId) {
 
   const urls = state.sample.urls;
   const [
-    original, annotated, qa, currentMask, autoMask, rawLines, overlapMask, ignoreMask
+    original, annotated, qa, currentMask, autoMask, rawLines, overlapMask, ignoreMask, sulfideMask
   ] = await Promise.all([
     loadImage(urls.original),
     loadImage(urls.annotated || urls.source_copy),
@@ -1649,11 +1752,17 @@ async function loadSample(sampleId) {
     loadImage(urls.autodetected_mask),
     loadImage(urls.raw_blue_stroke),
     loadImage(urls.sulfide_overlap),
-    loadImage(urls.ignore_mask)
+    loadImage(urls.ignore_mask),
+    loadImage(urls.sulfide_mask)
   ]);
   state.images = { original, annotated, qa };
   maskCtx.clearRect(0, 0, state.imageW, state.imageH);
   if (currentMask) maskCtx.drawImage(currentMask, 0, 0, state.imageW, state.imageH);
+  sulfideGuardCanvas.width = state.imageW;
+  sulfideGuardCanvas.height = state.imageH;
+  sulfideGuardCtx.clearRect(0, 0, state.imageW, state.imageH);
+  state.sulfideGuardLoaded = Boolean(sulfideMask);
+  if (sulfideMask) sulfideGuardCtx.drawImage(sulfideMask, 0, 0, state.imageW, state.imageH);
   state.staticTints = {
     auto: buildTintFromImage(autoMask, [47, 120, 255, 90]),
     lines: buildTintFromImage(rawLines, [20, 40, 255, 170]),

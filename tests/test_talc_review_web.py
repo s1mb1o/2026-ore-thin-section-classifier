@@ -146,6 +146,13 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn("event.button === 2", markup)
         self.assertIn("const insertAt = nearestPolygonSegment(point)", markup)
         self.assertIn("Polygon point inserted.", markup)
+        self.assertIn('id="protectSulfides"', markup)
+        self.assertIn('id="subtractSulfidesBtn"', markup)
+        self.assertIn("removeSulfidePixelsFromMask", markup)
+        self.assertIn("protect_sulfides", markup)
+        self.assertIn("subtract_sulfides", markup)
+        self.assertIn("Current on sulfide px", markup)
+        self.assertNotIn("enforceSulfideProtection('undo')", markup)
 
 
 if __name__ == "__main__":

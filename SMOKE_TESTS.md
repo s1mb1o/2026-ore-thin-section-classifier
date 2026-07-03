@@ -57,7 +57,7 @@ Expected:
 - Current status counts are `31` `candidate_ok`, `9` `needs_manual_review`, and `2` `sulfide_overlap_review_required`.
 - Each sample directory contains source image copy, blue stroke masks, talc candidates, sulfide/overlap/ignore masks, optional-silicate derived masks, final talc mask, QA overlay, and `conversion_summary.json`.
 - The talc converter accepts `--silicate-mask-dir` and writes `silicate_support_mask.png`, `silicate_supported_talc_mask.png`, `silicate_unsupported_talc_mask.png`, `talc_positive_core_mask.png`, and `silicate_hard_negative_mask.png`; synthetic unit tests verify supported talc, unsupported uncertain talc, and silicate hard negatives.
-- Preferred browser review shows original blue annotation lines explicitly, edits the current talc mask directly, supports brush, eraser, filled polygon, filled rectangle, optional SAM2 prompts, undo, autosave, `Save`, and `Save and next`, and saves reviewed outputs under each sample's `reviewed/` directory. The legacy Streamlit review remains available only as a fallback.
+- Preferred browser review shows original blue annotation lines explicitly, edits the current talc mask directly, supports brush, eraser, filled polygon, filled rectangle, optional SAM2 prompts, undo, autosave, default-on sulfide protection, manual sulfide subtraction, `Save`, and `Save and next`, and saves reviewed outputs under each sample's `reviewed/` directory. The legacy Streamlit review remains available only as a fallback.
 - The `SAM2 assist` canvas tool shows model/device controls, `Load/check SAM2`, draggable point/box prompts, and `Run SAM2`; without local `torch` and `sam2`, it should report missing optional dependencies rather than blocking the rest of the app.
 
 ## Talc Browser Review App Smoke
@@ -85,6 +85,7 @@ Expected:
 - Opening a sample auto-creates or reuses `current_talc_mask.png`.
 - The canvas edits the talc mask itself with brush, eraser, polygon, rectangle, and optional SAM2 prompt tools.
 - Polygon draft editing supports click-to-add, edge-click-to-insert, point drag, right-click-point-to-delete, and status-line confirmation for add/insert/remove.
+- `Protect sulfides while drawing` is enabled by default; add tools cannot add new talc pixels on the sulfide mask, `Current on sulfide px` is shown for existing overlap, and `Subtract sulfides from mask` removes overlap and autosaves.
 - `Save` writes `reviewed/reviewed_talc_mask.png`, `reviewed/reviewed_ignore_mask.png`, `reviewed/reviewed_overlay.png`, `reviewed/review_patch.json`, and `reviewed/review_summary.json`.
 - If SAM2 dependencies are missing, `Check SAM2` and the SAM2 canvas tool report the missing optional dependency without blocking manual editing.
 
@@ -121,7 +122,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 Expected:
 
-- Unit tests pass; current local result is `43` tests.
+- Unit tests pass; current local result is `45` tests.
 - Coverage includes `source_fusion`, `review_queue`, `curation`, `component_reports`, `report_cards`, and `scribble_classifier`.
 - These tests use synthetic inputs and do not require GPU, Streamlit, SAM2, or external datasets.
 
@@ -238,11 +239,29 @@ python3 scripts/build_official_balanced_eval_split.py \
   --out-csv outputs/official_balanced_eval_split.csv
 ```
 
+Preferred deconflicted split:
+
+```bash
+python3 scripts/audit_official_labels.py \
+  --official-manifest outputs/official_manifest.json \
+  --dataset-root dataset \
+  --out-dir outputs/official_label_audit
+
+python3 scripts/build_official_balanced_eval_split.py \
+  --official-manifest outputs/official_manifest.json \
+  --label-audit-json outputs/official_label_audit/summary.json \
+  --exclude-conflicts \
+  --dedupe-sha256 \
+  --out-json outputs/official_balanced_eval_split_deconflicted.json \
+  --out-csv outputs/official_balanced_eval_split_deconflicted.csv
+```
+
 Expected:
 
 - Evaluation JSON includes `iou_sulfide`, `f1_sulfide`, `auc_sulfide`, `hausdorff_px_mean`, and `hd95_px_mean`.
-- The pipeline writes `binary_sulfide/sulfide_mask.png`, `binary_sulfide/confidence.png`, `binary_sulfide/overlay_preview.jpg`, `talc_candidate/talc_candidate_mask.png`, `talc_candidate/talc_candidate_summary.json`, `ore_analysis/ore_summary.json`, `ore_analysis/component_features.csv`, and `ore_analysis/intergrowth_overlay_preview.jpg`.
-- Balanced official split contains `387` labelled images: `129` ordinary, `129` fine, `129` talcose; the `14` panoramas remain listed separately as unlabelled stress-test images.
+- The pipeline writes `binary_sulfide/sulfide_mask.png`, `binary_sulfide/confidence.png`, `binary_sulfide/analyzed_mask.png`, `binary_sulfide/overlay_preview.jpg`, `talc_candidate/talc_candidate_mask.png`, `talc_candidate/talc_candidate_summary.json`, `ore_analysis/ore_summary.json`, `ore_analysis/component_features.csv`, `ore_analysis/analyzed_mask.png`, and `ore_analysis/intergrowth_overlay_preview.jpg`.
+- `ore_summary.json` reports analyzed-denominator `sulfide_fraction` / `talc_fraction`, full-image `*_fraction_image`, `analyzed_fraction`, `talc_margin`, `intergrowth_margin`, `needs_expert_review`, and `warnings`.
+- Raw balanced official split contains `387` labelled images: `129` ordinary, `129` fine, `129` talcose. Preferred deconflicted split contains `345` labelled images: `115` per class after excluding label-conflict hashes and duplicate hashes. The `14` panoramas remain listed separately as unlabelled stress-test images.
 - The one-image official batch smoke writes `summary.csv`, `summary.json`, `failures.json`, and image-level classification metrics JSON/Markdown. On a one-class smoke sample, AUC may be `null`; full balanced evaluation is needed for meaningful F1/AUC.
 
 ## Ore Rule Calibration Smoke
