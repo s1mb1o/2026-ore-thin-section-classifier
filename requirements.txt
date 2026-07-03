@@ -1,11 +1,19 @@
-# Full ML environment. Requires Python >=3.10 because transformers>=5.12.1
-# is not available for Python 3.9.
+# Full ML environment. Requires Python >=3.10 (the code uses zip(strict=True)
+# and PEP 604 `X | None` annotations, and torch/transformers drop 3.9 wheels).
+#
+# Versions below are the ones verified running the local ML pipeline
+# (docs/session-sync.md: torch 2.11.0, transformers 5.5.4 on 127.0.0.1 runtime test).
+# Reconciles the previous `transformers>=5.12.1` floor, which contradicted the
+# only runtime that was actually verified. For a reproducible install, prefer the
+# generated requirements.lock (pip freeze of a known-good environment).
 opencv-python
 numpy
 Pillow
 streamlit
 streamlit-drawable-canvas
-torch
+torch>=2.11.0
 torchvision
-transformers>=5.12.1
+transformers>=5.5.4
 safetensors
+# Used by scripts/evaluate_ore_feature_classifier.py (image-level feature classifier CV).
+scikit-learn

@@ -42,8 +42,21 @@ python -m pip install -r requirements.txt
 
 ## Ore Pipeline UI
 
-Default local demo/smoke mode uses the heuristic backend, creates immutable run
-artifacts under `outputs/ore_pipeline_ui/`, and prints the selected local URL:
+The quickest launch is the repo-root wrapper `run_main_app.sh`. It prefers the
+repo-local `.venv`, `cd`s to the repo root, defaults to the heuristic backend on
+an OS-assigned port, and passes any extra arguments straight through:
+
+```bash
+./run_main_app.sh                     # heuristic backend, OS-assigned port
+./run_main_app.sh --port 8080         # fixed port
+./run_main_app.sh --backend ml        # ML sulfide backend (B2 checkpoint default)
+./run_main_app.sh --help              # app help
+```
+
+Host/port can also be set via the `ORE_HOST` / `ORE_PORT` environment variables.
+
+The equivalent explicit invocation uses the heuristic backend, creates immutable
+run artifacts under `outputs/ore_pipeline_ui/`, and prints the selected local URL:
 
 ```bash
 python3 apps/ore_pipeline_web.py \
@@ -103,7 +116,25 @@ docker compose -f docker-compose.ore-pipeline-ui.yml up --build
 
 ## Talc Review UI (Preferred Browser/Canvas App)
 
-Directly from the official annotated folder:
+The quickest launch is the repo-root wrapper `run_talc_app.sh`. It prefers the
+repo-local `.venv`, `cd`s to the repo root, defaults to the prepared
+`outputs/talc_blue_line_conversion` workspace on an OS-assigned port, and passes
+extra arguments through. It skips its default `--conversion-dir` when the caller
+supplies `--conversion-dir` or `--annotated-dir`:
+
+```bash
+./run_talc_app.sh                     # prepared-workspace mode, OS-assigned port
+./run_talc_app.sh --port 8081         # fixed port
+./run_talc_app.sh --reconvert         # regenerate the conversion workspace
+./run_talc_app.sh --annotated-dir "dataset/Фото руд по сортам. ч1/Оталькованные руды/Области оталькования"
+./run_talc_app.sh --help              # app help
+```
+
+Host/port can also be set via the `TALC_HOST` / `TALC_PORT` environment
+variables, and the default workspace via `TALC_CONVERSION_DIR`.
+
+The equivalent explicit invocations follow. Directly from the official annotated
+folder:
 
 ```bash
 python3 apps/talc_review_web.py \
