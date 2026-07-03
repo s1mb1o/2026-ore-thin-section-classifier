@@ -29,6 +29,16 @@ The first version covers settings already present in the UI:
 
 - language: `ru` or `en`, default `ru`;
 - theme: `system`, `light`, or `dark`, default `system`;
+- runtime backend:
+  - `heuristic` or `ml`;
+  - checkpoint path for the ML backend;
+  - saving applies the new runtime immediately for new runs;
+  - already-created immutable runs keep their recorded backend and checkpoint;
+  - changing runtime is rejected while a run or Series job is active;
+  - `Test` checks the selected, possibly unsaved runtime values; for
+    `heuristic` it verifies the built-in heuristic backend is available, and
+    for `ml` it verifies that the checkpoint exists and can be loaded through
+    the same model loader used by runs without creating a run;
 - default preprocessing preset:
   - preprocessing enabled;
   - illumination normalization;
@@ -44,6 +54,10 @@ The first version covers settings already present in the UI:
   - scale value, micrometers per pixel;
   - scale confidence;
   - review status.
+- history maintenance:
+  - remove all saved run and Series history;
+  - keep uploaded source images and app settings intact;
+  - reject removal while a run, Series job, or foreground operation is active.
 
 ## UI
 
@@ -52,9 +66,12 @@ Add a direct-loadable `/settings` slug page and a `Settings` navigation tab.
 The page shows:
 
 - language and theme selectors;
+- runtime backend selector and checkpoint path input;
+- runtime `Test` action with a localized success/failure status line;
 - preprocessing default checkboxes;
 - show-tiling default checkbox;
 - metadata session-default inputs;
+- a destructive `Remove all history` action in a separate History panel;
 - `Save settings` and `Reset to defaults` actions;
 - a clear status line after save/reset/load failure.
 
@@ -62,16 +79,36 @@ The page shows:
 
 Add:
 
-- `GET /api/settings` -> current merged settings;
-- `PUT /api/settings` -> validate and persist settings.
+- `GET /api/settings` -> current merged settings, including effective runtime;
+- `PUT /api/settings` -> validate, persist, and apply settings.
+- `POST /api/runtime/test` -> validate a supplied runtime selection without
+  saving it; ML mode performs a bounded subprocess checkpoint-load probe and
+  returns `ok/status/details`.
+- `DELETE /api/history` -> remove all persisted run and Series artifact folders
+  while leaving uploads and settings intact.
 
 Invalid settings should return `400` with a clear error.
+Runtime changes during active jobs should return `409` to avoid changing backend
+selection for work that is already queued/running.
+Runtime ML tests should return a non-OK test payload when imports or checkpoint
+loading fail, and should return `409` when an active job is already running.
+History removal during active jobs should return `409`.
 
 ## Acceptance
 
 - `/settings` loads the same app shell and selects the Settings page.
 - Settings are loaded before workspace defaults are applied.
 - Saving settings updates the server-side JSON file.
+- Saving backend/checkpoint updates the live server runtime for the next run.
+- ML backend save validates that the checkpoint path exists.
+- The Settings page `Test` button can test unsaved runtime form values.
+- Heuristic runtime tests return success without creating a run.
+- ML runtime tests do not mutate saved settings, do not create a run, and report
+  checkpoint-loader success or failure on the same `auto` device selection used
+  by real pipeline inference.
+- New immutable runs snapshot `backend` and `checkpoint` in `run.json`.
+- `Remove all history` asks for confirmation, removes run/Series history,
+  clears the loaded run/result state in the browser, and keeps uploads/settings.
 - After app restart, `GET /api/settings` returns saved values.
 - Browser-local values may remain as a fallback, but server settings are the
   preferred source when available.

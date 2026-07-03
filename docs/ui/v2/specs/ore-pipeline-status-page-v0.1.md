@@ -24,6 +24,7 @@ host or Nornickel VM.
 - Show Flash/disk usage for the configured UI workspace.
 - Show history size, run count, series count, upload size, and active jobs.
 - Show health checks and an overall `ok`, `warning`, or `error` state.
+- Show recent system events and HTTP access events.
 - Keep the page localized in Russian and English.
 
 ## Non-Goals
@@ -31,6 +32,7 @@ host or Nornickel VM.
 - Do not add new Python runtime dependencies such as `psutil`.
 - Do not manage or stop jobs from the Status page.
 - Do not expose host secrets, environment variables, or process command lines.
+- Do not expose arbitrary host OS logs such as `/var/log/system.log`.
 - Do not poll heavy directory-size scans continuously in the background.
 
 ## Data Contract
@@ -95,6 +97,27 @@ host or Nornickel VM.
     "total_workspace_size_bytes": 235,
     "active_runs": [],
     "active_batches": []
+  },
+  "logs": {
+    "limit": 80,
+    "system": [
+      {
+        "timestamp": "2026-07-03T00:00:00+00:00",
+        "level": "info",
+        "message": "service initialized",
+        "details": {"backend": "heuristic"}
+      }
+    ],
+    "access": [
+      {
+        "timestamp": "2026-07-03T00:00:00+00:00",
+        "client": "127.0.0.1",
+        "method": "GET",
+        "path": "/workspace",
+        "status": 200,
+        "size_bytes": "-"
+      }
+    ]
   }
 }
 ```
@@ -121,4 +144,11 @@ host or Nornickel VM.
 - The health table lists all checks.
 - The storage table lists run history, series history, uploads, and total
   workspace size.
+- The system log panel lists bounded in-process app events such as service
+  startup, run/series lifecycle events, edit recalculations, cancellations,
+  failures, and request errors.
+- The access log panel lists bounded in-process HTTP events with timestamp,
+  method, sanitized path, status, response size when available, and client.
+- Both log panels show newest entries first and an empty state if no entries
+  are available.
 - The `Refresh` button re-fetches `/api/status`.

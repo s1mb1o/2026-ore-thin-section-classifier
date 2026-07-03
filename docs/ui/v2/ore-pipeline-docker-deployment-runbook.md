@@ -1,0 +1,289 @@
+# Ore Pipeline Docker Deployment Runbook
+
+Date: 2026-07-03
+
+This runbook deploys the v2 ore pipeline browser UI (`apps/ore_pipeline_web.py`) as a Docker service on two verified targets:
+
+- Nornickel VM: `team123@111.88.145.15`, public URL `http://111.88.145.15:8080/workspace`, `linux/amd64`.
+- gx10: `ashmelev@192.168.86.14`, LAN URL `http://192.168.86.14:8210/workspace`, `linux/arm64`.
+
+The image is heuristic-first and does not bundle the official dataset, generated outputs, or model checkpoints.
+
+## Preflight
+
+Run from the canonical v2 checkout on the Mac:
+
+```bash
+cd /Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2
+git diff --check
+python3 -m unittest discover -s tests -p 'test_ore_pipeline_docker.py' -v
+```
+
+Check that the Docker context stays small:
+
+```bash
+docker buildx build --dry-run -f docker/ore-pipeline-ui/Dockerfile . 2>/dev/null || true
+```
+
+If local Docker is unavailable, skip the dry-run and rely on the remote build context check. The verified remote contexts were under `5 MB` because `.dockerignore` excludes `.git`, `dataset`, `outputs`, and model checkpoints.
+
+## Nornickel VM
+
+Use this path for the public demo VM. Build on `docker-srv` (`root@192.168.86.16`) and stream the built image into the VM, so the VM does not need to build the image itself.
+
+### 1. Prepare SSH Access
+
+Keep the `team123` private key outside the repository. If using the provided key archive:
+
+```bash
+KEYDIR="$(mktemp -d /tmp/team123-key.XXXXXX)"
+unzip -q /Users/ashmelev/Downloads/team123.zip -d "$KEYDIR"
+find "$KEYDIR" -type f -print
+```
+
+Set `KEY` to the extracted private key path, not the `.pub` file:
+
+```bash
+KEY="$KEYDIR/<private-key-file>"
+chmod 600 "$KEY"
+VM_SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new team123@111.88.145.15)
+"${VM_SSH[@]}" 'hostname; uname -m; sudo docker --version'
+```
+
+Remove the temporary key directory after deployment:
+
+```bash
+rm -rf "$KEYDIR"
+```
+
+### 2. Stage And Build On docker-srv
+
+```bash
+REPO=/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2
+BUILD_HOST=root@192.168.86.16
+BUILD_DIR=/tmp/nornikel-v2-ore-pipeline-ui-build
+IMAGE=nornikel/ore-pipeline-ui:v2
+
+ssh "$BUILD_HOST" "rm -rf '$BUILD_DIR' && mkdir -p '$BUILD_DIR'"
+rsync -az --delete \
+  --exclude='.git/' --exclude='.venv/' --exclude='venv/' \
+  --exclude='dataset/' --exclude='outputs/' \
+  --include='models/' --include='models/README.md' --exclude='models/***' \
+  --exclude='__pycache__/' --exclude='.pytest_cache/' --exclude='*.pyc' --exclude='*.zip' \
+  "$REPO/" "$BUILD_HOST:$BUILD_DIR/"
+
+ssh "$BUILD_HOST" "cd '$BUILD_DIR' && docker compose -f docker-compose.ore-pipeline-ui.yml build"
+ssh "$BUILD_HOST" "docker image inspect '$IMAGE' --format 'arch={{.Architecture}} os={{.Os}} size={{.Size}} id={{.Id}}'"
+```
+
+Verified image from the first VM deployment:
+
+```text
+nornikel/ore-pipeline-ui:v2
+linux/amd64
+sha256:3e2a83981f56208cfa9804c92ad4dc391a9532c645736057d0f49e00395e6a6c
+```
+
+### 3. Upload Image To VM
+
+Stream the image through the Mac so the VM private key is not copied to `docker-srv`:
+
+```bash
+ssh "$BUILD_HOST" "docker save '$IMAGE' | gzip -1" | "${VM_SSH[@]}" "gzip -dc | sudo docker load"
+```
+
+### 4. Run On VM
+
+```bash
+"${VM_SSH[@]}" '
+set -e
+CONTAINER=nornikel-ore-pipeline-ui
+RUNTIME=$HOME/ore-pipeline-ui
+mkdir -p "$RUNTIME/outputs/ore_pipeline_ui" "$RUNTIME/models"
+sudo docker rm -f "$CONTAINER" 2>/dev/null || true
+sudo docker run -d \
+  --name "$CONTAINER" \
+  --restart unless-stopped \
+  --pull=never \
+  -p 8080:8080 \
+  -e ORE_UI_HOST=0.0.0.0 \
+  -e ORE_UI_PORT=8080 \
+  -e ORE_UI_WORKSPACE=/data/ore_pipeline_ui \
+  -e ORE_UI_BACKEND=heuristic \
+  -e ORE_UI_PROCESSING_MAX_SIDE=2600 \
+  -e ORE_UI_PANORAMA_MAX_SIDE=1800 \
+  -e ORE_UI_PREVIEW_MAX_SIDES=1024,2048,4096 \
+  -v "$RUNTIME/outputs/ore_pipeline_ui:/data/ore_pipeline_ui" \
+  -v "$RUNTIME/models:/app/models:ro" \
+  nornikel/ore-pipeline-ui:v2
+sudo docker ps --filter name="$CONTAINER" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+'
+```
+
+### 5. Smoke VM
+
+```bash
+curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' http://111.88.145.15:8080/workspace
+curl -sS http://111.88.145.15:8080/api/status | jq '{overall:.health.overall, app:.app, history:.history}'
+```
+
+Optional functional smoke from the Mac:
+
+```bash
+BASE=http://111.88.145.15:8080
+SAMPLE='dataset/Фото руд по сортам. ч2/тонкие/69 1.jpg'
+UPLOAD_JSON=/tmp/ore_vm_upload.json
+RUN_JSON=/tmp/ore_vm_run.json
+
+curl -sS -F "file=@${SAMPLE}" "$BASE/api/uploads" -o "$UPLOAD_JSON"
+UPLOAD_ID="$(jq -r '.upload_id' "$UPLOAD_JSON")"
+curl -sS -H 'Content-Type: application/json' \
+  -d "{\"upload_id\":\"$UPLOAD_ID\"}" \
+  "$BASE/api/runs/start" -o "$RUN_JSON"
+RUN_ID="$(jq -r '.run_id' "$RUN_JSON")"
+for _ in $(seq 1 60); do
+  curl -sS "$BASE/api/runs/$RUN_ID" -o "$RUN_JSON"
+  STATUS="$(jq -r '.status' "$RUN_JSON")"
+  [ "$STATUS" = complete ] || [ "$STATUS" = failed ] || [ "$STATUS" = canceled ] && break
+  sleep 1
+done
+jq '{run_id:.run_id,status:.status,summary:.summary}' "$RUN_JSON"
+```
+
+## gx10 ARM64
+
+Use this path for the ARM64 LAN deployment on `asus_gx10`. It builds natively on gx10 and runs with `--gpus all` so `/api/status` can report `NVIDIA GB10`.
+
+### 1. Stage And Build On gx10
+
+```bash
+REPO=/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2
+GX10=ashmelev@192.168.86.14
+BUILD_DIR=/home/ashmelev/Projects/nornikel-v2-ore-pipeline-ui-build
+IMAGE=nornikel/ore-pipeline-ui:v2-arm64
+
+ssh "$GX10" "rm -rf '$BUILD_DIR' && mkdir -p '$BUILD_DIR'"
+rsync -az --delete \
+  --exclude='.git/' --exclude='.venv/' --exclude='venv/' \
+  --exclude='dataset/' --exclude='outputs/' \
+  --include='models/' --include='models/README.md' --exclude='models/***' \
+  --exclude='__pycache__/' --exclude='.pytest_cache/' --exclude='*.pyc' --exclude='*.zip' \
+  "$REPO/" "$GX10:$BUILD_DIR/"
+
+ssh "$GX10" "cd '$BUILD_DIR' && docker build --platform linux/arm64 --pull=false -f docker/ore-pipeline-ui/Dockerfile -t '$IMAGE' ."
+ssh "$GX10" "docker image inspect '$IMAGE' --format 'arch={{.Architecture}} os={{.Os}} size={{.Size}} id={{.Id}}'"
+```
+
+Verified image from the first gx10 deployment:
+
+```text
+nornikel/ore-pipeline-ui:v2-arm64
+linux/arm64
+sha256:a55f381707f584b8cbceb94e073603fb2988cdf1a947166b23d5242d4e0c22be
+```
+
+### 2. Run On gx10
+
+```bash
+ssh "$GX10" '
+set -e
+CONTAINER=nornikel-ore-pipeline-ui-v2
+RUNTIME=$HOME/nornikel-ore-pipeline-ui
+mkdir -p "$RUNTIME/outputs/ore_pipeline_ui" "$RUNTIME/models"
+docker rm -f "$CONTAINER" 2>/dev/null || true
+docker run -d \
+  --name "$CONTAINER" \
+  --restart unless-stopped \
+  --gpus all \
+  --pull=never \
+  -p 8210:8080 \
+  -e ORE_UI_HOST=0.0.0.0 \
+  -e ORE_UI_PORT=8080 \
+  -e ORE_UI_WORKSPACE=/data/ore_pipeline_ui \
+  -e ORE_UI_BACKEND=heuristic \
+  -e ORE_UI_PROCESSING_MAX_SIDE=2600 \
+  -e ORE_UI_PANORAMA_MAX_SIDE=1800 \
+  -e ORE_UI_PREVIEW_MAX_SIDES=1024,2048,4096 \
+  -v "$RUNTIME/outputs/ore_pipeline_ui:/data/ore_pipeline_ui" \
+  -v "$RUNTIME/models:/app/models:ro" \
+  nornikel/ore-pipeline-ui:v2-arm64
+docker ps --filter name="$CONTAINER" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+'
+```
+
+### 3. Smoke gx10
+
+```bash
+curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' http://192.168.86.14:8210/workspace
+curl -sS http://192.168.86.14:8210/api/status | jq '{overall:.health.overall, gpu:.gpu, history:.history}'
+ssh "$GX10" 'docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}" nornikel-ore-pipeline-ui-v2'
+```
+
+Expected gx10 status details:
+
+- `/api/status` returns `200`.
+- `gpu.available` is `true`, device name is `NVIDIA GB10`.
+- GB10 memory values may be `null` because gx10's `nvidia-smi` reports memory as `[N/A]`.
+- Health may be `warning` if gx10 flash free space is still around `9%`.
+
+Optional functional smoke from the Mac:
+
+```bash
+BASE=http://192.168.86.14:8210
+SAMPLE='dataset/Фото руд по сортам. ч2/рядовые/38.jpg'
+UPLOAD_JSON=/tmp/ore_gx10_upload.json
+RUN_JSON=/tmp/ore_gx10_run.json
+
+curl -sS -F "file=@${SAMPLE}" "$BASE/api/uploads" -o "$UPLOAD_JSON"
+UPLOAD_ID="$(jq -r '.upload_id' "$UPLOAD_JSON")"
+curl -sS -H 'Content-Type: application/json' \
+  -d "{\"upload_id\":\"$UPLOAD_ID\"}" \
+  "$BASE/api/runs/start" -o "$RUN_JSON"
+RUN_ID="$(jq -r '.run_id' "$RUN_JSON")"
+for _ in $(seq 1 120); do
+  curl -sS "$BASE/api/runs/$RUN_ID" -o "$RUN_JSON"
+  STATUS="$(jq -r '.status' "$RUN_JSON")"
+  [ "$STATUS" = complete ] || [ "$STATUS" = failed ] || [ "$STATUS" = canceled ] && break
+  sleep 1
+done
+jq '{run_id:.run_id,status:.status,summary:.summary}' "$RUN_JSON"
+```
+
+## Operations
+
+VM:
+
+```bash
+"${VM_SSH[@]}" 'sudo docker logs --tail 100 nornikel-ore-pipeline-ui'
+"${VM_SSH[@]}" 'sudo docker restart nornikel-ore-pipeline-ui'
+"${VM_SSH[@]}" 'sudo docker stats --no-stream nornikel-ore-pipeline-ui'
+```
+
+gx10:
+
+```bash
+ssh "$GX10" 'docker logs --tail 100 nornikel-ore-pipeline-ui-v2'
+ssh "$GX10" 'docker restart nornikel-ore-pipeline-ui-v2'
+ssh "$GX10" 'docker stats --no-stream nornikel-ore-pipeline-ui-v2'
+```
+
+To stop serving but preserve workspace data:
+
+```bash
+"${VM_SSH[@]}" 'sudo docker stop nornikel-ore-pipeline-ui'
+ssh "$GX10" 'docker stop nornikel-ore-pipeline-ui-v2'
+```
+
+Do not remove mounted workspace directories unless explicitly clearing demo state.
+
+## Known Caveats
+
+- The VM is public on `111.88.145.15:8080`; gx10 port `8210` is LAN-only unless a router/NAT rule is added.
+- Full panorama uploads currently create full-size `preprocessed_full.png` synchronously before the run id is returned. Normal images are fine; panorama live demos should wait for the preparation path optimization.
+- Keep the team VM SSH key outside the repo and remove temporary extraction directories after use.
+- If gx10 `/api/status` fails with `could not convert string to float: '[N/A]'`, the deployed image predates the GB10 parser fix; rebuild from the current v2 checkout and redeploy.
+
+## Evidence
+
+- VM smoke: `docs/ui/v2/notes/2026-07-03-ore-pipeline-docker-vm-smoke.md`
+- gx10 smoke: `docs/ui/v2/notes/2026-07-03-ore-pipeline-docker-gx10-arm64-smoke.md`

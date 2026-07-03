@@ -16,6 +16,8 @@ docs/ui/v2/specs/ore-pipeline-status-page-v0.1.md
    - Add `OrePipelineStore.status_payload()`.
    - Include app uptime, backend, checkpoint presence, history sizes, active
      jobs, and health checks.
+   - Add bounded in-memory system and access log payloads without reading
+     arbitrary host OS logs.
 
 2. API and routing.
    - Add `GET /api/status`.
@@ -25,6 +27,7 @@ docs/ui/v2/specs/ore-pipeline-status-page-v0.1.md
    - Add `Status` / `Статус` tab.
    - Hide the workflow sidebar on `/status`.
    - Render operational cards, health checks, and storage/history tables.
+   - Render system and access log panels below the diagnostics tables.
    - Localize all labels in Russian and English.
    - Use explicit `Refresh` instead of background polling.
 
@@ -32,6 +35,7 @@ docs/ui/v2/specs/ore-pipeline-status-page-v0.1.md
    - Cover the payload shape and `/api/status`.
    - Cover the `/status` slug route.
    - Cover required UI controls/static strings.
+   - Cover log payload shape and Status-page log panel controls.
    - Update smoke tests, changelog, and session sync.
 
 ## Verification

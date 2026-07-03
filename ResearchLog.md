@@ -19,6 +19,7 @@
 - Added a reproducible merge step for sharded official batches (`scripts/merge_official_batch_shards.py`), replacing the previous one-off combine snippet with a tested command before evaluation/calibration.
 - During the live zelda sharded B2 batch, fine-intergrowth CPU analysis was slower than GPU inference because component morphology ran on a full-frame mask for every component. The component feature path now crops each component to its padded bounding box before morphology.
 - Completed the zelda B2 deconflicted balanced batch: `345` rows, `0` failures. The deterministic rule scored macro F1 `0.1849` and macro AUC OVR `0.4264`; grid-search calibration improved macro F1 only to `0.2743`. A cross-validated ExtraTrees classifier over the extracted image/component features reached macro F1 `0.7439` and macro AUC OVR `0.8802`, making the feature-classifier path the strongest current image-level F1/AUC artifact.
+- Diagnosed the local ML UI failure as Transformers SegFormer namespace drift: zelda checkpoints use `segformer.stages.*`, while the local runtime creates `segformer.encoder.*`. Implemented a strict all-keys/all-shapes remap in `src/ore_classifier/model_io.py`, saved details in `docs/notes/2026-07-03-segformer-transformers-namespace-compatibility.md`, and added the consolidated work/verification handoff `docs/notes/2026-07-03-ml-runtime-fix-work-summary.md`.
 
 ### Heuristic segmentation baseline
 
@@ -26,6 +27,18 @@
 - The baseline uses illumination-normalized brightness, green/blue artifact suppression, morphology, connected components, and component-level ordinary/fine rules.
 - Official-image smoke on `dataset/Фото руд по сортам. ч1/Рядовые руды/DSCN2176.JPG` wrote masks/overlay/components to `outputs/heuristic_segmentation_smoke`; result was `sulfide_fraction 0.164864`, `talc_candidate_fraction 0.000708`, and `70` sulfide components.
 - Saved method, smoke result, and limits in `docs/notes/2026-07-03-heuristic-segmentation-subproject.md`.
+
+### Talc non-sulfide segmentation baseline
+
+- Updated `scripts/build_talc_dataset.py` so `sulfide_mask.png` pixels are ignored by default for talc training; the model learns `talc` vs `not_talc` only on non-sulfide analyzed pixels.
+- Added `scripts/train_talc_segmentation.py` and `scripts/infer_talc_segmentation.py` for talc-named training and non-sulfide-clipped tiled inference.
+- Built `outputs/talc_non_sulfide_dataset_v0` from all 42 reviewed talc samples: `1510` tiles (`1150` train / `360` val), all 42 sulfide masks loaded, `25,036,407` sulfide pixels ignored.
+- Ran a local MPS ResUNet baseline under `models/talc_segmentation/resunet_non_sulfide_20260703_local`; best validation talc IoU was `0.526502` at epoch 1.
+- Inference smoke on held-out `DSCN4714` wrote `outputs/talc_segmentation_predictions/resunet_non_sulfide_20260703_local_DSCN4714`; final talc mask has `0` pixels on sulfides and non-sulfide IoU `0.693980` vs the reviewed mask.
+- Added `scripts/run_talc_segformer_folds.py`, an image-level fold runner that rebuilds non-sulfide talc datasets, trains pretrained SegFormer checkpoints, and calibrates probability thresholds on validation tiles.
+- Ran a local SegFormer-B0 fold smoke under `outputs/talc_segformer_folds/segformer_b0_smoke_20260703`: `nvidia/mit-b0` loaded, one capped fold trained for 10 steps, and best calibrated validation tile talc IoU was `0.373902` at threshold `0.40`. This verifies the path but is under-trained.
+- Completed the full zelda SegFormer-B0 5-fold run under `outputs/talc_segformer_folds/segformer_b0_full_20260703`: mean calibrated talc IoU `0.644191`, mean F1 `0.782301`, with per-fold thresholds `0.50`, `0.50`, `0.40`, `0.35`, and `0.55`.
+- Saved details in `docs/notes/2026-07-03-talc-non-sulfide-segmentation-training.md`.
 
 ### Official metrics and panorama split clarification
 

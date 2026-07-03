@@ -27,6 +27,7 @@ Root-level `docs/plans/`, `docs/specs/`, and `docs/notes/` are reserved for non-
 - `plans/34_ore-pipeline-augmentation-misses.md`
 - `specs/ore-pipeline-docker-runtime-v0.1.md`
 - `plans/35_ore-pipeline-docker-runtime.md`
+- `ore-pipeline-docker-deployment-runbook.md`
 - `plans/36_ore-pipeline-source-disagreement-map.md`
 - `TODO_CANDIDATES.md`
 

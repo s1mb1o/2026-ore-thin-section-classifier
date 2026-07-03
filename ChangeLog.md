@@ -2,7 +2,65 @@
 
 ## 2026-07-03
 
+- Added a destructive Settings action to remove all v2 ore pipeline history. `/settings` now has a separate History panel with `Remove all history`, backed by `DELETE /api/history`, which deletes persisted run and Series artifact folders while preserving uploaded source images and app settings, and rejects the operation while jobs are active.
+
+- Completed the full zelda SegFormer-B0 5-fold non-sulfide talc segmentation run and mirrored artifacts locally under `outputs/talc_segformer_folds/segformer_b0_full_20260703`. Mean calibrated talc IoU is `0.644191`, mean F1 is `0.782301`; launcher/logs are under `outputs/logs/`.
+
+- Added sortable columns to the v2 ore pipeline Run files popup. Filename, type, size, and image-dimension headers are now clickable client-side sort controls while preserving per-file `View` links and ZIP download behavior.
+
+- Added Apple Silicon GPU detection to the v2 Status page. When `nvidia-smi` is absent on macOS, `/api/status` now reads `system_profiler` once, reports the Apple Metal GPU, core/display counts, and PyTorch MPS availability, while leaving utilization/VRAM metrics blank because macOS does not expose NVIDIA-style counters there.
+
+- Added a per-file `View` action to the v2 ore pipeline Run files popup. `/api/runs/{run_id}/files` now returns a `view_url` for each immutable artifact, and the popup renders a localized action column that opens the selected file through the existing `/artifacts/...` endpoint.
+
+- Fixed the v2 ore pipeline Status page during large-image work. `/api/status` now reports foreground HTTP operations such as upload parsing, preview generation, preprocessing, and run preparation, and `/status` polls while visible so active-task and CPU/RAM cards update during long synchronous image operations.
+
+- Added live progress to the v2 ore pipeline History page. `/api/runs` now overlays active in-memory job state onto persisted `run.json` rows, and `/history` shows a Status/Progress column with active run percent, stage details, ETA, and tile counts when ML tiled progress is available.
+
+- Added run runtime provenance to the v2 ore pipeline UI. Every run now records `runtime` in `run.json` plus `reports/runtime.json`, including effective backend, binary sulfide checkpoint path when ML is used, explicit empty checkpoints for heuristic/rule steps, ML checkpoint metadata/device/tile settings when available, and talc/final segmentation runtime sources. File listing and ZIP exports include `reports/runtime.json`; focused `unittest` web coverage validates heuristic and ML provenance.
+
+- Optimized large-image v2 ore pipeline preparation. Upload previews now decode at display scale, preview pyramids reuse downscaled intermediates and avoid expensive optimize passes, path uploads reuse one SHA-1 calculation, panorama-scale preprocessing defers full-size `preprocessed_full.png`, and ML tiled inference reports processed/total tile progress through `progress.json` into the run progress indicator. Local smoke on `dataset/Панорамы/13.jpg` prepared the `13330 x 9489` source as `1800 x 1282` analysis data in about `2.3 s` with `full_size_processing_deferred=true`. Details: `docs/ui/v2/notes/2026-07-03-ore-pipeline-large-image-performance.md`.
+
+- Fixed the v2 sulfide viewer `non-sulfides` class visibility. `non-sulfides` now uses a generated `non_sulfide_base` masked display layer, so disabling `sulfides` no longer leaves sulfide pixels visible through the raw base image. Completed runs missing this derived display layer regenerate it on load.
+
+- Added `scripts/run_talc_segformer_folds.py` for pretrained SegFormer talc image-level folds and threshold calibration; ran a local B0 smoke under `outputs/talc_segformer_folds/segformer_b0_smoke_20260703`.
+
+- Added the non-sulfide talc segmentation training path: `build_talc_dataset.py` now ignores sulfide pixels by default, new `scripts/train_talc_segmentation.py` trains the talc binary model, new `scripts/infer_talc_segmentation.py` writes non-sulfide-clipped talc masks, and a local ResUNet baseline produced `outputs/talc_non_sulfide_dataset_v0`, `models/talc_segmentation/resunet_non_sulfide_20260703_local`, and a DSCN4714 prediction smoke.
+
+- Cleared stale segmentation results immediately when pressing `Start` in the v2 ore pipeline UI. The client now hides the old text/metrics/export panel, removes old `sulfide`/`final` state from the viewer, resets side-by-side comparison to `none`, and switches back to the best available input layer before the new run request completes.
+
+- Added `docs/notes/2026-07-03-ml-runtime-fix-work-summary.md`, a consolidated record of the ML runtime failure diagnosis, SegFormer checkpoint namespace remap, Runtime Test behavior, verification commands, current service state, and follow-up guidance.
+
+- Fixed local ML runtime loading for zelda-trained SegFormer checkpoints. `src/ore_classifier/model_io.py` now strictly remaps compatible Transformers SegFormer `segformer.stages.*` checkpoint keys to the local `segformer.encoder.*` model namespace, records `state_dict_compatibility`, and refuses the remap unless every key and tensor shape matches. The Settings Runtime `Test` probe now resolves the same `auto` device as real inference. Verified B2 checkpoint load on CPU and MPS, B1/B0 checkpoint load on CPU, `/api/runtime/test` on `127.0.0.1:63589`, `infer_binary_sulfide.py` on the failed run input, and full `run_ore_pipeline.py` on the same input.
+
+- Restored the v2 ore pipeline `Status` tab to the visible top menu. The route already existed, but the top-nav button was hidden with `hidden-status-tab`; it is now visible before `API` and `Settings`.
+
+- Added a non-mutating Runtime `Test` action to the v2 ore pipeline Settings page. The new `/api/runtime/test` endpoint checks unsaved backend/checkpoint form values, returns immediate success for `heuristic`, and for `ml` runs a bounded subprocess probe through the same checkpoint loader used by pipeline runs without creating a run or saving settings.
+
+- Increased the talc review Brush size slider maximum from `120 px` to `240 px`.
+
+- Renamed the talc review toolbar tool from `Similar Talc` to `Similar` in user-facing UI text now that segmentation class selection is explicit; persisted edit identifiers remain compatible.
+
+- Added a transparent top-right `Next` action to the talc review UI after `Save & Next`; it advances through the current visible queue without saving while keeping existing dirty/draft navigation warnings.
+
+- Hid the model checkpoint path from the v2 Status backend card when the active backend is `heuristic`; the checkpoint is still shown for `ml` and remains editable in Settings for switching modes.
+
+- Added `docs/ui/v2/ore-pipeline-docker-deployment-runbook.md`, a reusable deployment guide for both verified Docker targets: the public Nornickel VM (`team123@111.88.145.15:8080`, `linux/amd64`) and gx10 (`192.168.86.14:8210`, `linux/arm64`). The runbook covers remote staging/build, key handling outside the repo, image transfer, `docker run` commands, smoke checks, operations commands, and known panorama/GX10 caveats.
+
+- Added per-class `Edit` radios to the talc review `SEGMENTATION CLASSES` widget. Brush, Fill, Rectangle, and Polygon now draw/erase the selected class (`Positive bag` or `Talc`), while class visibility checkboxes remain display-only.
+
+- Added a live runtime backend switch to the v2 ore pipeline Settings page: `/settings` now persists `heuristic`/`ml` plus checkpoint path, validates ML checkpoints, applies changes immediately for new runs, blocks runtime changes while jobs are active, and snapshots backend/checkpoint into immutable `run.json` files.
+
+- Built the v2 ore pipeline Docker image natively on gx10 as `nornikel/ore-pipeline-ui:v2-arm64`, launched `nornikel-ore-pipeline-ui-v2` on `192.168.86.14:8210` with `--gpus all`, fixed `/api/status` parsing for GB10 `nvidia-smi` `[N/A]` memory fields, and recorded ARM64 serve/run/performance evidence in `docs/ui/v2/notes/2026-07-03-ore-pipeline-docker-gx10-arm64-smoke.md`. Final normal-image smoke passed in about `18.6 s`; idle container usage was about `301 MiB` RAM and `0.01%` CPU.
+
+- Fixed Similar Talc semantics for positive bags: `positive_bag` is now treated as a rough containing region, not confirmed talc. Similar Talc can preview/apply `talc_node` pixels inside a positive bag, and the talc-node overlay remains visible on top of the bag.
+
+- Added an over-image talc segmentation class visibility widget with checked `Positive bag` and `Talc` toggles. It controls the existing positive-bag and talc-node overlay visibility without changing the saved class masks.
+
+- Split the talc review working mask into two review classes: `positive_bag` for blue-line/manual Brush/Fill/Rectangle/Polygon/SAM2 edits and `talc_node` for Similar Talc output. The app now autosaves/reviews separate class masks plus the existing union `current_talc_mask.png` / `reviewed_talc_mask.png` for compatibility, and Similar Talc no longer relabels positive-bag pixels as talc nodes.
+
+- Added a v2 ore pipeline `API` page at `/api` with localized REST documentation, endpoint navigation, request/response examples, multipart upload sandbox, JSON request sandboxes, and readable binary-download responses for PDF/ZIP exports. Documented the REST contract/plan under `docs/ui/v2/`, extended focused UI tests, and made repeated same-image uploads allocate unique IDs for fast batching/API use.
 - Added a v2 ore pipeline `Status` / `Статус` page with direct `/status` route and `/api/status`: it reports CPU load, optional NVIDIA GPU utilization through `nvidia-smi`, RAM, Flash/disk usage, history size, run/series counts, active jobs, backend/checkpoint state, and overall health checks. Added v2 UI spec/plan docs and focused regression coverage.
+- Extended the v2 ore pipeline Status page with bounded in-memory system and access logs: recent app events, run/series lifecycle events, request errors, and sanitized HTTP access entries now appear in `/api/status` and the `/status` UI.
 - Expanded the v2 ore pipeline PDF report into a five-page lab-style artifact following `docs/notes/2026-07-03-public-ore-report-style-findings.md` from the original hackathon repo: a cautious demonstration-report title, `Паспорт исследования`, conclusion, `Результаты количественного анализа`, named photo-documentation pages, method/QC limitations, reproducibility notes, expert-review fields, and the existing original/preprocessed/sulfide/final/class-mask visuals. The `/report.pdf` endpoint regenerates the current report layout for existing runs and the rendered output was verified with Poppler.
 - Changed v2 ore pipeline `Apply` behavior for Augmentation and Preprocessing: applying settings from a completed run now creates a new immutable `prepared` run with prerequisite artifacts rebuilt up to the changed step and downstream masks/metrics/reports cleared; applying again before `Start` updates the same prepared run, and `Start` continues that run in place. Added the v2 UI spec/plan and focused regression coverage.
 - Fixed Similar Talc save behavior: `Save` and `Save & Next` now merge an active Similar Talc preview into the working mask before writing reviewed outputs, so visible preview results are not silently dropped if the reviewer skips the separate `Apply Similar` button.

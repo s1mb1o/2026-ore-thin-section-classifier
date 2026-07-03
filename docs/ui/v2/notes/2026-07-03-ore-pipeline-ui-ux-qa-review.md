@@ -150,14 +150,15 @@ Proposed fix:
 - Rename to `Перемещение` or `Рука`.
 - Use an icon-only hand button with tooltip if icons are added.
 
-### P2. Statistics table wraps large pixel values
+### P2. Editor statistics wrap labels and large values
 
-Evidence: editor stats show values like `2 223 000 px`, where `px` can wrap to the next line.
+Evidence: editor stats show values like `2 223 000 px`, where `px` can wrap to the next line. A later live smoke on 2026-07-03 also showed Russian class labels such as `сульфиды`, `не-сульфиды`, `обычные срастания`, and `тонкие срастания` wrapping into very narrow letter-sized columns in the right statistics panel.
 
 Impact: scanning pixel counts and percentages becomes harder during mask correction.
 
 Proposed fix:
-- Use fixed numeric columns with `white-space: nowrap`.
+- Use a stable stats grid with a fixed/minmax label column and fixed numeric columns.
+- Apply `white-space: nowrap` to numeric values and prevent class labels from collapsing below a readable minimum width.
 - Format large pixel counts with a compact unit option if space is tight, for example `2.22M px`.
 
 ### P3. Result decision lacks threshold/margin explanation
@@ -207,6 +208,8 @@ Remaining findings now reflected in `docs/ui/v2/TODO_CANDIDATES.md`:
 - Result viewer layer controls can still truncate visibly at normal desktop
   width when the left sidebar is present; one screenshot showed a partial
   `с<-->` artifact near the primary layer chips.
+- Edit & Recalculate statistics still need layout hardening: class labels can
+  collapse into very narrow wrapped columns in the right panel.
 - Backend/checkpoint/device readiness and launch command are not shown in the
   UI.
 - Rule/calibration provenance is not visible beside the loaded result.
