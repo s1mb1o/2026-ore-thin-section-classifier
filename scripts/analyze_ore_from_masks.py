@@ -18,6 +18,7 @@ from ore_classifier.component_analysis import (  # noqa: E402
     save_component_outputs,
 )
 from ore_classifier.analyzed_area import build_analyzed_mask  # noqa: E402
+from ore_classifier.rule_config_io import add_rule_config_arguments, resolve_rule_config_from_args  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -31,10 +32,7 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--min-component-area-px", type=int, default=64)
     parser.add_argument("--close-kernel-px", type=int, default=15)
-    parser.add_argument("--fine-dark-inside-ratio", type=float, default=0.18)
-    parser.add_argument("--fine-solidity-max", type=float, default=0.62)
-    parser.add_argument("--fine-compactness-max", type=float, default=0.12)
-    parser.add_argument("--talc-fraction-threshold", type=float, default=0.10)
+    add_rule_config_arguments(parser)
     parser.add_argument("--preview-max-side", type=int, default=1800)
     args = parser.parse_args()
 
@@ -47,13 +45,14 @@ def main() -> int:
         analyzed_mask = build_analyzed_mask(image)
     else:
         analyzed_mask = None
+    rule_config = resolve_rule_config_from_args(args)
     cfg = ComponentRuleConfig(
         min_component_area_px=args.min_component_area_px,
         close_kernel_px=args.close_kernel_px,
-        fine_dark_inside_ratio=args.fine_dark_inside_ratio,
-        fine_solidity_max=args.fine_solidity_max,
-        fine_compactness_max=args.fine_compactness_max,
-        talc_fraction_threshold=args.talc_fraction_threshold,
+        fine_dark_inside_ratio=rule_config["fine_dark_inside_ratio"],
+        fine_solidity_max=rule_config["fine_solidity_max"],
+        fine_compactness_max=rule_config["fine_compactness_max"],
+        talc_fraction_threshold=rule_config["talc_fraction_threshold"],
     )
     summary, components, classified = analyze_components(
         sulfide_mask=sulfide_mask,
@@ -71,7 +70,7 @@ def main() -> int:
         analyzed_mask=analyzed_mask,
         preview_max_side=args.preview_max_side,
     )
-    output = {"summary": summary.__dict__, "paths": paths}
+    output = {"summary": summary.__dict__, "rule_config": rule_config, "paths": paths}
     print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 

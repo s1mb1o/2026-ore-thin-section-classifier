@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from ore_classifier.component_analysis import ComponentRuleConfig, analyze_components  # noqa: E402
+from ore_classifier.component_analysis import crop_component  # noqa: E402
 from ore_classifier.component_analysis import fill_holes  # noqa: E402
 
 
@@ -71,6 +72,19 @@ class ComponentAnalysisTest(unittest.TestCase):
         filled = fill_holes(mask)
         self.assertEqual(int(filled[15, 15]), 0)
         self.assertEqual(int(filled[5, 5]), 1)
+
+    def test_crop_component_limits_feature_work_to_padded_bbox(self) -> None:
+        mask = np.zeros((200, 200), dtype=np.uint8)
+        mask[90:100, 95:105] = 1
+        labels_count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        self.assertEqual(labels_count, 2)
+
+        component, sulfide_crop = crop_component(labels, mask, 1, stats[1], close_kernel_px=7)
+
+        self.assertEqual(component.shape, sulfide_crop.shape)
+        self.assertLess(component.shape[0], mask.shape[0])
+        self.assertLess(component.shape[1], mask.shape[1])
+        self.assertEqual(int(component.sum()), 100)
 
 
 if __name__ == "__main__":

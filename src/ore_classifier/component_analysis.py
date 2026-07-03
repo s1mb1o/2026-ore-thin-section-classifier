@@ -101,17 +101,23 @@ def analyze_components(
         area = int(stats[component_id, cv2.CC_STAT_AREA])
         if area < cfg.min_component_area_px:
             continue
-        component = (labels == component_id).astype(np.uint8)
-        features = component_features(component_id, component, sulfide, stats[component_id], centroids[component_id], cfg)
+        component_crop, sulfide_crop = crop_component(labels, sulfide, component_id, stats[component_id], cfg.close_kernel_px)
+        features = component_features(component_id, component_crop, sulfide_crop, stats[component_id], centroids[component_id], cfg)
         components.append(features)
+        x = int(stats[component_id, cv2.CC_STAT_LEFT])
+        y = int(stats[component_id, cv2.CC_STAT_TOP])
+        w = int(stats[component_id, cv2.CC_STAT_WIDTH])
+        h = int(stats[component_id, cv2.CC_STAT_HEIGHT])
+        component_pixels = labels[y : y + h, x : x + w] == component_id
+        classified_crop = classified[y : y + h, x : x + w]
         if features.label == "fine_intergrowth":
             fine_area += area
             fine_count += 1
-            classified[component > 0] = 2
+            classified_crop[component_pixels] = 2
         else:
             ordinary_area += area
             ordinary_count += 1
-            classified[component > 0] = 1
+            classified_crop[component_pixels] = 1
 
     sulfide_area = int(sulfide.sum())
     talc_area = int(talc.sum())
@@ -162,6 +168,27 @@ def analyze_components(
         rule_text_ru=rule_text_ru(ore_class_ru, talc_fraction, ordinary_area, fine_area),
     )
     return summary, components, classified
+
+
+def crop_component(
+    labels: np.ndarray,
+    sulfide: np.ndarray,
+    component_id: int,
+    stat: np.ndarray,
+    close_kernel_px: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    pad = max(2, int(close_kernel_px))
+    x = int(stat[cv2.CC_STAT_LEFT])
+    y = int(stat[cv2.CC_STAT_TOP])
+    w = int(stat[cv2.CC_STAT_WIDTH])
+    h = int(stat[cv2.CC_STAT_HEIGHT])
+    x0 = max(0, x - pad)
+    y0 = max(0, y - pad)
+    x1 = min(labels.shape[1], x + w + pad)
+    y1 = min(labels.shape[0], y + h + pad)
+    component = (labels[y0:y1, x0:x1] == component_id).astype(np.uint8)
+    sulfide_crop = sulfide[y0:y1, x0:x1].astype(np.uint8)
+    return component, sulfide_crop
 
 
 def component_features(

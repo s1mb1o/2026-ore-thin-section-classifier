@@ -122,7 +122,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 Expected:
 
-- Unit tests pass; current local result is `45` tests.
+- Unit tests pass; current local result is `53` tests.
 - Coverage includes `source_fusion`, `review_queue`, `curation`, `component_reports`, `report_cards`, and `scribble_classifier`.
 - These tests use synthetic inputs and do not require GPU, Streamlit, SAM2, or external datasets.
 
@@ -263,6 +263,7 @@ Expected:
 - `ore_summary.json` reports analyzed-denominator `sulfide_fraction` / `talc_fraction`, full-image `*_fraction_image`, `analyzed_fraction`, `talc_margin`, `intergrowth_margin`, `needs_expert_review`, and `warnings`.
 - Raw balanced official split contains `387` labelled images: `129` ordinary, `129` fine, `129` talcose. Preferred deconflicted split contains `345` labelled images: `115` per class after excluding label-conflict hashes and duplicate hashes. The `14` panoramas remain listed separately as unlabelled stress-test images.
 - The one-image official batch smoke writes `summary.csv`, `summary.json`, `failures.json`, and image-level classification metrics JSON/Markdown. On a one-class smoke sample, AUC may be `null`; full balanced evaluation is needed for meaningful F1/AUC.
+- `scripts/merge_official_batch_shards.py` combines class-sharded `run_official_batch.py` outputs, rejects duplicate `run_id` values, and writes combined `summary.csv`, `summary.json`, and `failures.json`.
 
 ## Ore Rule Calibration Smoke
 
@@ -280,6 +281,7 @@ Expected:
 
 - The command writes `ore_rule_calibration.json` and optional Markdown.
 - Output includes `best_config`, `best_metrics`, `top_results`, and an explicit note that calibration uses image-level labels, not pixel-level geological ground truth.
+- `scripts/analyze_ore_from_masks.py`, `scripts/run_ore_pipeline.py`, and `scripts/run_official_batch.py` accept `--rule-config-json` with either this calibration artifact or a direct config object; explicit CLI flags still override the file.
 - On one-class smoke data, AUC may be `null`; use the full balanced batch for meaningful F1/AUC calibration.
 
 ## Manual Review Pack Smoke

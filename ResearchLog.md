@@ -15,6 +15,9 @@
 - Added official label audit and deconflicted split generation. SHA-256 audit over official labelled folders found `1180` labelled images, `1124` unique hashes, `56` duplicate-content groups, and `24` conflicting-label duplicate groups. The preferred deconflicted balanced split is `outputs/official_balanced_eval_split_deconflicted.json` with `345` images (`115` per class).
 - Added analyzed-area denominator support to the ML inference/analysis path: black/blue-markup excluded pixels no longer dilute `sulfide_fraction` and `talc_fraction`; full-image fractions remain as `*_fraction_image`, and `ore_summary.json` now exposes decision margins plus review warnings.
 - Added `scripts/calibrate_ore_rules.py` so a completed B2 official batch can grid-search deterministic talc/ordinary/fine thresholds from `summary.csv` and per-run `component_features.csv`; output is an explicit calibration artifact because it uses image-level folder labels rather than pixel-level geological ground truth.
+- Wired calibration artifacts back into the runnable pipeline: `--rule-config-json` accepts `ore_rule_calibration.json` in `scripts/analyze_ore_from_masks.py`, `scripts/run_ore_pipeline.py`, and `scripts/run_official_batch.py`, so a selected `best_config` can be applied to later batches or demos without manually copying four threshold flags.
+- Added a reproducible merge step for sharded official batches (`scripts/merge_official_batch_shards.py`), replacing the previous one-off combine snippet with a tested command before evaluation/calibration.
+- During the live zelda sharded B2 batch, fine-intergrowth CPU analysis was slower than GPU inference because component morphology ran on a full-frame mask for every component. The component feature path now crops each component to its padded bounding box before morphology.
 
 ### Heuristic segmentation baseline
 

@@ -152,6 +152,17 @@ python3 scripts/evaluate_ore_classification.py \
   --out-md outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_classification_metrics.md
 ```
 
+Merge a class-sharded official batch before evaluation:
+
+```bash
+python3 scripts/merge_official_batch_shards.py \
+  --shard-dirs \
+    outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed_sharded_20260703_1000/fine_intergrowth \
+    outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed_sharded_20260703_1000/ordinary_intergrowth \
+    outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed_sharded_20260703_1000/talcose \
+  --out-dir outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed_sharded_20260703_1000
+```
+
 Calibrate deterministic talc/ordinary/fine rule thresholds from the completed
 batch without rerunning B2 inference:
 
@@ -160,6 +171,32 @@ python3 scripts/calibrate_ore_rules.py \
   --summary-csv outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/summary.csv \
   --out-json outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_rule_calibration.json \
   --out-md outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_rule_calibration.md
+```
+
+Apply a calibration artifact to a rerun or a single-image demo:
+
+```bash
+python3 scripts/run_official_batch.py \
+  --split-json outputs/official_balanced_eval_split_deconflicted.json \
+  --dataset-root dataset \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/evaluations/b2_official_deconflicted_auto_talc_calibrated \
+  --rule-config-json outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_rule_calibration.json \
+  --tile-size 1024 \
+  --stride 768 \
+  --batch-size 1 \
+  --device auto \
+  --overwrite
+```
+
+```bash
+python3 scripts/run_ore_pipeline.py \
+  --image "dataset/Фото руд по сортам. ч1/Рядовые руды/DSCN2176.JPG" \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/inference_demo/local_dscn2176_b2_calibrated \
+  --rule-config-json outputs/evaluations/b2_official_deconflicted_auto_talc_analyzed/ore_rule_calibration.json \
+  --device auto \
+  --auto-talc-candidate
 ```
 
 ## Sulfide QA UI

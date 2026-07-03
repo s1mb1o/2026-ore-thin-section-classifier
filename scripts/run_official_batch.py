@@ -11,6 +11,15 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from ore_classifier.rule_config_io import (  # noqa: E402
+    add_rule_config_arguments,
+    resolve_rule_config_from_args,
+    rule_config_cli_args,
+)
+
 
 LABEL_TO_ORE_CLASS = {
     "ordinary_intergrowth": "row_ore",
@@ -35,12 +44,14 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--min-component-area-px", type=int, default=128)
     parser.add_argument("--close-kernel-px", type=int, default=21)
+    add_rule_config_arguments(parser)
     parser.add_argument("--talc-min-area-px", type=int, default=320)
     parser.add_argument("--preview-max-side", type=int, default=1800)
     parser.add_argument("--no-auto-talc-candidate", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
     args = parser.parse_args()
+    rule_config = resolve_rule_config_from_args(args)
 
     split = json.loads(args.split_json.read_text(encoding="utf-8"))
     selected = select_items(
@@ -91,6 +102,7 @@ def main() -> int:
                 "--preview-max-side",
                 str(args.preview_max_side),
             ]
+            cmd.extend(rule_config_cli_args(rule_config))
             if not args.no_auto_talc_candidate:
                 cmd.append("--auto-talc-candidate")
             try:
@@ -138,6 +150,7 @@ def build_summary_row(item: dict[str, Any], image_path: Path, run_dir: Path) -> 
     talc_summary_path = pipeline["paths"].get("talc_candidate_summary")
     talc_candidate = read_json(Path(talc_summary_path)) if talc_summary_path else {}
     paths = pipeline.get("paths", {})
+    rule_config = pipeline.get("rule_config", {})
     source_label = item["label"]
     return {
         "run_id": run_dir.name,
@@ -155,6 +168,10 @@ def build_summary_row(item: dict[str, Any], image_path: Path, run_dir: Path) -> 
         "talc_fraction": ore.get("talc_fraction", ""),
         "talc_source": pipeline.get("talc_source", ""),
         "talc_candidate_fraction": talc_candidate.get("talc_candidate_fraction", ""),
+        "rule_fine_dark_inside_ratio": rule_config.get("fine_dark_inside_ratio", ""),
+        "rule_fine_solidity_max": rule_config.get("fine_solidity_max", ""),
+        "rule_fine_compactness_max": rule_config.get("fine_compactness_max", ""),
+        "rule_talc_fraction_threshold": rule_config.get("talc_fraction_threshold", ""),
         "component_count": ore.get("component_count", ""),
         "ordinary_component_count": ore.get("ordinary_component_count", ""),
         "fine_component_count": ore.get("fine_component_count", ""),

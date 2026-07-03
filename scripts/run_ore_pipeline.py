@@ -18,6 +18,11 @@ from ore_classifier.talc_candidate import (  # noqa: E402
     estimate_talc_candidate_mask,
     save_talc_candidate_outputs,
 )
+from ore_classifier.rule_config_io import (  # noqa: E402
+    add_rule_config_arguments,
+    resolve_rule_config_from_args,
+    rule_config_cli_args,
+)
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -34,6 +39,7 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--min-component-area-px", type=int, default=128)
     parser.add_argument("--close-kernel-px", type=int, default=21)
+    add_rule_config_arguments(parser)
     parser.add_argument("--talc-mask", type=Path, default=None, help="Optional accepted/manual talc mask to pass into ore analysis.")
     parser.add_argument(
         "--auto-talc-candidate",
@@ -46,6 +52,7 @@ def main() -> int:
 
     if args.talc_mask is not None and args.auto_talc_candidate:
         raise ValueError("--talc-mask and --auto-talc-candidate are mutually exclusive")
+    rule_config = resolve_rule_config_from_args(args)
 
     inference_dir = args.out_dir / "binary_sulfide"
     analysis_dir = args.out_dir / "ore_analysis"
@@ -113,6 +120,7 @@ def main() -> int:
         "--preview-max-side",
         str(args.preview_max_side),
     ]
+    analyze_cmd.extend(rule_config_cli_args(rule_config))
     if talc_mask_path is not None:
         analyze_cmd.extend(["--talc-mask", str(talc_mask_path)])
     run(analyze_cmd)
@@ -122,6 +130,7 @@ def main() -> int:
         "image": str(args.image),
         "checkpoint": str(args.checkpoint),
         "talc_source": talc_source,
+        "rule_config": rule_config,
         "paths": {
             "binary_sulfide_summary": str(inference_dir / "summary.json"),
             "sulfide_mask": str(inference_dir / "sulfide_mask.png"),
