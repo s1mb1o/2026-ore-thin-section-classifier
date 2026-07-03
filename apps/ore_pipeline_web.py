@@ -6580,18 +6580,6 @@ HTML_PAGE = r"""<!doctype html>
         response: {schema_version: 'ore-pipeline-app-settings-v0.1', language: 'ru', theme: 'system', runtime: {backend: 'heuristic', checkpoint: 'models/.../best.pt'}}
       },
       {
-        id: 'delete-history',
-        group: 'Settings',
-        method: 'DELETE',
-        path: '/api/history',
-        title: 'Remove all history',
-        titleRu: 'Удалить всю историю',
-        summary: 'Delete all saved run and Series artifacts while leaving uploads and app settings intact. The request is rejected while jobs are active.',
-        summaryRu: 'Удаляет все сохраненные артефакты запусков и серий, не трогая загрузки и настройки приложения. Запрос отклоняется при активных заданиях.',
-        body: null,
-        response: {schema_version: 'ore-pipeline-history-delete-v0.1', removed_run_ids: [], removed_batch_ids: []}
-      },
-      {
         id: 'save-settings',
         group: 'Settings',
         method: 'PUT',
