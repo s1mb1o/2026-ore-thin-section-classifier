@@ -2,10 +2,11 @@
 """Build a tiled talc/not-talc training dataset from human-reviewed masks.
 
 Positives come from `reviewed/reviewed_talc_mask.png` in the blue-line
-conversion workspace, ignore pixels from `reviewed_ignore_mask.png` plus
-non-analyzed (black border) pixels, and negatives from everything else in the
-talcose images. Optional pure-negative tiles can be sampled from non-talcose
-official folders once the talc-poor audit passes.
+conversion workspace. Ignore pixels come from `reviewed_ignore_mask.png`,
+non-analyzed (black border) pixels, and by default `sulfide_mask.png`, so the
+training target is talc segmentation over non-sulfide pixels. Optional
+pure-negative tiles can be sampled from non-talcose official folders once the
+talc-poor audit passes.
 
 The output manifest matches `build_binary_sulfide_dataset.py`, so
 `BinarySulfideTileDataset` and `scripts/train_binary_sulfide.py` consume it
@@ -71,6 +72,11 @@ def main() -> int:
     parser.add_argument("--min-valid-fraction", type=float, default=0.30)
     parser.add_argument("--negative-keep-fraction", type=float, default=0.25)
     parser.add_argument("--analyzed-min-value", type=int, default=8)
+    parser.add_argument(
+        "--include-sulfide-pixels",
+        action="store_true",
+        help="Do not mark sample sulfide_mask.png pixels as ignore; disabled by default for non-sulfide talc training.",
+    )
     parser.add_argument("--downscale-max-side", type=int, default=0, help="0 disables resizing before tiling")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -91,6 +97,7 @@ def main() -> int:
         min_valid_fraction=args.min_valid_fraction,
         negative_keep_fraction=args.negative_keep_fraction,
         analyzed_min_value=args.analyzed_min_value,
+        sulfide_as_ignore=not args.include_sulfide_pixels,
         downscale_max_side=args.downscale_max_side,
         overwrite=args.overwrite,
     )
@@ -125,6 +132,7 @@ def build_dataset(
     min_valid_fraction: float,
     negative_keep_fraction: float,
     analyzed_min_value: int,
+    sulfide_as_ignore: bool,
     downscale_max_side: int,
     overwrite: bool,
 ) -> dict:
@@ -151,6 +159,7 @@ def build_dataset(
             image_path=sample["image_path"],
             talc_mask_path=sample["talc_mask_path"],
             ignore_mask_path=sample["ignore_mask_path"],
+            sulfide_mask_path=sample["sulfide_mask_path"],
             split=splits[sample_id],
             out_dir=out_dir,
             tile_size=tile_size,
@@ -160,6 +169,7 @@ def build_dataset(
             min_valid_fraction=min_valid_fraction,
             negative_keep_fraction=negative_keep_fraction,
             analyzed_min_value=analyzed_min_value,
+            sulfide_as_ignore=sulfide_as_ignore,
             downscale_max_side=downscale_max_side,
             rng=rng,
         )
@@ -179,6 +189,7 @@ def build_dataset(
                     image_path=image_path,
                     talc_mask_path=None,
                     ignore_mask_path=None,
+                    sulfide_mask_path=None,
                     split=choose_split(rng, val_fraction),
                     out_dir=out_dir,
                     tile_size=tile_size,
@@ -188,6 +199,7 @@ def build_dataset(
                     min_valid_fraction=min_valid_fraction,
                     negative_keep_fraction=1.0,
                     analyzed_min_value=analyzed_min_value,
+                    sulfide_as_ignore=sulfide_as_ignore,
                     downscale_max_side=downscale_max_side,
                     rng=rng,
                 )
@@ -206,6 +218,7 @@ def build_dataset(
         "seed": seed,
         "val_fraction": val_fraction,
         "analyzed_min_value": analyzed_min_value,
+        "sulfide_as_ignore": sulfide_as_ignore,
         "sample_splits": splits,
         "out_dir": str(out_dir),
         "stats": dict(stats),
@@ -236,6 +249,7 @@ def list_reviewed_samples(conversion_dir: Path, clean_image_dir: Path, stats: de
             print(f"skip {sample_id}: no clean original in {clean_image_dir}", file=sys.stderr)
             continue
         ignore_mask_path = sample_dir / "reviewed" / "reviewed_ignore_mask.png"
+        sulfide_mask_path = sample_dir / "sulfide_mask.png"
         samples.append(
             {
                 "sample_id": sample_id,
@@ -243,6 +257,7 @@ def list_reviewed_samples(conversion_dir: Path, clean_image_dir: Path, stats: de
                 "image_path": image_path,
                 "talc_mask_path": talc_mask_path,
                 "ignore_mask_path": ignore_mask_path if ignore_mask_path.exists() else None,
+                "sulfide_mask_path": sulfide_mask_path if sulfide_mask_path.exists() else None,
             }
         )
     stats["reviewed_samples"] = len(samples)
@@ -341,6 +356,7 @@ def add_source_tiles(
     image_path: Path,
     talc_mask_path: Path | None,
     ignore_mask_path: Path | None,
+    sulfide_mask_path: Path | None,
     split: str,
     out_dir: Path,
     tile_size: int,
@@ -350,6 +366,7 @@ def add_source_tiles(
     min_valid_fraction: float,
     negative_keep_fraction: float,
     analyzed_min_value: int,
+    sulfide_as_ignore: bool,
     downscale_max_side: int,
     rng: random.Random,
 ) -> int:
@@ -365,15 +382,31 @@ def add_source_tiles(
             if ignore_mask_path is not None
             else np.zeros(rgb.shape[:2], dtype=bool)
         )
+        sulfide = (
+            load_mask(sulfide_mask_path, rgb.shape[:2], downscale_max_side) > 0
+            if sulfide_mask_path is not None
+            else np.zeros(rgb.shape[:2], dtype=bool)
+        )
     except Exception as exc:
         stats[f"{source_type}_source_errors"] += 1
         print(f"skip {image_path}: {exc}", file=sys.stderr)
         return 0
 
     analyzed = build_analyzed_mask(rgb, min_value=analyzed_min_value).astype(bool)
-    # The reviewed talc mask is authoritative: border/markup exclusion never
-    # removes human-confirmed positives.
-    ignore = (reviewed_ignore | ~analyzed) & ~talc
+    # The reviewed talc mask is authoritative for border/markup exclusion.
+    # Sulfide pixels are different: the talc detector is trained and evaluated
+    # on non-sulfide pixels, so sulfide overlap is ignored rather than used as
+    # positive or negative talc supervision.
+    sulfide_ignore = sulfide if sulfide_as_ignore else np.zeros_like(sulfide)
+    talc_train = talc & ~sulfide_ignore
+    ignore = ((reviewed_ignore | ~analyzed) & ~talc_train) | sulfide_ignore
+    if sulfide_mask_path is not None:
+        stats[f"{source_type}_sulfide_masks_loaded"] += 1
+    elif sulfide_as_ignore:
+        stats[f"{source_type}_sulfide_masks_missing"] += 1
+    if sulfide_as_ignore:
+        stats[f"{source_type}_sulfide_ignore_pixels"] += int(sulfide_ignore.sum())
+        stats[f"{source_type}_sulfide_talc_overlap_pixels"] += int((sulfide_ignore & talc).sum())
 
     h, w = rgb.shape[:2]
     tiles = iter_tiles(w, h, tile_size=tile_size, stride=stride)
@@ -382,7 +415,7 @@ def add_source_tiles(
     source_hash = hashlib.sha1(str(image_path).encode("utf-8")).hexdigest()[:12]
     for tile in tiles:
         image_tile = crop_array_with_pad(rgb, tile, fill_value=(0, 0, 0))
-        mask_tile = crop_array_with_pad(talc.astype(np.uint8), tile, fill_value=0)
+        mask_tile = crop_array_with_pad(talc_train.astype(np.uint8), tile, fill_value=0)
         ignore_tile = crop_array_with_pad(ignore.astype(np.uint8), tile, fill_value=1)
         valid = ignore_tile == 0
         valid_fraction = float(valid.mean())

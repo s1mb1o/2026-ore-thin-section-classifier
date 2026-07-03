@@ -151,6 +151,99 @@ python3 scripts/convert_talc_blue_lines.py \
   --silicate-mask-dir path/to/silicate_support_masks
 ```
 
+## Train Non-Sulfide Talc Segmentation
+
+Build a talc/not-talc dataset from reviewed masks. `sulfide_mask.png` pixels are
+ignored by default, so the model learns only on non-sulfide pixels:
+
+```bash
+python3 scripts/build_talc_dataset.py \
+  --conversion-dir outputs/talc_blue_line_conversion \
+  --clean-image-dir "dataset/Фото руд по сортам. ч1/Оталькованные руды" \
+  --out-dir outputs/talc_non_sulfide_dataset_v0 \
+  --overwrite
+```
+
+Train the local baseline:
+
+```bash
+python3 scripts/train_talc_segmentation.py \
+  --dataset-manifest outputs/talc_non_sulfide_dataset_v0/manifest.json \
+  --out-dir models/talc_segmentation/resunet_non_sulfide_20260703_local \
+  --model resunet \
+  --base-channels 16 \
+  --epochs 3 \
+  --batch-size 4 \
+  --num-workers 0 \
+  --device auto \
+  --max-steps-per-epoch 80
+```
+
+Run a pretrained SegFormer fold smoke with threshold calibration:
+
+```bash
+python3 scripts/run_talc_segformer_folds.py \
+  --conversion-dir outputs/talc_blue_line_conversion \
+  --clean-image-dir "dataset/Фото руд по сортам. ч1/Оталькованные руды" \
+  --out-dir outputs/talc_segformer_folds/segformer_b0_smoke_20260703 \
+  --model segformer_b0 \
+  --folds 2 \
+  --folds-to-run 0 \
+  --tile-size 384 \
+  --stride 288 \
+  --max-tiles-per-source 12 \
+  --epochs 1 \
+  --batch-size 1 \
+  --calibration-batch-size 1 \
+  --num-workers 0 \
+  --lr 0.00006 \
+  --device auto \
+  --max-steps-per-epoch 10 \
+  --thresholds 0.30,0.40,0.50,0.60,0.70 \
+  --overwrite
+```
+
+Run the full SegFormer-B0 5-fold talc evaluation on a CUDA host:
+
+```bash
+python scripts/run_talc_segformer_folds.py \
+  --conversion-dir outputs/talc_blue_line_conversion \
+  --clean-image-dir "dataset/Фото руд по сортам. ч1/Оталькованные руды" \
+  --out-dir outputs/talc_segformer_folds/segformer_b0_full_20260703 \
+  --model segformer_b0 \
+  --folds 5 \
+  --folds-to-run all \
+  --tile-size 384 \
+  --stride 288 \
+  --max-tiles-per-source 36 \
+  --epochs 20 \
+  --batch-size 8 \
+  --calibration-batch-size 8 \
+  --num-workers 4 \
+  --lr 0.00006 \
+  --weight-decay 0.0001 \
+  --device cuda \
+  --amp \
+  --thresholds 0.20,0.25,0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70,0.75,0.80 \
+  --seed 20260703 \
+  --overwrite
+```
+
+Segment talc on one reviewed sample, clipping final output to non-sulfide
+pixels:
+
+```bash
+python3 scripts/infer_talc_segmentation.py \
+  --image outputs/talc_blue_line_conversion/samples/DSCN4714/DSCN4714.JPG \
+  --sulfide-mask outputs/talc_blue_line_conversion/samples/DSCN4714/sulfide_mask.png \
+  --checkpoint models/talc_segmentation/resunet_non_sulfide_20260703_local/best.pt \
+  --out-dir outputs/talc_segmentation_predictions/resunet_non_sulfide_20260703_local_DSCN4714 \
+  --tile-size 384 \
+  --stride 288 \
+  --batch-size 4 \
+  --device auto
+```
+
 ## Run Ore Pipeline
 
 ```bash

@@ -33,12 +33,23 @@ def write_mask(path: Path, height: int, width: int, box: tuple[int, int, int, in
     Image.fromarray(mask, mode="L").save(path)
 
 
-def make_sample(conversion_dir: Path, clean_dir: Path, sample_id: str, *, seed: int, talc_box, ignore_box=None) -> None:
+def make_sample(
+    conversion_dir: Path,
+    clean_dir: Path,
+    sample_id: str,
+    *,
+    seed: int,
+    talc_box,
+    ignore_box=None,
+    sulfide_box=None,
+) -> None:
     height = width = 128
     sample_dir = conversion_dir / "samples" / sample_id
     write_rgb(clean_dir / f"{sample_id}.JPG", height, width, seed)
     write_mask(sample_dir / "reviewed" / "reviewed_talc_mask.png", height, width, talc_box)
     write_mask(sample_dir / "reviewed" / "reviewed_ignore_mask.png", height, width, ignore_box)
+    if sulfide_box is not None:
+        write_mask(sample_dir / "sulfide_mask.png", height, width, sulfide_box)
 
 
 def run_builder(root: Path, **overrides):
@@ -58,6 +69,7 @@ def run_builder(root: Path, **overrides):
         min_valid_fraction=0.30,
         negative_keep_fraction=0.5,
         analyzed_min_value=8,
+        sulfide_as_ignore=True,
         downscale_max_side=0,
         overwrite=True,
     )
@@ -94,6 +106,7 @@ class BuildTalcDatasetTest(unittest.TestCase):
             with (out_dir / "manifest.json").open(encoding="utf-8") as f:
                 stored = json.load(f)
             self.assertEqual(stored["task"], "binary_talc")
+            self.assertTrue(stored["sulfide_as_ignore"])
             self.assertEqual(len(stored["items"]), len(items))
 
     def test_reviewed_ignore_pixels_are_marked_ignored(self) -> None:
@@ -146,6 +159,42 @@ class BuildTalcDatasetTest(unittest.TestCase):
                 self.assertFalse(bool(((ignore > 0) & (talc > 0)).any()))
                 positive_total += int((talc > 0).sum())
             self.assertGreater(positive_total, 0, "dark reviewed talc must stay positive, not ignored")
+
+    def test_sulfide_pixels_are_ignored_for_non_sulfide_talc_training(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_sample(
+                root / "conversion",
+                root / "clean",
+                "DSCN0008",
+                seed=8,
+                talc_box=(16, 96, 16, 96),
+                sulfide_box=(0, 128, 0, 64),
+            )
+
+            manifest = run_builder(
+                root,
+                val_fraction=0.0,
+                min_positive_fraction=0.0,
+                negative_keep_fraction=1.0,
+            )
+            out_dir = root / "out"
+            self.assertGreater(manifest["stats"]["talc_reviewed_sulfide_ignore_pixels"], 0)
+            self.assertGreater(manifest["stats"]["talc_reviewed_sulfide_talc_overlap_pixels"], 0)
+
+            checked_overlap_tile = False
+            for item in manifest["items"]:
+                overlap_start = max(0, 0 - int(item["x"]))
+                overlap_end = min(int(item["w"]), 64 - int(item["x"]))
+                if overlap_end <= overlap_start:
+                    continue
+                checked_overlap_tile = True
+                talc = np.asarray(Image.open(out_dir / item["mask"]).convert("L"))
+                ignore = np.asarray(Image.open(out_dir / item["ignore"]).convert("L"))
+                self.assertEqual(int((talc[:, overlap_start:overlap_end] > 0).sum()), 0)
+                self.assertGreater(int((ignore[:, overlap_start:overlap_end] > 0).sum()), 0)
+                self.assertFalse(bool(((ignore > 0) & (talc > 0)).any()))
+            self.assertTrue(checked_overlap_tile, "expected at least one tile crossing sulfide/talc overlap")
 
     def test_samples_without_reviewed_mask_are_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

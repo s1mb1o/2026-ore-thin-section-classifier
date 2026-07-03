@@ -4,14 +4,16 @@ Utility CLIs for dataset manifests, pseudo-label generation, training launchers,
 
 Keep heavy GPU training jobs outside Streamlit. Streamlit may emit the exact command, but training should run as a separate script on the selected GPU host.
 
-## Talc Training Dataset
+## Talc Training And Inference
 
 Build the tiled talc/not-talc dataset from the human-reviewed masks in the
-blue-line conversion workspace (manifest is consumable by
-`scripts/train_binary_sulfide.py` unchanged):
+blue-line conversion workspace. By default, sample `sulfide_mask.png` pixels
+are marked ignored so the model learns talc only over non-sulfide pixels:
 
 ```bash
-python3 scripts/build_talc_dataset.py --overwrite
+python3 scripts/build_talc_dataset.py \
+  --out-dir outputs/talc_non_sulfide_dataset_v0 \
+  --overwrite
 ```
 
 Defaults: `outputs/talc_blue_line_conversion` reviewed masks + clean originals
@@ -19,8 +21,84 @@ from `dataset/Фото руд по сортам. ч1/Оталькованные 
 stride 384, per-image stratified train/val split (`--val-samples` forces an
 explicit held-out list for k-fold reruns). Pure-negative tiles from
 ordinary/fine folders stay disabled (`--max-negative-images 0`) until the
-talc-poor audit passes; negative selection dedupes by SHA-256. See
-`docs/plans/35_talc-detector-training.md`.
+talc-poor audit passes; negative selection dedupes by SHA-256. Use
+`--include-sulfide-pixels` only to reproduce the old sulfide-as-negative
+behavior.
+
+Train a local ResUNet baseline:
+
+```bash
+python3 scripts/train_talc_segmentation.py \
+  --dataset-manifest outputs/talc_non_sulfide_dataset_v0/manifest.json \
+  --out-dir models/talc_segmentation/resunet_non_sulfide_20260703_local \
+  --model resunet \
+  --base-channels 16 \
+  --epochs 3 \
+  --batch-size 4 \
+  --num-workers 0 \
+  --device auto \
+  --max-steps-per-epoch 80
+```
+
+Run image-level SegFormer folds with threshold calibration. This command is the
+short local smoke; remove `--folds-to-run 0` and the step cap for the full
+zelda/gx10 run:
+
+```bash
+python3 scripts/run_talc_segformer_folds.py \
+  --out-dir outputs/talc_segformer_folds/segformer_b0_smoke_20260703 \
+  --model segformer_b0 \
+  --folds 2 \
+  --folds-to-run 0 \
+  --epochs 1 \
+  --batch-size 1 \
+  --max-steps-per-epoch 10 \
+  --thresholds 0.30,0.40,0.50,0.60,0.70 \
+  --overwrite
+```
+
+Full zelda SegFormer-B0 run used for the current quality reference:
+
+```bash
+python scripts/run_talc_segformer_folds.py \
+  --conversion-dir outputs/talc_blue_line_conversion \
+  --clean-image-dir "dataset/Фото руд по сортам. ч1/Оталькованные руды" \
+  --out-dir outputs/talc_segformer_folds/segformer_b0_full_20260703 \
+  --model segformer_b0 \
+  --folds 5 \
+  --folds-to-run all \
+  --tile-size 384 \
+  --stride 288 \
+  --max-tiles-per-source 36 \
+  --epochs 20 \
+  --batch-size 8 \
+  --calibration-batch-size 8 \
+  --num-workers 4 \
+  --lr 0.00006 \
+  --weight-decay 0.0001 \
+  --device cuda \
+  --amp \
+  --thresholds 0.20,0.25,0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70,0.75,0.80 \
+  --seed 20260703 \
+  --overwrite
+```
+
+Run tiled talc inference clipped to non-sulfide pixels:
+
+```bash
+python3 scripts/infer_talc_segmentation.py \
+  --image outputs/talc_blue_line_conversion/samples/DSCN4714/DSCN4714.JPG \
+  --sulfide-mask outputs/talc_blue_line_conversion/samples/DSCN4714/sulfide_mask.png \
+  --checkpoint models/talc_segmentation/resunet_non_sulfide_20260703_local/best.pt \
+  --out-dir outputs/talc_segmentation_predictions/resunet_non_sulfide_20260703_local_DSCN4714 \
+  --tile-size 384 \
+  --stride 288 \
+  --batch-size 4 \
+  --device auto
+```
+
+See `docs/plans/35_talc-detector-training.md` and
+`docs/notes/2026-07-03-talc-non-sulfide-segmentation-training.md`.
 
 ## Manual Review Pack
 
