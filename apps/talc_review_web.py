@@ -658,33 +658,43 @@ def render_html_page() -> str:
   </aside>
   <main class="work-pane">
     <div class="topbar">
-      <div>
+      <div class="topbar-title">
         <div id="sampleTitle" class="sample-title">Loading...</div>
         <div id="sampleSubtitle" class="sample-subtitle"></div>
       </div>
-      <div class="toolbar">
-        <button data-tool="brush" class="tool-button active">Brush</button>
-        <button data-tool="eraser" class="tool-button">Eraser</button>
-        <button data-tool="polygon" class="tool-button">Polygon</button>
-        <button data-tool="rectangle" class="tool-button">Rectangle</button>
-        <button data-tool="sam2" class="tool-button">SAM2</button>
-        <button id="undoBtn" class="icon-button" title="Undo">Undo</button>
+      <div class="topbar-controls">
+        <div class="toolbar">
+          <button data-tool="brush" class="tool-button active">Brush</button>
+          <button data-tool="rectangle" class="tool-button">Rectangle</button>
+          <button data-tool="polygon" class="tool-button">Polygon</button>
+          <button data-tool="sam2" class="tool-button">SAM2</button>
+          <span class="toolbar-separator" aria-hidden="true"></span>
+          <button id="undoBtn" class="icon-button" title="Undo">Undo</button>
+          <span class="toolbar-separator" aria-hidden="true"></span>
+          <button id="zoomInBtn" class="small-button">Zoom In</button>
+          <button id="zoomOutBtn" class="small-button">Zoom Out</button>
+          <button id="fitBtn" class="small-button">Fit</button>
+          <span class="toolbar-separator" aria-hidden="true"></span>
+          <div class="tool-params" aria-label="Tool parameters">
+            <div id="brushParams" class="tool-param-group">
+              <label>Brush <input id="brushSize" type="range" min="2" max="120" value="28"></label>
+              <span id="brushSizeValue">28 px</span>
+            </div>
+            <div id="sam2Params" class="tool-param-group hidden">
+              <select id="sam2PromptMode" class="select-input compact">
+                <option value="rectangle_xyxy">SAM2 box</option>
+                <option value="point_xy">SAM2 point</option>
+              </select>
+              <button id="sam2ApplyBtn" class="small-button" disabled>Apply SAM2</button>
+              <button id="sam2StatusBtn" class="small-button">Check SAM2</button>
+            </div>
+          </div>
+        </div>
+        <div class="review-actions" aria-label="Review actions">
+          <button id="saveBtn" class="primary-button">Save</button>
+          <button id="saveNextBtn" class="primary-button">Save &amp; Next</button>
+        </div>
       </div>
-    </div>
-    <div class="canvas-controls">
-      <label>Brush <input id="brushSize" type="range" min="2" max="120" value="28"></label>
-      <span id="brushSizeValue">28 px</span>
-      <label>Zoom <input id="zoomSlider" type="range" min="10" max="200" value="100"></label>
-      <button id="fitBtn" class="small-button">Fit</button>
-      <button id="applyPolygonBtn" class="small-button">Apply polygon</button>
-      <button id="cancelPolygonBtn" class="small-button">Cancel polygon</button>
-      <button id="applyRectBtn" class="small-button">Apply rectangle</button>
-      <button id="cancelRectBtn" class="small-button">Cancel rectangle</button>
-      <select id="sam2PromptMode" class="select-input compact">
-        <option value="point_xy">SAM2 point</option>
-        <option value="rectangle_xyxy">SAM2 box</option>
-      </select>
-      <button id="sam2StatusBtn" class="small-button">Check SAM2</button>
     </div>
     <div class="viewer-wrap" id="viewerWrap">
       <canvas id="viewerCanvas"></canvas>
@@ -705,6 +715,7 @@ def render_html_page() -> str:
       <option value="original">Original photo</option>
       <option value="annotated">MS Paint annotation</option>
       <option value="qa">Converter QA overlay</option>
+      <option value="sulfide">Sulfide mask (sulfide/non-sulfide mask segmentation)</option>
       <option value="mask">Current mask view</option>
     </select>
     <div class="layers">
@@ -723,12 +734,10 @@ def render_html_page() -> str:
     <input id="reviewerInput" class="text-input" placeholder="optional">
     <label class="field-label">Notes</label>
     <textarea id="notesInput" class="notes-input" rows="4" placeholder="optional"></textarea>
-    <button id="saveBtn" class="primary-button">Save</button>
-    <button id="saveNextBtn" class="primary-button">Save and next</button>
     <button id="resetBtn" class="danger-button">Reset to autodetected</button>
     <details class="advanced-box">
       <summary>Interaction help</summary>
-      <p>Brush: left mouse adds talc, right mouse erases. Eraser removes talc. Polygon: click empty space to add points, click an edge to insert a point, drag points to move them, right-click a point to delete it, then apply. Rectangle can be resized by corners or edges before apply. SAM2 is optional and adds its proposed region to the talc mask.</p>
+      <p>Brush: left mouse adds talc, right mouse erases. Polygon: click to place points, click the first point to close, drag points/edges to edit, right-click a polygon point to remove it, and right-click elsewhere to cancel the current polygon. Rectangle: drag a box or click one corner then click the opposite corner; right-click cancels the current rectangle. Completed rectangles can be resized by corners or edges. Press Delete to remove the selected completed polygon or rectangle. Shapes stay editable until another image is opened or the sample is saved. SAM2 point: hover without moving to preview, then press Apply SAM2. SAM2 box applies after drawing the box.</p>
     </details>
   </aside>
 </div>
@@ -848,18 +857,28 @@ button, input, select, textarea { font: inherit; }
 .tag.ok { background: var(--tag-ok-bg); color: var(--tag-ok-text); }
 .tag.reviewed { background: var(--tag-reviewed-bg); color: var(--tag-reviewed-text); }
 .work-pane { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-.topbar { background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.topbar { position: relative; min-height: 56px; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 220px 10px 12px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.topbar-title { flex: 0 1 240px; min-width: 170px; }
 .sample-title { font-size: 17px; font-weight: 750; }
 .sample-subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.topbar-controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 1 1 auto; min-width: 0; flex-wrap: wrap; }
+.toolbar { display: flex; align-items: center; gap: 6px; flex: 1 1 420px; flex-wrap: wrap; justify-content: flex-end; min-width: 320px; }
+.review-actions { position: absolute; top: 10px; right: 12px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
 .tool-button, .small-button, .icon-button, .primary-button, .danger-button { border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--text); padding: 7px 10px; cursor: pointer; }
+.tool-button:disabled, .small-button:disabled, .icon-button:disabled, .primary-button:disabled, .danger-button:disabled { opacity: 0.48; cursor: not-allowed; }
 .tool-button.active { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .icon-button { min-width: 54px; }
-.primary-button, .danger-button { width: 100%; margin-top: 8px; font-weight: 700; }
+.primary-button, .danger-button { font-weight: 700; }
+.details-pane .primary-button, .details-pane .danger-button { width: 100%; margin-top: 8px; }
+.review-actions .primary-button { width: auto; margin-top: 0; min-width: 76px; white-space: nowrap; }
 .primary-button { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .danger-button { background: var(--control-bg); border-color: var(--danger-border); color: var(--danger); }
-.canvas-controls { background: var(--control-band); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 9px; padding: 8px 12px; flex-wrap: wrap; font-size: 13px; }
-.canvas-controls label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.toolbar-separator { align-self: stretch; width: 1px; min-height: 30px; background: var(--line); margin: 0 4px; }
+.tool-params { display: flex; align-items: center; gap: 8px; min-height: 34px; }
+.tool-param-group { display: flex; align-items: center; gap: 8px; }
+.tool-param-group.hidden { display: none; }
+.tool-param-group label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.tool-param-group input[type="range"] { max-width: 130px; }
 .viewer-wrap { position: relative; flex: 1; overflow: auto; padding: 14px; background: var(--viewer-bg); }
 #viewerCanvas { display: block; background: var(--canvas-bg); image-rendering: auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.22); }
 .empty-state { position: absolute; inset: 14px; display: grid; place-items: center; background: var(--empty-bg); color: var(--muted); font-weight: 650; }
@@ -883,6 +902,12 @@ button, input, select, textarea { font: inherit; }
 
 
 JS = r"""
+const MAX_SAM2_REGION_FRACTION = 0.50;
+const MIN_ZOOM = 0.10;
+const MAX_ZOOM = 4.00;
+const ZOOM_STEP = 1.15;
+const SAM2_POINT_HOVER_PREVIEW_DELAY_MS = 2000;
+
 const state = {
   manifest: null,
   samples: [],
@@ -898,20 +923,40 @@ const state = {
   sulfideGuardLoaded: false,
   undoStack: [],
   edits: [],
+  shapes: [],
+  nextShapeId: 1,
+  activeShapeId: null,
+  shapeDrag: null,
   polygon: { points: [], dragIndex: null },
-  rect: { active: false, x1: 0, y1: 0, x2: 0, y2: 0, handle: null },
+  rect: { active: false, x1: 0, y1: 0, x2: 0, y2: 0, handle: null, lastPoint: null, startPoint: null, dragMoved: false },
   drawing: false,
   lastPoint: null,
+  hoverPoint: null,
   activeStrokeMode: null,
   activePointerButton: 0,
   activeEditBaseline: null,
-  samBox: null
+  activeBaseEditBaseline: null,
+  samBox: null,
+  sam2Preview: {
+    timer: null,
+    requestId: 0,
+    pendingKey: null,
+    loadingKey: null,
+    promptKey: null,
+    prompt: null,
+    img: null,
+    tint: null,
+    result: null,
+    stats: null
+  }
 };
 
 const viewer = document.getElementById('viewerCanvas');
 const ctx = viewer.getContext('2d', { willReadFrequently: true });
 const maskCanvas = document.createElement('canvas');
 const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+const baseMaskCanvas = document.createElement('canvas');
+const baseMaskCtx = baseMaskCanvas.getContext('2d', { willReadFrequently: true });
 const sulfideGuardCanvas = document.createElement('canvas');
 const sulfideGuardCtx = sulfideGuardCanvas.getContext('2d', { willReadFrequently: true });
 const currentTintCanvas = document.createElement('canvas');
@@ -928,7 +973,10 @@ const els = {
   statusLine: document.getElementById('statusLine'),
   brushSize: document.getElementById('brushSize'),
   brushSizeValue: document.getElementById('brushSizeValue'),
-  zoomSlider: document.getElementById('zoomSlider'),
+  brushParams: document.getElementById('brushParams'),
+  sam2Params: document.getElementById('sam2Params'),
+  zoomInBtn: document.getElementById('zoomInBtn'),
+  zoomOutBtn: document.getElementById('zoomOutBtn'),
   fitBtn: document.getElementById('fitBtn'),
   themeSelect: document.getElementById('themeSelect'),
   baseMode: document.getElementById('baseMode'),
@@ -941,11 +989,8 @@ const els = {
   resetBtn: document.getElementById('resetBtn'),
   protectSulfides: document.getElementById('protectSulfides'),
   subtractSulfidesBtn: document.getElementById('subtractSulfidesBtn'),
-  applyPolygonBtn: document.getElementById('applyPolygonBtn'),
-  cancelPolygonBtn: document.getElementById('cancelPolygonBtn'),
-  applyRectBtn: document.getElementById('applyRectBtn'),
-  cancelRectBtn: document.getElementById('cancelRectBtn'),
   sam2PromptMode: document.getElementById('sam2PromptMode'),
+  sam2ApplyBtn: document.getElementById('sam2ApplyBtn'),
   sam2StatusBtn: document.getElementById('sam2StatusBtn'),
   layers: {
     current: document.getElementById('layerCurrent'),
@@ -1024,14 +1069,98 @@ function applyZoom() {
   viewer.style.height = `${Math.max(120, Math.round(state.imageH * state.zoom))}px`;
 }
 
+function clampZoom(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 1;
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, numeric));
+}
+
+function setZoom(value) {
+  state.zoom = clampZoom(value);
+  applyZoom();
+  draw();
+}
+
+function zoomBy(factor) {
+  setZoom(state.zoom * factor);
+}
+
 function fitToViewer() {
   const wrap = document.getElementById('viewerWrap');
   const maxW = Math.max(240, wrap.clientWidth - 36);
   const maxH = Math.max(180, wrap.clientHeight - 36);
-  state.zoom = Math.min(maxW / state.imageW, maxH / state.imageH, 1);
-  if (!Number.isFinite(state.zoom) || state.zoom <= 0) state.zoom = 1;
-  els.zoomSlider.value = String(Math.round(state.zoom * 100));
-  applyZoom();
+  setZoom(Math.min(maxW / state.imageW, maxH / state.imageH, 1));
+}
+
+function updateToolParams() {
+  els.brushParams.classList.toggle('hidden', state.tool !== 'brush');
+  els.sam2Params.classList.toggle('hidden', state.tool !== 'sam2');
+  updateSam2ApplyButton();
+}
+
+function sam2PointModeActive() {
+  return state.tool === 'sam2' && els.sam2PromptMode.value === 'point_xy';
+}
+
+function sam2PromptKey(promptGeometry) {
+  if (!promptGeometry) return '';
+  return `${promptGeometry.type}:${promptGeometry.x}:${promptGeometry.y}`;
+}
+
+function clearSam2Preview(options = {}) {
+  const redraw = options.redraw !== false;
+  if (state.sam2Preview.timer) {
+    clearTimeout(state.sam2Preview.timer);
+    state.sam2Preview.timer = null;
+  }
+  state.sam2Preview.requestId += 1;
+  state.sam2Preview.pendingKey = null;
+  state.sam2Preview.loadingKey = null;
+  state.sam2Preview.promptKey = null;
+  state.sam2Preview.prompt = null;
+  state.sam2Preview.img = null;
+  state.sam2Preview.tint = null;
+  state.sam2Preview.result = null;
+  state.sam2Preview.stats = null;
+  updateSam2ApplyButton();
+  if (redraw) draw();
+}
+
+function updateSam2ApplyButton() {
+  if (!els.sam2ApplyBtn) return;
+  if (state.tool !== 'sam2') {
+    els.sam2ApplyBtn.disabled = true;
+    els.sam2ApplyBtn.textContent = 'Apply SAM2';
+    els.sam2ApplyBtn.title = 'Switch to SAM2 point mode to use hover preview.';
+    return;
+  }
+  if (els.sam2PromptMode.value !== 'point_xy') {
+    els.sam2ApplyBtn.disabled = true;
+    els.sam2ApplyBtn.textContent = 'Apply SAM2';
+    els.sam2ApplyBtn.title = 'Draw a SAM2 box on the canvas to apply box prompts.';
+    return;
+  }
+  if (state.sam2Preview.loadingKey) {
+    els.sam2ApplyBtn.disabled = true;
+    els.sam2ApplyBtn.textContent = 'Previewing...';
+    els.sam2ApplyBtn.title = 'SAM2 point preview is running.';
+    return;
+  }
+  if (state.sam2Preview.img) {
+    els.sam2ApplyBtn.disabled = false;
+    els.sam2ApplyBtn.textContent = 'Apply SAM2';
+    els.sam2ApplyBtn.title = 'Apply the visible SAM2 point preview to the talc mask.';
+    return;
+  }
+  if (state.hoverPoint) {
+    els.sam2ApplyBtn.disabled = false;
+    els.sam2ApplyBtn.textContent = 'Run & Apply';
+    els.sam2ApplyBtn.title = 'Run SAM2 at the current hover point and apply the result.';
+    return;
+  }
+  els.sam2ApplyBtn.disabled = true;
+  els.sam2ApplyBtn.textContent = 'Apply SAM2';
+  els.sam2ApplyBtn.title = 'Hover over the image to preview a SAM2 point prompt.';
 }
 
 function formatInt(value) {
@@ -1137,6 +1266,33 @@ function captureMaskData() {
   return maskCtx.getImageData(0, 0, state.imageW, state.imageH);
 }
 
+function captureBaseMaskData() {
+  return baseMaskCtx.getImageData(0, 0, state.imageW, state.imageH);
+}
+
+function cloneShapes() {
+  return state.shapes.map((shape) => {
+    if (shape.type === 'polygon') {
+      return { id: shape.id, type: 'polygon', points: shape.points.map((p) => ({ x: p.x, y: p.y })) };
+    }
+    return { id: shape.id, type: 'rectangle', x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
+  });
+}
+
+function restoreShapes(shapes) {
+  state.shapes = (shapes || []).map((shape) => {
+    if (shape.type === 'polygon') {
+      return { id: shape.id, type: 'polygon', points: shape.points.map((p) => ({ x: p.x, y: p.y })) };
+    }
+    return { id: shape.id, type: 'rectangle', x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
+  });
+  state.nextShapeId = Math.max(1, ...state.shapes.map((shape) => shape.id + 1));
+}
+
+function shapeById(shapeId) {
+  return state.shapes.find((shape) => shape.id === shapeId) || null;
+}
+
 function hasSulfideGuard() {
   return state.sulfideGuardLoaded && sulfideGuardCanvas.width === state.imageW && sulfideGuardCanvas.height === state.imageH;
 }
@@ -1154,9 +1310,9 @@ function countCurrentSulfideOverlapPixels() {
   return count;
 }
 
-function removeSulfidePixelsFromMask(baselineData = null) {
+function removeSulfidePixelsFromCanvas(targetCtx, baselineData = null) {
   if (!hasSulfideGuard()) return 0;
-  const maskData = maskCtx.getImageData(0, 0, state.imageW, state.imageH);
+  const maskData = targetCtx.getImageData(0, 0, state.imageW, state.imageH);
   const mask = maskData.data;
   const guard = sulfideGuardCtx.getImageData(0, 0, state.imageW, state.imageH).data;
   const baseline = baselineData ? baselineData.data : null;
@@ -1173,17 +1329,73 @@ function removeSulfidePixelsFromMask(baselineData = null) {
       removed += 1;
     }
   }
-  if (removed > 0) maskCtx.putImageData(maskData, 0, 0);
+  if (removed > 0) targetCtx.putImageData(maskData, 0, 0);
   return removed;
 }
 
-function enforceSulfideProtection(kind, baselineData = null) {
+function removeSulfidePixelsFromMask(baselineData = null) {
+  return removeSulfidePixelsFromCanvas(maskCtx, baselineData);
+}
+
+function enforceSulfideProtection(kind, baselineData = null, record = true) {
   if (!els.protectSulfides.checked) return 0;
   const removed = removeSulfidePixelsFromMask(baselineData);
-  if (removed > 0) {
+  if (removed > 0 && record) {
     state.edits.push({ type: 'protect_sulfides', tool: kind, removed_pixels: removed, at: new Date().toISOString() });
   }
   return removed;
+}
+
+function rasterizeShape(targetCtx, shape) {
+  targetCtx.save();
+  targetCtx.fillStyle = '#fff';
+  if (shape.type === 'polygon') {
+    if (shape.points.length < 3) {
+      targetCtx.restore();
+      return;
+    }
+    targetCtx.beginPath();
+    targetCtx.moveTo(shape.points[0].x, shape.points[0].y);
+    for (const point of shape.points.slice(1)) targetCtx.lineTo(point.x, point.y);
+    targetCtx.closePath();
+    targetCtx.fill();
+  } else if (shape.type === 'rectangle') {
+    const r = normalizedRect(shape);
+    targetCtx.fillRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+  }
+  targetCtx.restore();
+}
+
+function rebuildMaskFromBase(options = {}) {
+  const reason = options.reason || 'shape';
+  const recordProtection = Boolean(options.recordProtection);
+  const baselineData = captureBaseMaskData();
+  maskCtx.clearRect(0, 0, state.imageW, state.imageH);
+  maskCtx.drawImage(baseMaskCanvas, 0, 0, state.imageW, state.imageH);
+  for (const shape of state.shapes) rasterizeShape(maskCtx, shape);
+  const protectedPixels = enforceSulfideProtection(reason, baselineData, recordProtection);
+  refreshCurrentTint();
+  updateMetrics();
+  draw();
+  return protectedPixels;
+}
+
+function flattenShapesToBase(record = false) {
+  if (state.shapes.length === 0) return false;
+  const baselineData = captureBaseMaskData();
+  for (const shape of state.shapes) rasterizeShape(baseMaskCtx, shape);
+  if (els.protectSulfides.checked) {
+    const protectedPixels = removeSulfidePixelsFromCanvas(baseMaskCtx, baselineData);
+    if (protectedPixels > 0 && record) {
+      state.edits.push({ type: 'protect_sulfides', tool: 'flatten_shapes', removed_pixels: protectedPixels, at: new Date().toISOString() });
+    }
+  }
+  state.shapes = [];
+  state.activeShapeId = null;
+  state.shapeDrag = null;
+  rebuildMaskFromBase({ recordProtection: false, reason: 'flatten_shapes' });
+  if (record) state.edits.push({ type: 'flatten_shapes', at: new Date().toISOString() });
+  return true;
 }
 
 function updateMetrics() {
@@ -1210,6 +1422,10 @@ function draw() {
   if (baseMode === 'mask') {
     ctx.fillStyle = cssVar('--mask-only-bg', '#0f172a');
     ctx.fillRect(0, 0, state.imageW, state.imageH);
+  } else if (baseMode === 'sulfide') {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, state.imageW, state.imageH);
+    if (state.images.sulfideMask) ctx.drawImage(state.images.sulfideMask, 0, 0, state.imageW, state.imageH);
   } else if (base) {
     ctx.drawImage(base, 0, 0, state.imageW, state.imageH);
   }
@@ -1218,9 +1434,55 @@ function draw() {
   if (els.layers.overlap.checked && state.staticTints.overlap) ctx.drawImage(state.staticTints.overlap, 0, 0);
   if (els.layers.ignore.checked && state.staticTints.ignore) ctx.drawImage(state.staticTints.ignore, 0, 0);
   if (els.layers.current.checked) ctx.drawImage(currentTintCanvas, 0, 0);
+  drawSam2ResultPreview();
+  drawShapeGuides();
   drawPolygonDraft();
   drawRectDraft();
   drawSamBoxDraft();
+  drawSam2PromptPreview();
+  drawBrushCursor();
+}
+
+function drawShapeGuides() {
+  for (const shape of state.shapes) {
+    if (shape.type === 'polygon') drawPolygonGuide(shape);
+    if (shape.type === 'rectangle') drawRectangleGuide(shape);
+  }
+}
+
+function drawPolygonGuide(shape) {
+  if (shape.points.length < 3) return;
+  const active = shape.id === state.activeShapeId;
+  ctx.save();
+  ctx.lineWidth = Math.max(active ? 3 : 2, (active ? 3 : 2) / state.zoom);
+  ctx.strokeStyle = active ? '#ffe066' : 'rgba(255, 224, 102, 0.75)';
+  ctx.fillStyle = active ? '#ffe066' : 'rgba(255, 224, 102, 0.8)';
+  ctx.beginPath();
+  ctx.moveTo(shape.points[0].x, shape.points[0].y);
+  for (const point of shape.points.slice(1)) ctx.lineTo(point.x, point.y);
+  ctx.closePath();
+  ctx.stroke();
+  for (const point of shape.points) {
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, Math.max(active ? 5 : 4, (active ? 5 : 4) / state.zoom), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawRectangleGuide(shape) {
+  const active = shape.id === state.activeShapeId;
+  const r = normalizedRect(shape);
+  ctx.save();
+  ctx.strokeStyle = active ? '#ffe066' : 'rgba(255, 224, 102, 0.75)';
+  ctx.fillStyle = active ? '#ffe066' : 'rgba(255, 224, 102, 0.8)';
+  ctx.lineWidth = Math.max(active ? 3 : 2, (active ? 3 : 2) / state.zoom);
+  ctx.strokeRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+  for (const handle of rectHandles(r)) {
+    const size = active ? 8 / state.zoom : 6 / state.zoom;
+    ctx.fillRect(handle.x - size / 2, handle.y - size / 2, size, size);
+  }
+  ctx.restore();
 }
 
 function drawPolygonDraft() {
@@ -1233,13 +1495,12 @@ function drawPolygonDraft() {
   ctx.beginPath();
   ctx.moveTo(points[0].x, points[0].y);
   for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
-  if (points.length > 2) ctx.closePath();
   ctx.stroke();
-  for (const point of points) {
+  points.forEach((point, index) => {
     ctx.beginPath();
-    ctx.arc(point.x, point.y, Math.max(5, 5 / state.zoom), 0, Math.PI * 2);
+    ctx.arc(point.x, point.y, Math.max(index === 0 ? 7 : 5, (index === 0 ? 7 : 5) / state.zoom), 0, Math.PI * 2);
     ctx.fill();
-  }
+  });
   ctx.restore();
 }
 
@@ -1264,13 +1525,107 @@ function drawSamBoxDraft() {
   ctx.save();
   ctx.strokeStyle = '#ff6b35';
   ctx.lineWidth = Math.max(2, 2 / state.zoom);
+  ctx.setLineDash([Math.max(8, 8 / state.zoom), Math.max(6, 6 / state.zoom)]);
+  ctx.fillStyle = 'rgba(255, 107, 53, 0.08)';
+  ctx.fillRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
   ctx.strokeRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+  ctx.restore();
+}
+
+function drawSam2ResultPreview() {
+  if (state.tool !== 'sam2' || !state.sam2Preview.tint) return;
+  ctx.save();
+  ctx.drawImage(state.sam2Preview.tint, 0, 0);
+  if (state.sam2Preview.prompt && state.sam2Preview.prompt.type === 'point_xy') {
+    const x = state.sam2Preview.prompt.x;
+    const y = state.sam2Preview.prompt.y;
+    const radius = Math.max(10, 10 / state.zoom);
+    ctx.strokeStyle = '#ff6b35';
+    ctx.lineWidth = Math.max(2, 2 / state.zoom);
+    ctx.setLineDash([Math.max(5, 5 / state.zoom), Math.max(4, 4 / state.zoom)]);
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(x - radius * 0.55, y);
+    ctx.lineTo(x + radius * 0.55, y);
+    ctx.moveTo(x, y - radius * 0.55);
+    ctx.lineTo(x, y + radius * 0.55);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawSam2PromptPreview() {
+  if (state.tool !== 'sam2' || !state.hoverPoint || !state.sample || !state.sample.editable || state.samBox) return;
+  ctx.save();
+  ctx.strokeStyle = '#ff6b35';
+  ctx.fillStyle = 'rgba(255, 107, 53, 0.07)';
+  ctx.lineWidth = Math.max(2, 2 / state.zoom);
+  ctx.setLineDash([Math.max(8, 8 / state.zoom), Math.max(6, 6 / state.zoom)]);
+  if (els.sam2PromptMode.value === 'rectangle_xyxy') {
+    const side = Math.min(
+      Math.max(96 / state.zoom, Number(els.brushSize.value) * 3),
+      Math.max(24, Math.min(state.imageW, state.imageH) / 3)
+    );
+    const half = side / 2;
+    const r = {
+      x1: Math.max(0, state.hoverPoint.x - half),
+      y1: Math.max(0, state.hoverPoint.y - half),
+      x2: Math.min(state.imageW - 1, state.hoverPoint.x + half),
+      y2: Math.min(state.imageH - 1, state.hoverPoint.y + half)
+    };
+    ctx.fillRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+    ctx.strokeRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
+  } else {
+    const radius = Math.min(
+      Math.max(32 / state.zoom, Number(els.brushSize.value)),
+      Math.max(16, Math.min(state.imageW, state.imageH) / 6)
+    );
+    ctx.beginPath();
+    ctx.arc(state.hoverPoint.x, state.hoverPoint.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(state.hoverPoint.x - radius * 0.35, state.hoverPoint.y);
+    ctx.lineTo(state.hoverPoint.x + radius * 0.35, state.hoverPoint.y);
+    ctx.moveTo(state.hoverPoint.x, state.hoverPoint.y - radius * 0.35);
+    ctx.lineTo(state.hoverPoint.x, state.hoverPoint.y + radius * 0.35);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawBrushCursor() {
+  if (state.tool !== 'brush' || !state.hoverPoint || !state.sample || !state.sample.editable) return;
+  const radius = Number(els.brushSize.value) / 2;
+  if (!Number.isFinite(radius) || radius <= 0) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(state.hoverPoint.x, state.hoverPoint.y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0, 163, 216, 0.10)';
+  ctx.fill();
+  ctx.lineWidth = Math.max(3, 3 / state.zoom);
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.88)';
+  ctx.stroke();
+  ctx.lineWidth = Math.max(1.5, 1.5 / state.zoom);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)';
+  ctx.stroke();
   ctx.restore();
 }
 
 function pushUndo() {
   try {
-    state.undoStack.push(maskCanvas.toDataURL('image/png'));
+    state.undoStack.push({
+      mask: maskCanvas.toDataURL('image/png'),
+      base: baseMaskCanvas.toDataURL('image/png'),
+      shapes: cloneShapes(),
+      activeShapeId: state.activeShapeId,
+      polygonPoints: state.polygon.points.map((p) => ({ x: p.x, y: p.y })),
+      rect: { ...state.rect }
+    });
     if (state.undoStack.length > 20) state.undoStack.shift();
   } catch (err) {
     console.warn('undo snapshot failed', err);
@@ -1283,88 +1638,139 @@ async function undo() {
     setStatus('Nothing to undo.');
     return;
   }
-  const img = await loadImage(snapshot);
-  if (!img) return;
-  maskCtx.clearRect(0, 0, state.imageW, state.imageH);
-  maskCtx.drawImage(img, 0, 0, state.imageW, state.imageH);
-  state.edits.push({ type: 'undo', at: new Date().toISOString() });
   state.dirty = true;
+  const img = await loadImage(snapshot.base || snapshot);
+  if (!img) return;
+  baseMaskCtx.clearRect(0, 0, state.imageW, state.imageH);
+  baseMaskCtx.drawImage(img, 0, 0, state.imageW, state.imageH);
+  if (snapshot.shapes) {
+    restoreShapes(snapshot.shapes);
+    state.activeShapeId = snapshot.activeShapeId || null;
+    state.polygon.points = (snapshot.polygonPoints || []).map((p) => ({ x: p.x, y: p.y }));
+    state.rect = snapshot.rect ? { ...snapshot.rect } : { active: false, x1: 0, y1: 0, x2: 0, y2: 0, handle: null, lastPoint: null, startPoint: null, dragMoved: false };
+  } else {
+    state.shapes = [];
+    state.activeShapeId = null;
+    state.polygon.points = [];
+    state.rect.active = false;
+  }
+  state.shapeDrag = null;
+  maskCtx.clearRect(0, 0, state.imageW, state.imageH);
+  if (snapshot.mask) {
+    const maskImg = await loadImage(snapshot.mask);
+    if (maskImg) maskCtx.drawImage(maskImg, 0, 0, state.imageW, state.imageH);
+  } else {
+    maskCtx.drawImage(img, 0, 0, state.imageW, state.imageH);
+  }
+  if (snapshot.shapes) rebuildMaskFromBase({ recordProtection: false, reason: 'undo' });
+  state.edits.push({ type: 'undo', at: new Date().toISOString() });
   refreshCurrentTint();
   updateMetrics();
   draw();
   await autosave('undo');
 }
 
-function drawMaskLine(from, to, mode) {
-  maskCtx.save();
-  maskCtx.globalCompositeOperation = 'source-over';
-  maskCtx.strokeStyle = mode === 'eraser' ? '#000' : '#fff';
-  maskCtx.fillStyle = maskCtx.strokeStyle;
-  maskCtx.lineWidth = Number(els.brushSize.value);
-  maskCtx.lineCap = 'round';
-  maskCtx.lineJoin = 'round';
-  maskCtx.beginPath();
-  maskCtx.moveTo(from.x, from.y);
-  maskCtx.lineTo(to.x, to.y);
-  maskCtx.stroke();
-  maskCtx.beginPath();
-  maskCtx.arc(to.x, to.y, Number(els.brushSize.value) / 2, 0, Math.PI * 2);
-  maskCtx.fill();
-  maskCtx.restore();
+function drawMaskLine(from, to, mode, targetCtx = maskCtx) {
+  targetCtx.save();
+  targetCtx.globalCompositeOperation = 'source-over';
+  targetCtx.strokeStyle = mode === 'eraser' ? '#000' : '#fff';
+  targetCtx.fillStyle = targetCtx.strokeStyle;
+  targetCtx.lineWidth = Number(els.brushSize.value);
+  targetCtx.lineCap = 'round';
+  targetCtx.lineJoin = 'round';
+  targetCtx.beginPath();
+  targetCtx.moveTo(from.x, from.y);
+  targetCtx.lineTo(to.x, to.y);
+  targetCtx.stroke();
+  targetCtx.beginPath();
+  targetCtx.arc(to.x, to.y, Number(els.brushSize.value) / 2, 0, Math.PI * 2);
+  targetCtx.fill();
+  targetCtx.restore();
 }
 
 function strokeModeForPointer(event) {
-  if (state.tool === 'brush') {
-    if (event.button === 0) return 'brush';
-    if (event.button === 2) return 'eraser';
-    return null;
-  }
-  if (state.tool === 'eraser') {
-    if (event.button === 0 || event.button === 2) return 'eraser';
-    return null;
-  }
+  if (state.tool !== 'brush') return null;
+  if (event.button === 0) return 'brush';
+  if (event.button === 2) return 'eraser';
   return null;
 }
 
-function fillPolygon(points) {
+function commitShapeChange(kind, edit) {
+  if (edit) state.edits.push(edit);
+  state.dirty = true;
+  const protectedPixels = rebuildMaskFromBase({ recordProtection: true, reason: kind });
+  const message = protectedPixels > 0
+    ? `Autosaved ${kind}; protected ${formatInt(protectedPixels)} sulfide px.`
+    : undefined;
+  autosave(kind, message).catch((err) => setStatus(`Autosave failed: ${err.message}`, true));
+}
+
+function addPolygonShape(points) {
   if (points.length < 3) return false;
-  const baselineData = captureMaskData();
   pushUndo();
-  maskCtx.save();
-  maskCtx.fillStyle = '#fff';
-  maskCtx.beginPath();
-  maskCtx.moveTo(points[0].x, points[0].y);
-  for (const point of points.slice(1)) maskCtx.lineTo(point.x, point.y);
-  maskCtx.closePath();
-  maskCtx.fill();
-  maskCtx.restore();
-  state.edits.push({ type: 'polygon_add_talc', points: points.map((p) => [Math.round(p.x), Math.round(p.y)]), at: new Date().toISOString() });
+  const shape = {
+    id: state.nextShapeId++,
+    type: 'polygon',
+    points: points.map((p) => ({ x: p.x, y: p.y }))
+  };
+  state.shapes.push(shape);
+  state.activeShapeId = shape.id;
   state.polygon.points = [];
-  afterMaskEdit('polygon', baselineData);
+  commitShapeChange('polygon', {
+    type: 'polygon_add_talc',
+    shape_id: shape.id,
+    points: shape.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
+    at: new Date().toISOString()
+  });
+  setStatus('Polygon closed and autosaved.');
   return true;
 }
 
-function fillRectangle(rect) {
+function addRectangleShape(rect) {
   const r = normalizedRect(rect);
   if (r.x2 - r.x1 < 2 || r.y2 - r.y1 < 2) return false;
-  const baselineData = captureMaskData();
   pushUndo();
-  maskCtx.save();
-  maskCtx.fillStyle = '#fff';
-  maskCtx.fillRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
-  maskCtx.restore();
-  state.edits.push({ type: 'rectangle_add_talc', x1: Math.round(r.x1), y1: Math.round(r.y1), x2: Math.round(r.x2), y2: Math.round(r.y2), at: new Date().toISOString() });
+  const shape = {
+    id: state.nextShapeId++,
+    type: 'rectangle',
+    x1: r.x1,
+    y1: r.y1,
+    x2: r.x2,
+    y2: r.y2
+  };
+  state.shapes.push(shape);
+  state.activeShapeId = shape.id;
   state.rect.active = false;
-  afterMaskEdit('rectangle', baselineData);
+  commitShapeChange('rectangle', {
+    type: 'rectangle_add_talc',
+    shape_id: shape.id,
+    x1: Math.round(r.x1),
+    y1: Math.round(r.y1),
+    x2: Math.round(r.x2),
+    y2: Math.round(r.y2),
+    at: new Date().toISOString()
+  });
+  setStatus('Rectangle drawn and autosaved.');
   return true;
 }
 
-function afterMaskEdit(kind, baselineData = null) {
-  const protectedPixels = enforceSulfideProtection(kind, baselineData);
+function afterMaskEdit(kind, baselineData = null, options = {}) {
+  let protectedPixels = 0;
   state.dirty = true;
-  refreshCurrentTint();
-  updateMetrics();
-  draw();
+  if (options.baseBaselineData) {
+    if (els.protectSulfides.checked) {
+      protectedPixels = removeSulfidePixelsFromCanvas(baseMaskCtx, options.baseBaselineData);
+      if (protectedPixels > 0) {
+        state.edits.push({ type: 'protect_sulfides', tool: kind, removed_pixels: protectedPixels, at: new Date().toISOString() });
+      }
+    }
+    rebuildMaskFromBase({ recordProtection: false, reason: kind });
+  } else {
+    protectedPixels = enforceSulfideProtection(kind, baselineData);
+    refreshCurrentTint();
+    updateMetrics();
+    draw();
+  }
   const message = protectedPixels > 0
     ? `Autosaved ${kind}; protected ${formatInt(protectedPixels)} sulfide px.`
     : undefined;
@@ -1387,26 +1793,34 @@ async function subtractSulfidesFromMask() {
     setStatus('No sulfide mask is available for this sample.', true);
     return;
   }
-  pushUndo();
-  const removed = removeSulfidePixelsFromMask();
-  if (removed === 0) {
-    state.undoStack.pop();
+  if (countCurrentSulfideOverlapPixels() === 0) {
     updateMetrics();
     draw();
     setStatus('No talc pixels overlap the sulfide mask.');
     return;
   }
+  pushUndo();
+  const flattened = flattenShapesToBase(false);
+  const removed = removeSulfidePixelsFromCanvas(baseMaskCtx);
+  if (removed === 0) {
+    state.undoStack.pop();
+    rebuildMaskFromBase({ recordProtection: false, reason: 'subtract_sulfides' });
+    updateMetrics();
+    draw();
+    setStatus('No talc pixels overlap the sulfide mask.');
+    return;
+  }
+  if (flattened) state.edits.push({ type: 'flatten_shapes', reason: 'subtract_sulfides', at: new Date().toISOString() });
   state.edits.push({ type: 'subtract_sulfides', removed_pixels: removed, at: new Date().toISOString() });
   state.dirty = true;
-  refreshCurrentTint();
-  updateMetrics();
-  draw();
+  rebuildMaskFromBase({ recordProtection: false, reason: 'subtract_sulfides' });
   await autosave('subtract sulfides', `Autosaved sulfide subtraction; removed ${formatInt(removed)} px.`);
 }
 
 async function saveReview(moveNext) {
   if (!state.sampleId) return;
   setStatus('Saving reviewed mask...');
+  flattenShapesToBase(true);
   const result = await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/save`, {
     mask_png: maskCanvas.toDataURL('image/png'),
     edits: state.edits,
@@ -1483,6 +1897,111 @@ function removePolygonPoint(index) {
   return true;
 }
 
+function removePolygonShapePoint(hit) {
+  if (!hit || !hit.shape || hit.index === null) return false;
+  if (hit.shape.points.length <= 3) {
+    setStatus('Polygon needs at least 3 points.', true);
+    return true;
+  }
+  pushUndo();
+  hit.shape.points.splice(hit.index, 1);
+  state.activeShapeId = hit.shape.id;
+  state.shapeDrag = null;
+  commitShapeChange('polygon', {
+    type: 'polygon_point_remove',
+    shape_id: hit.shape.id,
+    point_index: hit.index,
+    points: hit.shape.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
+    at: new Date().toISOString()
+  });
+  setStatus('Polygon point removed and autosaved.');
+  return true;
+}
+
+function deleteSelectedShape() {
+  if (!state.sample || !state.sample.editable) return false;
+  if (state.drawing || state.shapeDrag || state.polygon.points.length > 0 || state.rect.active) return false;
+  const shape = shapeById(state.activeShapeId);
+  if (!shape) return false;
+  const shapeIndex = state.shapes.findIndex((candidate) => candidate.id === shape.id);
+  if (shapeIndex < 0) return false;
+  pushUndo();
+  const [removed] = state.shapes.splice(shapeIndex, 1);
+  state.activeShapeId = null;
+  state.shapeDrag = null;
+  const edit = removed.type === 'polygon'
+    ? {
+        type: 'polygon_shape_delete',
+        shape_id: removed.id,
+        points: removed.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
+        at: new Date().toISOString()
+      }
+    : {
+        type: 'rectangle_shape_delete',
+        shape_id: removed.id,
+        ...Object.fromEntries(Object.entries(normalizedRect(removed)).map(([key, value]) => [key, Math.round(value)])),
+        at: new Date().toISOString()
+      };
+  commitShapeChange(removed.type, edit);
+  setStatus(`${removed.type === 'polygon' ? 'Polygon' : 'Rectangle'} deleted and autosaved.`);
+  return true;
+}
+
+function hitPolygonShapePoint(point) {
+  const tolerance = Math.max(10 / state.zoom, 5);
+  let best = null;
+  let bestDist = Infinity;
+  for (const shape of state.shapes) {
+    if (shape.type !== 'polygon') continue;
+    shape.points.forEach((candidate, index) => {
+      const dist = Math.hypot(candidate.x - point.x, candidate.y - point.y);
+      if (dist < bestDist && dist <= tolerance) {
+        best = { shape, index };
+        bestDist = dist;
+      }
+    });
+  }
+  return best;
+}
+
+function hitPolygonShapeSegment(point) {
+  const tolerance = Math.max(10 / state.zoom, 5);
+  let best = null;
+  let bestDist = Infinity;
+  for (const shape of state.shapes) {
+    if (shape.type !== 'polygon' || shape.points.length < 3) continue;
+    for (let i = 0; i < shape.points.length; i += 1) {
+      const a = shape.points[i];
+      const b = shape.points[(i + 1) % shape.points.length];
+      const dist = pointToSegmentDistance(point, a, b);
+      if (dist < bestDist && dist <= tolerance) {
+        best = { shape, insertAt: i + 1 };
+        bestDist = dist;
+      }
+    }
+  }
+  return best;
+}
+
+function pointInPolygon(point, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const pi = points[i];
+    const pj = points[j];
+    const intersects = ((pi.y > point.y) !== (pj.y > point.y))
+      && (point.x < ((pj.x - pi.x) * (point.y - pi.y)) / ((pj.y - pi.y) || 1e-9) + pi.x);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function hitPolygonShapeBody(point) {
+  for (const shape of state.shapes) {
+    if (shape.type === 'polygon' && pointInPolygon(point, shape.points)) return shape;
+  }
+  return null;
+}
+
 function normalizedRect(rect) {
   return {
     x1: Math.min(rect.x1, rect.x2),
@@ -1513,6 +2032,21 @@ function hitRectHandle(point) {
   return null;
 }
 
+function hitRectangleShape(point) {
+  let body = null;
+  for (const shape of state.shapes) {
+    if (shape.type !== 'rectangle') continue;
+    const r = normalizedRect(shape);
+    for (const handle of rectHandles(r)) {
+      if (Math.hypot(point.x - handle.x, point.y - handle.y) <= Math.max(10 / state.zoom, 5)) {
+        return { shape, handle: handle.name };
+      }
+    }
+    if (point.x >= r.x1 && point.x <= r.x2 && point.y >= r.y1 && point.y <= r.y2) body = { shape, handle: 'move' };
+  }
+  return body;
+}
+
 function updateRectHandle(rect, handle, point, previous) {
   const dx = previous ? point.x - previous.x : 0;
   const dy = previous ? point.y - previous.y : 0;
@@ -1526,56 +2060,256 @@ function updateRectHandle(rect, handle, point, previous) {
   if (handle.includes('s')) rect.y2 = point.y;
 }
 
-async function runSam2(promptGeometry) {
-  if (!state.sampleId) return;
-  setStatus('Running SAM2 assist...');
+function updateShapeDrag(point) {
+  const drag = state.shapeDrag;
+  if (!drag) return;
+  const shape = shapeById(drag.shapeId);
+  if (!shape) return;
+  if (shape.type === 'polygon') {
+    if (drag.mode === 'point') {
+      shape.points[drag.index] = point;
+    } else if (drag.mode === 'move') {
+      const dx = point.x - drag.lastPoint.x;
+      const dy = point.y - drag.lastPoint.y;
+      shape.points.forEach((p) => {
+        p.x = Math.max(0, Math.min(state.imageW - 1, p.x + dx));
+        p.y = Math.max(0, Math.min(state.imageH - 1, p.y + dy));
+      });
+      drag.lastPoint = point;
+    }
+  } else if (shape.type === 'rectangle') {
+    updateRectHandle(shape, drag.handle, point, drag.lastPoint);
+    drag.lastPoint = point;
+  }
+  drag.changed = true;
+  rebuildMaskFromBase({ recordProtection: false, reason: 'shape_preview' });
+}
+
+function finishShapeDrag() {
+  const drag = state.shapeDrag;
+  if (!drag) return;
+  state.shapeDrag = null;
+  if (!drag.changed) return;
+  const shape = shapeById(drag.shapeId);
+  if (!shape) return;
+  const edit = shape.type === 'polygon'
+    ? {
+        type: 'polygon_shape_edit',
+        shape_id: shape.id,
+        points: shape.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
+        at: new Date().toISOString()
+      }
+    : {
+        type: 'rectangle_shape_edit',
+        shape_id: shape.id,
+        ...Object.fromEntries(Object.entries(normalizedRect(shape)).map(([key, value]) => [key, Math.round(value)])),
+        at: new Date().toISOString()
+      };
+  commitShapeChange(shape.type, edit);
+}
+
+async function fetchSam2Mask(promptGeometry, runningMessage) {
+  if (!state.sampleId) return null;
+  setStatus(runningMessage || 'Running SAM2 assist...');
   const result = await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/sam2`, { prompt_geometry: promptGeometry });
   if (!result.available) {
     setStatus(`SAM2 unavailable: ${result.error}`, true);
-    return;
+    return null;
   }
   const img = await loadImage(result.mask_url);
   if (!img) {
     setStatus('SAM2 returned a mask, but the browser could not load it.', true);
-    return;
+    return null;
   }
-  const baselineData = captureMaskData();
-  pushUndo();
-  mergePositiveMaskImage(img);
-  state.edits.push({ type: 'sam2_add_talc', prompt_geometry: promptGeometry, score: result.summary.score, at: new Date().toISOString() });
-  afterMaskEdit('sam2', baselineData);
+  const stats = positiveMaskStats(img);
+  if (stats.positivePixels === 0) {
+    setStatus('SAM2 returned an empty mask.', true);
+    return null;
+  }
+  if (stats.fraction > MAX_SAM2_REGION_FRACTION) {
+    setStatus(`SAM2 mask covers ${Math.round(stats.fraction * 100)}% of the image; draw a smaller SAM2 box or use brush/polygon.`, true);
+    return null;
+  }
+  return { promptGeometry, result, img, stats };
 }
 
-function mergePositiveMaskImage(img) {
+async function runSam2(promptGeometry) {
+  const maskResult = await fetchSam2Mask(promptGeometry, 'Running SAM2 assist...');
+  if (!maskResult) return;
+  applySam2MaskResult(maskResult);
+}
+
+function applySam2MaskResult(maskResult) {
+  const baselineData = captureMaskData();
+  const baseBaselineData = captureBaseMaskData();
+  pushUndo();
+  const mergedPixels = mergePositiveMaskImage(maskResult.img, baseMaskCtx);
+  if (mergedPixels === 0) {
+    state.undoStack.pop();
+    setStatus('SAM2 returned no positive mask pixels.', true);
+    return;
+  }
+  clearSam2Preview({ redraw: false });
+  state.edits.push({
+    type: 'sam2_add_talc',
+    prompt_geometry: maskResult.promptGeometry,
+    score: maskResult.result.summary.score,
+    mask_pixels: mergedPixels,
+    mask_fraction: maskResult.stats.fraction,
+    at: new Date().toISOString()
+  });
+  afterMaskEdit('sam2', baselineData, { baseBaselineData });
+}
+
+function scheduleSam2PointHoverPreview(point) {
+  if (!sam2PointModeActive() || !state.sample || !state.sample.editable || state.samBox) {
+    clearSam2Preview();
+    return;
+  }
+  const prompt = { type: 'point_xy', x: Math.round(point.x), y: Math.round(point.y) };
+  const key = sam2PromptKey(prompt);
+  if (state.sam2Preview.promptKey === key || state.sam2Preview.pendingKey === key || state.sam2Preview.loadingKey === key) {
+    updateSam2ApplyButton();
+    return;
+  }
+  clearSam2Preview({ redraw: false });
+  state.sam2Preview.pendingKey = key;
+  state.sam2Preview.prompt = prompt;
+  state.sam2Preview.timer = setTimeout(() => {
+    requestSam2PointHoverPreview(prompt, key).catch((err) => setStatus(`SAM2 preview failed: ${err.message}`, true));
+  }, SAM2_POINT_HOVER_PREVIEW_DELAY_MS);
+  updateSam2ApplyButton();
+}
+
+async function requestSam2PointHoverPreview(promptGeometry, key) {
+  const requestId = state.sam2Preview.requestId + 1;
+  state.sam2Preview.requestId = requestId;
+  state.sam2Preview.timer = null;
+  state.sam2Preview.pendingKey = null;
+  state.sam2Preview.loadingKey = key;
+  updateSam2ApplyButton();
+  const maskResult = await fetchSam2Mask(promptGeometry, 'Running SAM2 point preview...');
+  if (requestId !== state.sam2Preview.requestId) return;
+  state.sam2Preview.loadingKey = null;
+  if (!maskResult) {
+    updateSam2ApplyButton();
+    return;
+  }
+  state.sam2Preview.promptKey = key;
+  state.sam2Preview.prompt = promptGeometry;
+  state.sam2Preview.img = maskResult.img;
+  state.sam2Preview.tint = buildTintFromImage(maskResult.img, [255, 107, 53, 105]);
+  state.sam2Preview.result = maskResult.result;
+  state.sam2Preview.stats = maskResult.stats;
+  setStatus('SAM2 point preview ready; press Apply SAM2 to add it.');
+  updateSam2ApplyButton();
+  draw();
+}
+
+async function applySam2PointPreviewOrRun() {
+  if (!sam2PointModeActive()) {
+    setStatus('Switch SAM2 to point mode to use preview apply.', true);
+    return;
+  }
+  if (state.sam2Preview.img) {
+    applySam2MaskResult({
+      promptGeometry: state.sam2Preview.prompt,
+      result: state.sam2Preview.result,
+      img: state.sam2Preview.img,
+      stats: state.sam2Preview.stats
+    });
+    return;
+  }
+  if (!state.hoverPoint) {
+    setStatus('Hover over the image first to choose a SAM2 point.', true);
+    return;
+  }
+  const prompt = { type: 'point_xy', x: Math.round(state.hoverPoint.x), y: Math.round(state.hoverPoint.y) };
+  await runSam2(prompt);
+}
+
+function positiveMaskStats(img) {
   const temp = document.createElement('canvas');
   temp.width = state.imageW;
   temp.height = state.imageH;
   const tempCtx = temp.getContext('2d', { willReadFrequently: true });
   tempCtx.drawImage(img, 0, 0, state.imageW, state.imageH);
   const src = tempCtx.getImageData(0, 0, state.imageW, state.imageH).data;
-  const dstData = maskCtx.getImageData(0, 0, state.imageW, state.imageH);
-  const dst = dstData.data;
+  let positivePixels = 0;
   for (let i = 0; i < src.length; i += 4) {
-    if (src[i] > 0 || src[i + 1] > 0 || src[i + 2] > 0) {
+    if (isPositiveMaskPixel(src, i)) positivePixels += 1;
+  }
+  const totalPixels = state.imageW * state.imageH;
+  return {
+    positivePixels,
+    totalPixels,
+    fraction: totalPixels > 0 ? positivePixels / totalPixels : 0
+  };
+}
+
+function isPositiveMaskPixel(src, i) {
+  return src[i + 3] >= 16 && Math.max(src[i], src[i + 1], src[i + 2]) >= 128;
+}
+
+function mergePositiveMaskImage(img, targetCtx = maskCtx) {
+  const temp = document.createElement('canvas');
+  temp.width = state.imageW;
+  temp.height = state.imageH;
+  const tempCtx = temp.getContext('2d', { willReadFrequently: true });
+  tempCtx.drawImage(img, 0, 0, state.imageW, state.imageH);
+  const src = tempCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  const dstData = targetCtx.getImageData(0, 0, state.imageW, state.imageH);
+  const dst = dstData.data;
+  let positivePixels = 0;
+  for (let i = 0; i < src.length; i += 4) {
+    if (isPositiveMaskPixel(src, i)) {
       dst[i] = 255;
       dst[i + 1] = 255;
       dst[i + 2] = 255;
       dst[i + 3] = 255;
+      positivePixels += 1;
     }
   }
-  maskCtx.putImageData(dstData, 0, 0);
+  targetCtx.putImageData(dstData, 0, 0);
+  return positivePixels;
 }
 
 viewer.addEventListener('contextmenu', (event) => {
-  if (state.tool === 'polygon' || state.tool === 'brush' || state.tool === 'eraser') event.preventDefault();
+  if (state.tool === 'polygon' || state.tool === 'brush' || state.tool === 'rectangle') event.preventDefault();
 });
+
+viewer.addEventListener('wheel', (event) => {
+  if (!state.sample) return;
+  event.preventDefault();
+  zoomBy(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+}, { passive: false });
 
 viewer.addEventListener('pointerdown', async (event) => {
   if (!state.sample || !state.sample.editable) return;
   const point = imagePointFromEvent(event);
+  if (state.tool === 'brush' || state.tool === 'sam2') state.hoverPoint = point;
   if (state.tool === 'polygon' && event.button === 2) {
     event.preventDefault();
-    removePolygonPoint(nearestPolygonPoint(point));
+    const draftPoint = nearestPolygonPoint(point);
+    if (draftPoint !== null && removePolygonPoint(draftPoint)) return;
+    const shapePoint = hitPolygonShapePoint(point);
+    if (shapePoint && removePolygonShapePoint(shapePoint)) return;
+    state.polygon.points = [];
+    state.polygon.dragIndex = null;
+    state.activeShapeId = null;
+    draw();
+    setStatus('Polygon cancelled.');
+    return;
+  }
+  if (state.tool === 'rectangle' && event.button === 2) {
+    event.preventDefault();
+    state.rect.active = false;
+    state.rect.handle = null;
+    state.rect.startPoint = null;
+    state.rect.dragMoved = false;
+    state.activeShapeId = null;
+    draw();
+    setStatus('Rectangle cancelled.');
     return;
   }
   const strokeMode = strokeModeForPointer(event);
@@ -1583,57 +2317,114 @@ viewer.addEventListener('pointerdown', async (event) => {
     event.preventDefault();
     viewer.setPointerCapture(event.pointerId);
     state.activeEditBaseline = captureMaskData();
+    state.activeBaseEditBaseline = captureBaseMaskData();
     pushUndo();
     state.drawing = true;
     state.activeStrokeMode = strokeMode;
     state.activePointerButton = event.button;
     state.lastPoint = point;
-    drawMaskLine(point, point, strokeMode);
-    refreshCurrentTint();
-    updateMetrics();
-    draw();
+    drawMaskLine(point, point, strokeMode, baseMaskCtx);
+    rebuildMaskFromBase({ recordProtection: false, reason: `${strokeMode}_preview` });
     return;
   }
   if (event.button !== 0) return;
   viewer.setPointerCapture(event.pointerId);
   if (state.tool === 'polygon') {
     const index = nearestPolygonPoint(point);
+    if (state.polygon.points.length >= 3 && index === 0) {
+      addPolygonShape(state.polygon.points);
+      return;
+    }
     if (event.altKey && removePolygonPoint(index)) return;
-    if (index !== null) {
+    if (state.polygon.points.length > 0 && index !== null) {
       state.polygon.dragIndex = index;
       return;
     }
-    const insertAt = nearestPolygonSegment(point);
-    if (insertAt !== null) {
-      state.polygon.points.splice(insertAt, 0, point);
-      setStatus('Polygon point inserted.');
-    } else {
-      state.polygon.points.push(point);
-      setStatus('Polygon point added.');
+    if (state.polygon.points.length > 0) {
+      const insertAt = nearestPolygonSegment(point);
+      if (insertAt !== null) {
+        state.polygon.points.splice(insertAt, 0, point);
+        setStatus('Polygon point inserted.');
+      } else {
+        state.polygon.points.push(point);
+        setStatus('Polygon point added.');
+      }
+      draw();
+      return;
     }
+    const shapePoint = hitPolygonShapePoint(point);
+    if (shapePoint) {
+      pushUndo();
+      state.activeShapeId = shapePoint.shape.id;
+      state.shapeDrag = { shapeId: shapePoint.shape.id, mode: 'point', index: shapePoint.index, changed: false };
+      return;
+    }
+    const shapeSegment = hitPolygonShapeSegment(point);
+    if (shapeSegment) {
+      pushUndo();
+      const insertAt = shapeSegment.insertAt % shapeSegment.shape.points.length;
+      shapeSegment.shape.points.splice(insertAt, 0, point);
+      state.activeShapeId = shapeSegment.shape.id;
+      state.shapeDrag = { shapeId: shapeSegment.shape.id, mode: 'point', index: insertAt, changed: true };
+      rebuildMaskFromBase({ recordProtection: false, reason: 'polygon_preview' });
+      return;
+    }
+    const shapeBody = hitPolygonShapeBody(point);
+    if (shapeBody) {
+      pushUndo();
+      state.activeShapeId = shapeBody.id;
+      state.shapeDrag = { shapeId: shapeBody.id, mode: 'move', lastPoint: point, changed: false };
+      return;
+    }
+    state.polygon.points.push(point);
+    setStatus('Polygon point added.');
     draw();
     return;
   }
   if (state.tool === 'rectangle') {
-    const handle = hitRectHandle(point);
-    state.rect.handle = handle || 'se';
-    state.rect.lastPoint = point;
-    if (!handle) {
-      state.rect.active = true;
-      state.rect.x1 = point.x;
-      state.rect.y1 = point.y;
+    if (state.rect.active) {
       state.rect.x2 = point.x;
       state.rect.y2 = point.y;
+      const added = addRectangleShape(state.rect);
+      state.rect.active = false;
+      state.rect.handle = null;
+      state.rect.startPoint = null;
+      state.rect.dragMoved = false;
+      if (!added) {
+        draw();
+        setStatus('Rectangle is too small; click an opposite corner farther away or right-click to cancel.', true);
+      }
+      return;
     }
+    const shapeHit = hitRectangleShape(point);
+    if (shapeHit) {
+      pushUndo();
+      state.activeShapeId = shapeHit.shape.id;
+      state.shapeDrag = { shapeId: shapeHit.shape.id, handle: shapeHit.handle, lastPoint: point, changed: false };
+      return;
+    }
+    state.rect.handle = 'draw';
+    state.rect.lastPoint = point;
+    state.rect.startPoint = point;
+    state.rect.dragMoved = false;
+    state.rect.active = true;
+    state.rect.x1 = point.x;
+    state.rect.y1 = point.y;
+    state.rect.x2 = point.x;
+    state.rect.y2 = point.y;
+    state.activeShapeId = null;
     draw();
     return;
   }
   if (state.tool === 'sam2') {
     if (els.sam2PromptMode.value === 'rectangle_xyxy') {
+      clearSam2Preview({ redraw: false });
       state.samBox = { active: true, x1: point.x, y1: point.y, x2: point.x, y2: point.y };
       draw();
     } else {
-      runSam2({ type: 'point_xy', x: Math.round(point.x), y: Math.round(point.y) }).catch((err) => setStatus(`SAM2 failed: ${err.message}`, true));
+      scheduleSam2PointHoverPreview(point);
+      draw();
+      setStatus('Hold still for SAM2 point preview, then press Apply SAM2.');
     }
   }
 });
@@ -1641,12 +2432,19 @@ viewer.addEventListener('pointerdown', async (event) => {
 viewer.addEventListener('pointermove', (event) => {
   if (!state.sample || !state.sample.editable) return;
   const point = imagePointFromEvent(event);
+  if (state.tool === 'brush' || state.tool === 'sam2') {
+    state.hoverPoint = point;
+    if (sam2PointModeActive()) scheduleSam2PointHoverPreview(point);
+    else if (state.tool !== 'sam2') updateSam2ApplyButton();
+  }
+  if (state.shapeDrag) {
+    updateShapeDrag(point);
+    return;
+  }
   if (state.drawing && state.lastPoint) {
-    drawMaskLine(state.lastPoint, point, state.activeStrokeMode || state.tool);
+    drawMaskLine(state.lastPoint, point, state.activeStrokeMode || state.tool, baseMaskCtx);
     state.lastPoint = point;
-    refreshCurrentTint();
-    updateMetrics();
-    draw();
+    rebuildMaskFromBase({ recordProtection: false, reason: `${state.activeStrokeMode || state.tool}_preview` });
     return;
   }
   if (state.tool === 'polygon' && state.polygon.dragIndex !== null) {
@@ -1654,9 +2452,13 @@ viewer.addEventListener('pointermove', (event) => {
     draw();
     return;
   }
-  if (state.tool === 'rectangle' && state.rect.handle) {
-    updateRectHandle(state.rect, state.rect.handle, point, state.rect.lastPoint);
-    state.rect.lastPoint = point;
+  if (state.tool === 'rectangle' && state.rect.active) {
+    state.rect.x2 = point.x;
+    state.rect.y2 = point.y;
+    if (state.rect.startPoint && event.buttons === 1) {
+      const moved = Math.hypot(point.x - state.rect.startPoint.x, point.y - state.rect.startPoint.y);
+      if (moved >= Math.max(3 / state.zoom, 2)) state.rect.dragMoved = true;
+    }
     draw();
     return;
   }
@@ -1664,10 +2466,31 @@ viewer.addEventListener('pointermove', (event) => {
     state.samBox.x2 = point.x;
     state.samBox.y2 = point.y;
     draw();
+    return;
+  }
+  if (state.tool === 'brush') {
+    draw();
+  } else if (state.tool === 'sam2') {
+    updateSam2ApplyButton();
+    draw();
   }
 });
 
+viewer.addEventListener('pointerleave', () => {
+  clearSam2Preview({ redraw: false });
+  if (!state.hoverPoint) {
+    updateSam2ApplyButton();
+    return;
+  }
+  state.hoverPoint = null;
+  updateSam2ApplyButton();
+  draw();
+});
+
 viewer.addEventListener('pointerup', (event) => {
+  if (state.shapeDrag) {
+    finishShapeDrag();
+  }
   if (state.drawing) {
     const editType = state.activeStrokeMode || state.tool;
     state.drawing = false;
@@ -1679,13 +2502,25 @@ viewer.addEventListener('pointerup', (event) => {
       brush_size: Number(els.brushSize.value),
       at: new Date().toISOString()
     });
-    afterMaskEdit(editType, state.activeEditBaseline);
+    afterMaskEdit(editType, state.activeEditBaseline, { baseBaselineData: state.activeBaseEditBaseline });
     state.activeEditBaseline = null;
+    state.activeBaseEditBaseline = null;
     state.activeStrokeMode = null;
     state.activePointerButton = 0;
   }
   if (state.tool === 'polygon') state.polygon.dragIndex = null;
-  if (state.tool === 'rectangle') state.rect.handle = null;
+  if (state.tool === 'rectangle' && state.rect.active && state.rect.handle === 'draw' && state.rect.dragMoved) {
+    const added = addRectangleShape(state.rect);
+    state.rect.active = false;
+    state.rect.handle = null;
+    state.rect.startPoint = null;
+    state.rect.dragMoved = false;
+    if (!added) draw();
+  } else if (state.tool === 'rectangle' && state.rect.active && state.rect.handle === 'draw') {
+    state.rect.lastPoint = null;
+    setStatus('Rectangle first corner set; click the opposite corner to finish or right-click to cancel.');
+    draw();
+  }
   if (state.tool === 'sam2' && state.samBox) {
     const r = normalizedRect(state.samBox);
     const prompt = { type: 'rectangle_xyxy', x1: Math.round(r.x1), y1: Math.round(r.y1), x2: Math.round(r.x2), y2: Math.round(r.y2) };
@@ -1698,23 +2533,32 @@ viewer.addEventListener('pointerup', (event) => {
   }
 });
 
-viewer.addEventListener('dblclick', () => {
-  if (state.tool === 'polygon') fillPolygon(state.polygon.points);
-});
-
 document.querySelectorAll('.tool-button').forEach((button) => {
   button.addEventListener('click', () => {
     document.querySelectorAll('.tool-button').forEach((other) => other.classList.remove('active'));
     button.classList.add('active');
     state.tool = button.dataset.tool;
+    if (state.tool !== 'brush' && state.tool !== 'sam2') state.hoverPoint = null;
+    clearSam2Preview({ redraw: false });
+    updateToolParams();
+    draw();
     setStatus(`Tool: ${button.textContent}.`);
   });
 });
 
 els.searchBox.addEventListener('input', renderQueue);
 els.filterSelect.addEventListener('change', renderQueue);
-els.brushSize.addEventListener('input', () => { els.brushSizeValue.textContent = `${els.brushSize.value} px`; });
-els.zoomSlider.addEventListener('input', () => { state.zoom = Number(els.zoomSlider.value) / 100; applyZoom(); });
+els.brushSize.addEventListener('input', () => {
+  els.brushSizeValue.textContent = `${els.brushSize.value} px`;
+  if (state.hoverPoint) draw();
+});
+els.sam2PromptMode.addEventListener('change', () => {
+  clearSam2Preview({ redraw: false });
+  updateSam2ApplyButton();
+  if (state.tool === 'sam2') draw();
+});
+els.zoomInBtn.addEventListener('click', () => zoomBy(ZOOM_STEP));
+els.zoomOutBtn.addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
 els.themeSelect.addEventListener('change', () => applyTheme(els.themeSelect.value));
 els.subtractSulfidesBtn.addEventListener('click', () => {
   subtractSulfidesFromMask().catch((err) => setStatus(`Sulfide subtraction failed: ${err.message}`, true));
@@ -1724,10 +2568,9 @@ els.undoBtn.addEventListener('click', () => undo().catch((err) => setStatus(`Und
 els.saveBtn.addEventListener('click', () => saveReview(false).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
 els.saveNextBtn.addEventListener('click', () => saveReview(true).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
 els.resetBtn.addEventListener('click', () => resetCurrent().catch((err) => setStatus(`Reset failed: ${err.message}`, true)));
-els.applyPolygonBtn.addEventListener('click', () => { if (!fillPolygon(state.polygon.points)) setStatus('Polygon needs at least 3 points.', true); });
-els.cancelPolygonBtn.addEventListener('click', () => { state.polygon.points = []; draw(); });
-els.applyRectBtn.addEventListener('click', () => { if (!state.rect.active || !fillRectangle(state.rect)) setStatus('Draw a rectangle first.', true); });
-els.cancelRectBtn.addEventListener('click', () => { state.rect.active = false; draw(); });
+els.sam2ApplyBtn.addEventListener('click', () => {
+  applySam2PointPreviewOrRun().catch((err) => setStatus(`SAM2 apply failed: ${err.message}`, true));
+});
 els.sam2StatusBtn.addEventListener('click', async () => {
   try {
     const status = await apiGet('/api/sam2/status?check_load=1');
@@ -1743,7 +2586,19 @@ if (window.matchMedia) {
     if (els.themeSelect.value === 'system') draw();
   });
 }
+function isTextEditingTarget(target) {
+  if (!target) return false;
+  const tag = target.tagName;
+  return target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
+
 window.addEventListener('keydown', (event) => {
+  if ((event.key === 'Delete' || event.key === 'Backspace') && !isTextEditingTarget(event.target)) {
+    if (deleteSelectedShape()) {
+      event.preventDefault();
+      return;
+    }
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault();
     undo().catch((err) => setStatus(`Undo failed: ${err.message}`, true));
@@ -1768,6 +2623,8 @@ async function loadSample(sampleId) {
   viewer.height = state.imageH;
   maskCanvas.width = state.imageW;
   maskCanvas.height = state.imageH;
+  baseMaskCanvas.width = state.imageW;
+  baseMaskCanvas.height = state.imageH;
   currentTintCanvas.width = state.imageW;
   currentTintCanvas.height = state.imageH;
 
@@ -1785,9 +2642,13 @@ async function loadSample(sampleId) {
     loadImage(urls.ignore_mask),
     loadImage(urls.sulfide_mask)
   ]);
-  state.images = { original, annotated, qa };
+  state.images = { original, annotated, qa, sulfideMask };
+  baseMaskCtx.clearRect(0, 0, state.imageW, state.imageH);
   maskCtx.clearRect(0, 0, state.imageW, state.imageH);
-  if (currentMask) maskCtx.drawImage(currentMask, 0, 0, state.imageW, state.imageH);
+  if (currentMask) {
+    baseMaskCtx.drawImage(currentMask, 0, 0, state.imageW, state.imageH);
+    maskCtx.drawImage(currentMask, 0, 0, state.imageW, state.imageH);
+  }
   sulfideGuardCanvas.width = state.imageW;
   sulfideGuardCanvas.height = state.imageH;
   sulfideGuardCtx.clearRect(0, 0, state.imageW, state.imageH);
@@ -1802,10 +2663,27 @@ async function loadSample(sampleId) {
   refreshCurrentTint();
   state.undoStack = [];
   state.edits = [];
+  state.shapes = [];
+  state.nextShapeId = 1;
+  state.activeShapeId = null;
+  state.shapeDrag = null;
   state.dirty = false;
   state.polygon.points = [];
+  state.polygon.dragIndex = null;
   state.rect.active = false;
+  state.rect.handle = null;
+  state.rect.lastPoint = null;
+  state.rect.startPoint = null;
+  state.rect.dragMoved = false;
+  state.drawing = false;
+  state.lastPoint = null;
+  state.hoverPoint = null;
+  state.activeStrokeMode = null;
+  state.activePointerButton = 0;
+  state.activeEditBaseline = null;
+  state.activeBaseEditBaseline = null;
   state.samBox = null;
+  clearSam2Preview({ redraw: false });
 
   els.sampleTitle.textContent = state.sample.image.name;
   els.sampleSubtitle.textContent = `${state.sample.sample.status} / ${state.sample.sample.review_state} / ${state.imageW} x ${state.imageH}`;
@@ -1818,6 +2696,7 @@ async function loadSample(sampleId) {
 }
 
 applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || 'system', false);
+updateToolParams();
 
 loadManifest(true).catch((err) => {
   emptyState.textContent = `Failed to start: ${err.message}`;

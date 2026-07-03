@@ -12,6 +12,7 @@ from ore_classifier.talc_blue_line_converter import read_image_rgb, sha256_file,
 
 
 DEFAULT_SAM2_MODEL_ID = "facebook/sam2.1-hiera-tiny"
+MAX_SAM2_REGION_FRACTION = 0.50
 _SAM2_PREDICTOR_CACHE: dict[tuple[str, str], tuple[Any, Any, str]] = {}
 
 
@@ -207,6 +208,32 @@ def _select_best_mask(masks: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray
     return np.asarray(masks[index] > 0, dtype=np.uint8) * 255, float(score_values[index]) if score_values.size else 0.0
 
 
+def _postprocess_sam2_mask(
+    mask: np.ndarray,
+    prompt_geometry: dict[str, Any],
+    shape_hw: tuple[int, int],
+    *,
+    max_fraction: float = MAX_SAM2_REGION_FRACTION,
+) -> np.ndarray:
+    binary = np.asarray(mask > 0, dtype=np.uint8) * 255
+    prompt_type = str(prompt_geometry.get("type") or "")
+    if prompt_type != "point_xy":
+        bbox = _clip_bbox(_bbox_from_geometry(prompt_geometry), shape_hw)
+        clipped = np.zeros_like(binary)
+        x1, y1, x2, y2 = bbox
+        clipped[y1:y2, x1:x2] = binary[y1:y2, x1:x2]
+        binary = clipped
+
+    mask_pixels = int(np.count_nonzero(binary))
+    total_pixels = int(shape_hw[0] * shape_hw[1])
+    if total_pixels > 0 and mask_pixels / total_pixels > max_fraction:
+        percent = mask_pixels * 100.0 / total_pixels
+        raise Sam2AssistFailure(
+            f"SAM2 mask covers {percent:.1f}% of the image; draw a smaller SAM2 box or use brush/polygon instead"
+        )
+    return binary
+
+
 def generate_sam2_region_mask(
     *,
     image_path: Path,
@@ -232,6 +259,7 @@ def generate_sam2_region_mask(
         bbox = _clip_bbox(_bbox_from_geometry(prompt_geometry), shape_hw)
         masks, scores, _logits = predictor.predict(box=np.asarray(bbox, dtype=np.float32), multimask_output=True)
     mask, score = _select_best_mask(np.asarray(masks), np.asarray(scores))
+    mask = _postprocess_sam2_mask(mask, prompt_geometry, shape_hw)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_stem = output_name or f"sam2_{prompt_type or 'prompt'}"
