@@ -25,11 +25,18 @@ def patch_drawable_canvas_streamlit_compat() -> None:
     try:
         import streamlit.elements.image as st_image
         from streamlit.elements.lib.image_utils import image_to_url
-        from streamlit.elements.lib.layout_utils import create_layout_config
     except Exception:  # noqa: BLE001 - optional Streamlit internals changed.
         return
     if hasattr(st_image, "image_to_url"):
         return
+
+    try:
+        from streamlit.elements.lib.layout_utils import create_layout_config
+    except Exception:  # noqa: BLE001 - Streamlit 1.50 exposes LayoutConfig instead.
+        from streamlit.elements.lib.layout_utils import LayoutConfig
+
+        def create_layout_config(width: int, allow_content_width: bool = True) -> Any:  # noqa: ARG001
+            return LayoutConfig(width=width)
 
     def legacy_image_to_url(
         image: Any,
