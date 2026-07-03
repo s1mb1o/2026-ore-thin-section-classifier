@@ -160,6 +160,21 @@ python3 apps/talc_review_web.py \
 The app prints the selected local URL. It edits `current_talc_mask.png` directly
 and saves final reviewed artifacts under each sample's `reviewed/` directory.
 
+From-scratch talc annotation on arbitrary images (mixed class folders, empty
+starting masks; `Lasso` tool: outline to fill, Shift to erase):
+
+```bash
+python3 scripts/prepare_talc_scratch_workspace.py \
+  --images "data/Фото руд по сортам. ч1/Оталькованные руды" \
+  --images "data/Фото руд по сортам. ч1/Рядовые руды" \
+  --per-dir-limit 10 --shuffle-seed 7 \
+  --output-dir outputs/talc_annotation_v1
+
+python3 apps/talc_review_web.py --conversion-dir outputs/talc_annotation_v1
+```
+
+Annotation protocol: `docs/notes/2026-07-03-talc-manual-annotation-protocol.md`.
+
 ## Legacy Streamlit Talc Review UI
 
 ```bash
