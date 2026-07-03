@@ -3,6 +3,7 @@
 __all__: list[str] = [
     "component_analysis",
     "component_reports",
+    "analyzed_area",
     "curation",
     "report_cards",
     "review_queue",

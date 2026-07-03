@@ -2,7 +2,7 @@
 
 Date: 2026-07-03
 
-Status: Draft for user review.
+Status: Implemented in `apps/talc_review_web.py`.
 
 ## Purpose
 
@@ -196,6 +196,7 @@ The first screen is the working review interface, not a landing page.
 - Right column: sample details, layer toggles, current metrics, save status.
 - Bottom or collapsible side panel: edit history and advanced exact-coordinate
   tools.
+- Theme selector: `System`, `Light`, and `Dark`, persisted in browser storage.
 
 The reviewer must always see that the edited object is the `Talc mask`.
 
@@ -258,9 +259,10 @@ review patch; `Save and next` does the same and navigates to the next queue row.
 
 Polygon editing must support:
 
-- Add point by clicking an edge or canvas.
+- Add point by clicking empty canvas.
+- Insert point by clicking an existing polygon edge.
 - Drag existing points.
-- Delete selected point.
+- Delete point by right-clicking it.
 - Close polygon automatically when at least three points exist.
 - Preview filled region before applying.
 - Apply as add/remove/replace operation to the talc mask.
@@ -448,21 +450,16 @@ returns updated metrics. `navigate` may be `stay` for `Save` or `next` for
 
 ## File Layout Proposal
 
-Implementation files, when approved:
+Implemented files:
 
 ```text
 apps/talc_review_web.py
-apps/static/talc_review/
-  app.js
-  style.css
-src/ore_classifier/talc_review_store.py
-src/ore_classifier/talc_review_patch.py
-tests/test_talc_review_patch.py
-tests/test_talc_review_web_api.py
+tests/test_talc_review_web.py
 ```
 
-This keeps the application narrow while making patch/mask logic testable without
-a browser.
+The application remains narrow and local: generated HTML/CSS/JavaScript live in
+the Python app, while tests cover pairing, first-open autosave, reviewed saves,
+theme controls, and HTTP endpoints without requiring a browser.
 
 ## Launch Command
 

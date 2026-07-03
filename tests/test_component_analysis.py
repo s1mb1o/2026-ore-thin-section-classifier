@@ -48,6 +48,23 @@ class ComponentAnalysisTest(unittest.TestCase):
         summary, _, _ = analyze_components(sulfide, talc_mask=talc, config=ComponentRuleConfig(min_component_area_px=10))
         self.assertEqual(summary.ore_class, "talcose_ore")
 
+    def test_analyzed_mask_controls_fraction_denominator(self) -> None:
+        sulfide = np.zeros((100, 100), dtype=np.uint8)
+        sulfide[10:20, 10:20] = 255
+        analyzed = np.zeros_like(sulfide)
+        analyzed[:50, :] = 255
+
+        summary, _, _ = analyze_components(
+            sulfide,
+            analyzed_mask=analyzed,
+            config=ComponentRuleConfig(min_component_area_px=1),
+        )
+
+        self.assertEqual(summary.image_area_px, 10000)
+        self.assertEqual(summary.analysis_area_px, 5000)
+        self.assertAlmostEqual(summary.sulfide_fraction, 100 / 5000)
+        self.assertAlmostEqual(summary.sulfide_fraction_image, 100 / 10000)
+
     def test_fill_holes_does_not_fill_exterior_when_component_touches_border(self) -> None:
         mask = np.zeros((20, 20), dtype=np.uint8)
         mask[0:10, 0:10] = 1

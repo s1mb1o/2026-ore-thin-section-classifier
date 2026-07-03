@@ -17,6 +17,7 @@ from ore_classifier.component_analysis import (  # noqa: E402
     analyze_components,
     save_component_outputs,
 )
+from ore_classifier.analyzed_area import build_analyzed_mask  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -26,6 +27,7 @@ def main() -> int:
     parser.add_argument("--image", type=Path, default=None)
     parser.add_argument("--sulfide-mask", type=Path, required=True)
     parser.add_argument("--talc-mask", type=Path, default=None)
+    parser.add_argument("--analyzed-mask", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--min-component-area-px", type=int, default=64)
     parser.add_argument("--close-kernel-px", type=int, default=15)
@@ -36,8 +38,15 @@ def main() -> int:
     parser.add_argument("--preview-max-side", type=int, default=1800)
     args = parser.parse_args()
 
+    image = None if args.image is None else np.asarray(Image.open(args.image).convert("RGB"))
     sulfide_mask = np.asarray(Image.open(args.sulfide_mask).convert("L"))
     talc_mask = None if args.talc_mask is None else np.asarray(Image.open(args.talc_mask).convert("L"))
+    if args.analyzed_mask is not None:
+        analyzed_mask = np.asarray(Image.open(args.analyzed_mask).convert("L"))
+    elif image is not None:
+        analyzed_mask = build_analyzed_mask(image)
+    else:
+        analyzed_mask = None
     cfg = ComponentRuleConfig(
         min_component_area_px=args.min_component_area_px,
         close_kernel_px=args.close_kernel_px,
@@ -46,8 +55,12 @@ def main() -> int:
         fine_compactness_max=args.fine_compactness_max,
         talc_fraction_threshold=args.talc_fraction_threshold,
     )
-    summary, components, classified = analyze_components(sulfide_mask=sulfide_mask, talc_mask=talc_mask, config=cfg)
-    image = None if args.image is None else np.asarray(Image.open(args.image).convert("RGB"))
+    summary, components, classified = analyze_components(
+        sulfide_mask=sulfide_mask,
+        talc_mask=talc_mask,
+        analyzed_mask=analyzed_mask,
+        config=cfg,
+    )
     paths = save_component_outputs(
         out_dir=args.out_dir,
         summary=summary,
@@ -55,6 +68,7 @@ def main() -> int:
         classified_mask=classified,
         original_image=image,
         talc_mask=talc_mask,
+        analyzed_mask=analyzed_mask,
         preview_max_side=args.preview_max_side,
     )
     output = {"summary": summary.__dict__, "paths": paths}

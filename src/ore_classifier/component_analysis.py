@@ -36,17 +36,25 @@ class OreSummary:
     ore_class: str
     ore_class_ru: str
     sulfide_fraction: float
+    sulfide_fraction_image: float
     ordinary_sulfide_fraction: float
     fine_sulfide_fraction: float
     talc_fraction: float
+    talc_fraction_image: float
     sulfide_area_px: int
     ordinary_sulfide_area_px: int
     fine_sulfide_area_px: int
     talc_area_px: int
+    image_area_px: int
     analysis_area_px: int
+    analyzed_fraction: float
     component_count: int
     ordinary_component_count: int
     fine_component_count: int
+    talc_margin: float
+    intergrowth_margin: float
+    needs_expert_review: bool
+    warnings: list[str]
     rule_text_ru: str
 
 
@@ -63,12 +71,24 @@ class ComponentRuleConfig:
 def analyze_components(
     sulfide_mask: np.ndarray,
     talc_mask: np.ndarray | None = None,
+    analyzed_mask: np.ndarray | None = None,
     config: ComponentRuleConfig | None = None,
 ) -> tuple[OreSummary, list[ComponentFeatures], np.ndarray]:
     cfg = config or ComponentRuleConfig()
-    sulfide = (sulfide_mask > 0).astype(np.uint8)
-    talc = np.zeros_like(sulfide, dtype=np.uint8) if talc_mask is None else (talc_mask > 0).astype(np.uint8)
-    analysis_area = int(sulfide.size)
+    sulfide_raw = (sulfide_mask > 0).astype(np.uint8)
+    if analyzed_mask is None:
+        analyzed = np.ones_like(sulfide_raw, dtype=np.uint8)
+    else:
+        if analyzed_mask.shape[:2] != sulfide_raw.shape[:2]:
+            raise ValueError("analyzed_mask dimensions must match sulfide_mask")
+        analyzed = (analyzed_mask > 0).astype(np.uint8)
+    talc_raw = np.zeros_like(sulfide_raw, dtype=np.uint8) if talc_mask is None else (talc_mask > 0).astype(np.uint8)
+    if talc_raw.shape[:2] != sulfide_raw.shape[:2]:
+        raise ValueError("talc_mask dimensions must match sulfide_mask")
+    sulfide = (sulfide_raw & analyzed).astype(np.uint8)
+    talc = (talc_raw & analyzed).astype(np.uint8)
+    image_area = int(sulfide.size)
+    analysis_area = int(analyzed.sum())
     labels_count, labels, stats, centroids = cv2.connectedComponentsWithStats(sulfide, connectivity=8)
     classified = np.zeros_like(sulfide, dtype=np.uint8)
     components: list[ComponentFeatures] = []
@@ -96,6 +116,8 @@ def analyze_components(
     sulfide_area = int(sulfide.sum())
     talc_area = int(talc.sum())
     talc_fraction = talc_area / max(analysis_area, 1)
+    ordinary_fraction = ordinary_area / max(sulfide_area, 1)
+    fine_fraction = fine_area / max(sulfide_area, 1)
     if talc_fraction > cfg.talc_fraction_threshold:
         ore_class = "talcose_ore"
         ore_class_ru = "оталькованная руда"
@@ -105,22 +127,38 @@ def analyze_components(
     else:
         ore_class = "hard_to_process_ore"
         ore_class_ru = "труднообогатимая руда"
+    talc_margin = talc_fraction - cfg.talc_fraction_threshold
+    intergrowth_margin = ordinary_fraction - fine_fraction
+    warnings = summary_warnings(
+        sulfide_area=sulfide_area,
+        analyzed_fraction=analysis_area / max(image_area, 1),
+        talc_margin=talc_margin,
+        intergrowth_margin=intergrowth_margin,
+    )
 
     summary = OreSummary(
         ore_class=ore_class,
         ore_class_ru=ore_class_ru,
         sulfide_fraction=sulfide_area / max(analysis_area, 1),
-        ordinary_sulfide_fraction=ordinary_area / max(sulfide_area, 1),
-        fine_sulfide_fraction=fine_area / max(sulfide_area, 1),
+        sulfide_fraction_image=sulfide_area / max(image_area, 1),
+        ordinary_sulfide_fraction=ordinary_fraction,
+        fine_sulfide_fraction=fine_fraction,
         talc_fraction=talc_fraction,
+        talc_fraction_image=talc_area / max(image_area, 1),
         sulfide_area_px=sulfide_area,
         ordinary_sulfide_area_px=ordinary_area,
         fine_sulfide_area_px=fine_area,
         talc_area_px=talc_area,
+        image_area_px=image_area,
         analysis_area_px=analysis_area,
+        analyzed_fraction=analysis_area / max(image_area, 1),
         component_count=ordinary_count + fine_count,
         ordinary_component_count=ordinary_count,
         fine_component_count=fine_count,
+        talc_margin=talc_margin,
+        intergrowth_margin=intergrowth_margin,
+        needs_expert_review=bool(warnings),
+        warnings=warnings,
         rule_text_ru=rule_text_ru(ore_class_ru, talc_fraction, ordinary_area, fine_area),
     )
     return summary, components, classified
@@ -214,6 +252,28 @@ def rule_text_ru(ore_class_ru: str, talc_fraction: float, ordinary_area: int, fi
     )
 
 
+def summary_warnings(
+    *,
+    sulfide_area: int,
+    analyzed_fraction: float,
+    talc_margin: float,
+    intergrowth_margin: float,
+    talc_margin_review: float = 0.02,
+    intergrowth_margin_review: float = 0.10,
+    analyzed_fraction_min: float = 0.50,
+) -> list[str]:
+    warnings: list[str] = []
+    if sulfide_area == 0:
+        warnings.append("zero_sulfide_area")
+    if analyzed_fraction < analyzed_fraction_min:
+        warnings.append("low_analyzed_fraction")
+    if abs(talc_margin) <= talc_margin_review:
+        warnings.append("talc_fraction_near_threshold")
+    if abs(intergrowth_margin) <= intergrowth_margin_review:
+        warnings.append("ordinary_fine_margin_near_threshold")
+    return warnings
+
+
 def save_component_outputs(
     out_dir: Path,
     summary: OreSummary,
@@ -221,12 +281,14 @@ def save_component_outputs(
     classified_mask: np.ndarray,
     original_image: np.ndarray | None = None,
     talc_mask: np.ndarray | None = None,
+    analyzed_mask: np.ndarray | None = None,
     preview_max_side: int = 1800,
 ) -> dict[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_dir / "ore_summary.json"
     features_path = out_dir / "component_features.csv"
     mask_path = out_dir / "intergrowth_mask.png"
+    analyzed_path = out_dir / "analyzed_mask.png"
     overlay_path = out_dir / "intergrowth_overlay_preview.jpg"
     summary_path.write_text(json.dumps(asdict(summary), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     write_component_csv(features_path, components)
@@ -236,6 +298,9 @@ def save_component_outputs(
         "component_features": str(features_path),
         "intergrowth_mask": str(mask_path),
     }
+    if analyzed_mask is not None:
+        Image.fromarray((analyzed_mask > 0).astype(np.uint8) * 255, mode="L").save(analyzed_path)
+        paths["analyzed_mask"] = str(analyzed_path)
     if original_image is not None:
         overlay = intergrowth_overlay(original_image, classified_mask, talc_mask=talc_mask, max_side=preview_max_side)
         Image.fromarray(overlay, mode="RGB").save(overlay_path, quality=92, optimize=True)

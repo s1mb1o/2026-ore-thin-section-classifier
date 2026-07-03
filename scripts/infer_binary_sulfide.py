@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from ore_classifier.datasets import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
+from ore_classifier.analyzed_area import build_analyzed_mask  # noqa: E402
 from ore_classifier.model_io import (  # noqa: E402
     forward_logits,
     load_binary_segmentation_checkpoint,
@@ -76,10 +77,13 @@ def main() -> int:
         prob = np.asarray(prob_sum / np.maximum(weight_sum, 1e-6), dtype=np.float32)
         confidence = np.clip(prob * 255.0, 0, 255).astype(np.uint8)
         mask = (prob >= args.threshold).astype(np.uint8) * 255
+        analyzed_mask = build_analyzed_mask(np.asarray(image, dtype=np.uint8))
         mask_path = args.out_dir / "sulfide_mask.png"
         confidence_path = args.out_dir / "confidence.png"
+        analyzed_path = args.out_dir / "analyzed_mask.png"
         save_gray(mask_path, mask)
         save_gray(confidence_path, confidence)
+        save_gray(analyzed_path, analyzed_mask.astype(np.uint8) * 255)
 
         overlay_preview_path = args.out_dir / "overlay_preview.jpg"
         save_overlay(
@@ -94,9 +98,12 @@ def main() -> int:
             full_overlay_path = args.out_dir / "overlay_full.jpg"
             save_overlay(image=image, mask=mask, confidence=confidence, path=full_overlay_path, max_side=0)
 
-    sulfide_fraction = float((mask > 0).mean())
+    image_area = int(mask.size)
+    analyzed_area = int((analyzed_mask > 0).sum())
+    sulfide_area = int(((mask > 0) & (analyzed_mask > 0)).sum())
+    sulfide_fraction = sulfide_area / max(analyzed_area, 1)
     summary = {
-        "schema_version": "binary-sulfide-inference-v0.1",
+        "schema_version": "binary-sulfide-inference-v0.2",
         "image": str(args.image),
         "checkpoint": str(args.checkpoint),
         "checkpoint_meta": checkpoint_meta,
@@ -109,10 +116,16 @@ def main() -> int:
         "threshold": args.threshold,
         "device": str(device),
         "seconds": round(time.time() - started, 3),
+        "image_area_px": image_area,
+        "analyzed_area_px": analyzed_area,
+        "analyzed_fraction": analyzed_area / max(image_area, 1),
+        "sulfide_area_px": sulfide_area,
         "sulfide_fraction": sulfide_fraction,
+        "sulfide_fraction_image": sulfide_area / max(image_area, 1),
         "paths": {
             "sulfide_mask": str(mask_path),
             "confidence": str(confidence_path),
+            "analyzed_mask": str(analyzed_path),
             "overlay_preview": str(overlay_preview_path),
             "overlay_full": str(full_overlay_path) if full_overlay_path else None,
         },

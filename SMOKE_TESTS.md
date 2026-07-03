@@ -34,7 +34,16 @@ python3 scripts/convert_talc_blue_lines.py \
   --summary-json outputs/talc_blue_line_conversion_summary.json
 ```
 
-Optional Streamlit review after installing `requirements.txt`:
+Preferred browser/canvas review:
+
+```bash
+python3 apps/talc_review_web.py \
+  --conversion-dir outputs/talc_blue_line_conversion \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+Legacy Streamlit review after installing `requirements-ui.txt`:
 
 ```bash
 streamlit run apps/talc_review_streamlit.py -- \
@@ -48,8 +57,36 @@ Expected:
 - Current status counts are `31` `candidate_ok`, `9` `needs_manual_review`, and `2` `sulfide_overlap_review_required`.
 - Each sample directory contains source image copy, blue stroke masks, talc candidates, sulfide/overlap/ignore masks, optional-silicate derived masks, final talc mask, QA overlay, and `conversion_summary.json`.
 - The talc converter accepts `--silicate-mask-dir` and writes `silicate_support_mask.png`, `silicate_supported_talc_mask.png`, `silicate_unsupported_talc_mask.png`, `talc_positive_core_mask.png`, and `silicate_hard_negative_mask.png`; synthetic unit tests verify supported talc, unsupported uncertain talc, and silicate hard negatives.
-- Streamlit review shows original blue annotation lines explicitly, uses the stateful `Workspace` segmented control, defaults `Review canvas` to the current mask, exposes `Brush`, `Erase`, `Filled polygon`, `Filled box`, and `SAM2 assist`, keeps stroke width only for brush/erase, supports polygon vertex drag/add/delete and box corner/edge drag in the filled-area tools, keeps coordinate fallback editors under `Advanced`, updates local edit metrics after apply, and saves reviewed outputs under each sample's `reviewed/` directory.
+- Preferred browser review shows original blue annotation lines explicitly, edits the current talc mask directly, supports brush, eraser, filled polygon, filled rectangle, optional SAM2 prompts, undo, autosave, `Save`, and `Save and next`, and saves reviewed outputs under each sample's `reviewed/` directory. The legacy Streamlit review remains available only as a fallback.
 - The `SAM2 assist` canvas tool shows model/device controls, `Load/check SAM2`, draggable point/box prompts, and `Run SAM2`; without local `torch` and `sam2`, it should report missing optional dependencies rather than blocking the rest of the app.
+
+## Talc Browser Review App Smoke
+
+Run from the v2 root:
+
+```bash
+python3 -m py_compile apps/talc_review_web.py
+python3 -m unittest discover -s tests -p 'test_talc_review_web.py' -v
+```
+
+```bash
+python3 apps/talc_review_web.py \
+  --conversion-dir outputs/talc_blue_line_conversion \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+Expected:
+
+- Focused tests pass and cover same-filename annotated/original pairing, first-open `current_talc_mask.png` creation, reviewed save artifacts, reset behavior, and basic HTTP endpoints.
+- The app prints a local URL such as `http://127.0.0.1:<port>/`.
+- `/api/manifest` reports `42` samples for the full conversion workspace.
+- The `Theme` selector supports `System`, `Light`, and `Dark`; explicit dark/light choices update the UI immediately and persist across reloads.
+- Opening a sample auto-creates or reuses `current_talc_mask.png`.
+- The canvas edits the talc mask itself with brush, eraser, polygon, rectangle, and optional SAM2 prompt tools.
+- Polygon draft editing supports click-to-add, edge-click-to-insert, point drag, right-click-point-to-delete, and status-line confirmation for add/insert/remove.
+- `Save` writes `reviewed/reviewed_talc_mask.png`, `reviewed/reviewed_ignore_mask.png`, `reviewed/reviewed_overlay.png`, `reviewed/review_patch.json`, and `reviewed/review_summary.json`.
+- If SAM2 dependencies are missing, `Check SAM2` and the SAM2 canvas tool report the missing optional dependency without blocking manual editing.
 
 ## Heuristic Segmentation Smoke
 
@@ -84,7 +121,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 Expected:
 
-- Unit tests pass; current local result is `36` tests.
+- Unit tests pass; current local result is `43` tests.
 - Coverage includes `source_fusion`, `review_queue`, `curation`, `component_reports`, `report_cards`, and `scribble_classifier`.
 - These tests use synthetic inputs and do not require GPU, Streamlit, SAM2, or external datasets.
 
@@ -207,6 +244,24 @@ Expected:
 - The pipeline writes `binary_sulfide/sulfide_mask.png`, `binary_sulfide/confidence.png`, `binary_sulfide/overlay_preview.jpg`, `talc_candidate/talc_candidate_mask.png`, `talc_candidate/talc_candidate_summary.json`, `ore_analysis/ore_summary.json`, `ore_analysis/component_features.csv`, and `ore_analysis/intergrowth_overlay_preview.jpg`.
 - Balanced official split contains `387` labelled images: `129` ordinary, `129` fine, `129` talcose; the `14` panoramas remain listed separately as unlabelled stress-test images.
 - The one-image official batch smoke writes `summary.csv`, `summary.json`, `failures.json`, and image-level classification metrics JSON/Markdown. On a one-class smoke sample, AUC may be `null`; full balanced evaluation is needed for meaningful F1/AUC.
+
+## Ore Rule Calibration Smoke
+
+Run from the v2 root after an official batch has written `summary.csv` and
+per-run `ore_analysis/component_features.csv` files:
+
+```bash
+python3 scripts/calibrate_ore_rules.py \
+  --summary-csv outputs/commit_smoke_official_batch/summary.csv \
+  --out-json outputs/commit_smoke_official_batch/ore_rule_calibration.json \
+  --out-md outputs/commit_smoke_official_batch/ore_rule_calibration.md
+```
+
+Expected:
+
+- The command writes `ore_rule_calibration.json` and optional Markdown.
+- Output includes `best_config`, `best_metrics`, `top_results`, and an explicit note that calibration uses image-level labels, not pixel-level geological ground truth.
+- On one-class smoke data, AUC may be `null`; use the full balanced batch for meaningful F1/AUC calibration.
 
 ## Manual Review Pack Smoke
 

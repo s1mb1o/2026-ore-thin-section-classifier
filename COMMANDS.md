@@ -40,7 +40,31 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-## Talc Review UI
+## Talc Review UI (Preferred Browser/Canvas App)
+
+Directly from the official annotated folder:
+
+```bash
+python3 apps/talc_review_web.py \
+  --annotated-dir "dataset/Фото руд по сортам. ч1/Оталькованные руды/Области оталькования" \
+  --workspace-dir outputs/talc_blue_line_conversion \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+Prepared conversion workspace mode:
+
+```bash
+python3 apps/talc_review_web.py \
+  --conversion-dir outputs/talc_blue_line_conversion \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+The app prints the selected local URL. It edits `current_talc_mask.png` directly
+and saves final reviewed artifacts under each sample's `reviewed/` directory.
+
+## Legacy Streamlit Talc Review UI
 
 ```bash
 python -m streamlit run apps/talc_review_streamlit.py -- \
@@ -108,6 +132,16 @@ python3 scripts/evaluate_ore_classification.py \
   --summary-csv outputs/evaluations/b2_official_balanced_auto_talc/summary.csv \
   --out-json outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.json \
   --out-md outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.md
+```
+
+Calibrate deterministic talc/ordinary/fine rule thresholds from the completed
+batch without rerunning B2 inference:
+
+```bash
+python3 scripts/calibrate_ore_rules.py \
+  --summary-csv outputs/evaluations/b2_official_balanced_auto_talc/summary.csv \
+  --out-json outputs/evaluations/b2_official_balanced_auto_talc/ore_rule_calibration.json \
+  --out-md outputs/evaluations/b2_official_balanced_auto_talc/ore_rule_calibration.md
 ```
 
 ## Sulfide QA UI

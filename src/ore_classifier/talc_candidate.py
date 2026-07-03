@@ -9,6 +9,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from ore_classifier.analyzed_area import blue_annotation_like, build_analyzed_mask, ellipse_kernel
+
 
 @dataclass(frozen=True)
 class TalcCandidateConfig:
@@ -52,7 +54,7 @@ def estimate_talc_candidate_mask(
     rgb_i16 = rgb_u8.astype(np.int16)
     green_bias = rgb_i16[..., 1] - np.maximum(rgb_i16[..., 0], rgb_i16[..., 2])
     blue_bias = rgb_i16[..., 2] - np.maximum(rgb_i16[..., 0], rgb_i16[..., 1])
-    analyzed = _build_analyzed_mask(rgb_u8, cfg)
+    analyzed = build_analyzed_mask(rgb_u8, min_value=cfg.analyzed_min_value)
     sulfide = np.zeros(hue.shape, dtype=bool) if sulfide_mask is None else sulfide_mask.astype(bool)
 
     green_gray = (
@@ -69,13 +71,13 @@ def estimate_talc_candidate_mask(
         green_gray
         & analyzed.astype(bool)
         & ~sulfide
-        & ~_blue_annotation_like(rgb_u8, saturation)
+        & ~blue_annotation_like(rgb_u8, saturation=saturation)
     ).astype(np.uint8)
 
     if cfg.morphology_open_radius > 0:
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, _ellipse_kernel(cfg.morphology_open_radius))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, ellipse_kernel(cfg.morphology_open_radius))
     if cfg.morphology_close_radius > 0:
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, _ellipse_kernel(cfg.morphology_close_radius))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ellipse_kernel(cfg.morphology_close_radius))
     mask = _remove_small_components(mask, cfg.min_area_px)
     return (mask > 0).astype(np.uint8) * 255
 
@@ -99,7 +101,9 @@ def save_talc_candidate_outputs(
     overlay = talc_candidate_overlay(rgb=rgb, talc_mask=talc_mask, sulfide_mask=sulfide_mask, max_side=preview_max_side)
     Image.fromarray(overlay, mode="RGB").save(overlay_path, quality=92, optimize=True)
 
+    analyzed_mask = build_analyzed_mask(rgb.astype(np.uint8), min_value=cfg.analyzed_min_value)
     image_area = int(talc_mask.size)
+    analyzed_area = int(analyzed_mask.sum())
     talc_area = int((talc_mask > 0).sum())
     summary: dict[str, Any] = {
         "schema_version": "talc-candidate-v0.1",
@@ -108,8 +112,11 @@ def save_talc_candidate_outputs(
         "width": int(talc_mask.shape[1]),
         "height": int(talc_mask.shape[0]),
         "image_area_px": image_area,
+        "analyzed_area_px": analyzed_area,
+        "analyzed_fraction": analyzed_area / max(image_area, 1),
         "talc_candidate_area_px": talc_area,
-        "talc_candidate_fraction": talc_area / max(image_area, 1),
+        "talc_candidate_fraction": talc_area / max(analyzed_area, 1),
+        "talc_candidate_fraction_image": talc_area / max(image_area, 1),
         "config": asdict(cfg),
         "paths": {
             "talc_candidate_mask": str(mask_path),
@@ -154,22 +161,6 @@ def talc_candidate_overlay(
     return np.clip(base * (1.0 - alpha) + color * alpha, 0, 255).astype(np.uint8)
 
 
-def _build_analyzed_mask(rgb: np.ndarray, config: TalcCandidateConfig) -> np.ndarray:
-    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-    value = hsv[..., 2]
-    saturation = hsv[..., 1]
-    not_black = value >= config.analyzed_min_value
-    not_blue_annotation = ~_blue_annotation_like(rgb, saturation)
-    mask = np.logical_and(not_black, not_blue_annotation).astype(np.uint8)
-    return cv2.morphologyEx(mask, cv2.MORPH_OPEN, _ellipse_kernel(1)).astype(np.uint8)
-
-
-def _blue_annotation_like(rgb: np.ndarray, saturation: np.ndarray) -> np.ndarray:
-    rgb_i16 = rgb.astype(np.int16)
-    blue_bias = rgb_i16[..., 2] - np.maximum(rgb_i16[..., 0], rgb_i16[..., 1])
-    return (blue_bias > 45) & (saturation > 80)
-
-
 def _remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
     if min_area <= 1:
         return mask.astype(np.uint8)
@@ -177,8 +168,3 @@ def _remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
     keep = np.zeros(num_labels, dtype=bool)
     keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= min_area
     return keep[labels].astype(np.uint8)
-
-
-def _ellipse_kernel(radius: int) -> np.ndarray:
-    size = max(1, radius * 2 + 1)
-    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))

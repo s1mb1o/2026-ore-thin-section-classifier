@@ -12,6 +12,7 @@
 - Ran a six-image final-B1 visual validation pack from the balanced split under `outputs/visual_validation_b1_final/`. Masks/overlays rendered, but deterministic ordinary/fine rules disagreed with folder labels on 2 of 4 ordinary/fine examples; saved the calibration finding in `docs/notes/2026-07-03-b1-visual-validation-pack.md`.
 - Added balanced official image-level split generation: `outputs/official_balanced_eval_split.json` has `387` labelled images, `129` per ordinary/fine/talcose class, and keeps `14` panoramas separate as unlabelled stress images.
 - Added model/data/run cards under `docs/cards/` for checkpoint provenance, balanced split caveats, and the B1 demo pipeline run.
+- Added `scripts/calibrate_ore_rules.py` so a completed B2 official batch can grid-search deterministic talc/ordinary/fine thresholds from `summary.csv` and per-run `component_features.csv`; output is an explicit calibration artifact because it uses image-level folder labels rather than pixel-level geological ground truth.
 
 ### Heuristic segmentation baseline
 
