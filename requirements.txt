@@ -1,3 +1,5 @@
+# Full ML environment. Requires Python >=3.10 because transformers>=5.12.1
+# is not available for Python 3.9.
 opencv-python
 numpy
 Pillow

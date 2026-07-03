@@ -1,0 +1,112 @@
+# Commands
+
+Run from the repository root:
+
+```bash
+cd /Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2
+```
+
+## Setup Python Tools
+
+If `streamlit: command not found`, use the existing temporary venv from this
+workspace session:
+
+```bash
+/private/tmp/nornikel_ore_classifier_streamlit_venv/bin/python -m streamlit run apps/talc_review_streamlit.py -- \
+  --conversion-dir outputs/talc_blue_line_conversion
+```
+
+For a persistent repo-local UI venv:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-ui.txt
+```
+
+After activation, use `python -m streamlit ...` in the UI commands below.
+
+For the full ML pipeline, recreate `.venv` with Python >=3.10. If `python -V`
+prints `3.9.x`, remove and recreate it:
+
+```bash
+deactivate 2>/dev/null || true
+rm -rf .venv
+/opt/homebrew/bin/python3 -m venv .venv
+source .venv/bin/activate
+python -V
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+## Talc Review UI
+
+```bash
+python -m streamlit run apps/talc_review_streamlit.py -- \
+  --conversion-dir outputs/talc_blue_line_conversion
+```
+
+## Convert Talc Blue Lines
+
+```bash
+python3 scripts/convert_talc_blue_lines.py \
+  --input "dataset/Фото руд по сортам. ч1/Оталькованные руды/Области оталькования" \
+  --output-dir outputs/talc_blue_line_conversion \
+  --summary-json outputs/talc_blue_line_conversion_summary.json
+```
+
+With sulfide and silicon/silicate support masks:
+
+```bash
+python3 scripts/convert_talc_blue_lines.py \
+  --input "dataset/Фото руд по сортам. ч1/Оталькованные руды/Области оталькования" \
+  --output-dir outputs/talc_blue_line_conversion \
+  --sulfide-mask-dir path/to/binary_sulfide_masks \
+  --silicate-mask-dir path/to/silicate_support_masks
+```
+
+## Run Ore Pipeline
+
+```bash
+python3 scripts/run_ore_pipeline.py \
+  --image "dataset/Фото руд по сортам. ч1/Рядовые руды/DSCN2176.JPG" \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/inference_demo/local_dscn2176_b2 \
+  --device auto
+```
+
+## Sulfide QA UI
+
+```bash
+python -m streamlit run apps/sulfide_qa_streamlit.py -- \
+  --runs-dir outputs/inference_demo \
+  --review-dir outputs/sulfide_qa_reviews
+```
+
+## Manual Review Pack
+
+```bash
+python3 scripts/prepare_manual_review_pack.py \
+  --out-dir outputs/manual_review/local_review_pack \
+  --per-label 1 \
+  --device auto \
+  --overwrite
+```
+
+## Heuristic Baseline
+
+```bash
+python3 heuristic_segmentation/run_heuristic_segmentation.py \
+  --image "dataset/Фото руд по сортам. ч1/Рядовые руды/DSCN2176.JPG" \
+  --output-dir outputs/heuristic_segmentation_sample \
+  --max-side 1600 \
+  --overwrite
+```
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 -m unittest discover -s heuristic_segmentation/tests -p 'test_*.py'
+```

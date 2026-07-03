@@ -2,6 +2,11 @@
 
 ## 2026-07-03
 
+- Fixed the talc Streamlit canvas compatibility shim for Streamlit 1.50: `streamlit-drawable-canvas` now gets the legacy `streamlit.elements.image.image_to_url` wrapper even when Streamlit exposes `LayoutConfig` instead of `create_layout_config`.
+- Documented the canonical v2 iteration workdir in `AGENTS.md` and `docs/session-sync.md`: `/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2`.
+- Added `requirements-ui.txt` for Streamlit-only review tools and documented that the full `requirements.txt` needs Python >=3.10; this fixes the Python 3.9 `.venv` install failure on `transformers>=5.12.1`.
+- Updated `COMMANDS.md` with a `streamlit: command not found` fix: use the existing temporary venv or create/activate a repo-local `.venv`, then launch Streamlit via `python -m streamlit`.
+- Added root `COMMANDS.md` with short launch snippets for talc conversion/review, the B2 ore pipeline, sulfide QA, manual review pack generation, the heuristic baseline, and tests.
 - Added `scripts/prepare_manual_review_pack.py` and generated a B2 manual review pack under `outputs/manual_review/b2_balanced_review_pack/`: `9` balanced official-class samples, review panels, source previews, sulfide overlays, probability heatmaps, ordinary/fine overlays, `8` uncertainty crop candidates, `review_manifest.csv/json`, `review_candidates.csv`, and `feedback_template.csv`. The Streamlit sulfide QA app now displays optional review panels, source previews, and heatmaps when present.
 - Added the runnable ore pipeline: official-metric evaluator (`IoU`, `F1`, `AUC`, Hausdorff/HD95), tiled binary sulfide inference, component-level ordinary/fine analysis, one-command `run_ore_pipeline.py`, balanced official eval split JSON/CSV, and model/data/run cards under `docs/cards/`. SegFormer-B2 on zelda completed as the current default checkpoint with val sulfide IoU `0.974381`, F1 `0.987024`, AUC `0.998811`, and HD95 mean `23.57 px`; the final B2 demo output is saved under `outputs/inference_demo/b2_final_row_2539589_1/`.
 - Added SegFormer-B2 support and completed B2 on zelda as the current best binary sulfide checkpoint: val sulfide IoU `0.974381`, F1 `0.987024`, AUC `0.998811`, HD95 mean `23.57 px`.

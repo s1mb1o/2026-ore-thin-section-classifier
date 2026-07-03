@@ -4,6 +4,8 @@ Date: 2026-07-03
 
 This is the shared handoff file for the clean v2 Nornickel hackathon workspace.
 
+Canonical active workdir: `/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2`. Start new local work in this v2 checkout, not in the older `../2026_Nornikel_Hackaton` repository unless explicitly requested.
+
 ## Required Read Order
 
 1. `~/.claude/CLAUDE.md`

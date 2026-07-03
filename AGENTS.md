@@ -1,6 +1,7 @@
 # Project Agent Instructions
 
 - This repository is the clean v2 workspace for the official 2026 Nornickel hackathon task `Скажи мне, кто твой шлиф`.
+- We are working on the v2 iteration. The canonical active workdir is `/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2`; start new local work there, not in the older `../2026_Nornikel_Hackaton` checkout unless explicitly requested.
 - Always check `~/.claude/CLAUDE.md`, then this file or `CLAUDE.md`, then `docs/session-sync.md` before meaningful work.
 - Treat `AGENTS.md` and `CLAUDE.md` as the same project instruction source. `CLAUDE.md` should remain a symlink to this file.
 - Keep the v2 scope narrow: optical microscopy only, official ore-task labels, high-resolution tiled inference, masks, metrics, reports, and weak-supervision training utilities.
