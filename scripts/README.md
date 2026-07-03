@@ -4,6 +4,24 @@ Utility CLIs for dataset manifests, pseudo-label generation, training launchers,
 
 Keep heavy GPU training jobs outside Streamlit. Streamlit may emit the exact command, but training should run as a separate script on the selected GPU host.
 
+## Talc Training Dataset
+
+Build the tiled talc/not-talc dataset from the human-reviewed masks in the
+blue-line conversion workspace (manifest is consumable by
+`scripts/train_binary_sulfide.py` unchanged):
+
+```bash
+python3 scripts/build_talc_dataset.py --overwrite
+```
+
+Defaults: `outputs/talc_blue_line_conversion` reviewed masks + clean originals
+from `dataset/Фото руд по сортам. ч1/Оталькованные руды`, 512 px tiles with
+stride 384, per-image stratified train/val split (`--val-samples` forces an
+explicit held-out list for k-fold reruns). Pure-negative tiles from
+ordinary/fine folders stay disabled (`--max-negative-images 0`) until the
+talc-poor audit passes; negative selection dedupes by SHA-256. See
+`docs/plans/35_talc-detector-training.md`.
+
 ## Manual Review Pack
 
 Prepare a balanced B2 review pack with review panels, probability heatmaps,
@@ -23,6 +41,24 @@ If the local Python environment cannot load a SegFormer checkpoint because of a
 `transformers` namespace mismatch, run the same command on the training host
 that produced the checkpoint and rsync `outputs/manual_review/b2_balanced_review_pack`
 back locally.
+
+## Augmentation Review Gallery
+
+Generate a static HTML gallery for visual review of the v2 runtime augmentation
+settings:
+
+```bash
+python3 scripts/generate_augmentation_review_gallery.py \
+  --per-label 1 \
+  --max-side 720 \
+  --overwrite
+```
+
+The default output is `outputs/augmentation_review/index.html`. The gallery uses
+the deconflicted balanced official split, chooses one source image per class,
+renders the original plus deterministic color/tone, acquisition-noise, and
+grinding/polishing artifact variants, and writes the exact settings JSON into
+each review card.
 
 ## Talc Blue-Line Conversion
 

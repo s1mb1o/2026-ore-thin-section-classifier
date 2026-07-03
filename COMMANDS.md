@@ -62,6 +62,45 @@ python3 apps/ore_pipeline_web.py \
   --port 0
 ```
 
+## Ore Pipeline UI Docker Runtime
+
+This Docker path is for running the browser GUI on the Nornickel VM. It defaults
+to the heuristic backend and does not copy the dataset, generated outputs, or
+model checkpoints into the image.
+
+```bash
+docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+```
+
+On the organizer VM, use `sudo docker compose ...` if the `team123` user still
+does not have Docker socket access:
+
+```bash
+sudo docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+```
+
+Open:
+
+```text
+http://<vm-host>:8080/workspace
+```
+
+Use a different host port if `8080` is already occupied:
+
+```bash
+ORE_UI_PUBLIC_PORT=18080 docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+```
+
+The persistent UI workspace is bind-mounted at `./outputs/ore_pipeline_ui`.
+If a checkpoint-capable derived image is used later, mount the existing
+`./models` directory and set:
+
+```bash
+ORE_UI_BACKEND=ml \
+ORE_UI_CHECKPOINT=/app/models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+```
+
 ## Talc Review UI (Preferred Browser/Canvas App)
 
 Directly from the official annotated folder:

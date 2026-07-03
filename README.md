@@ -27,6 +27,7 @@ docs/
   plans/      # selected implementation plans
   specs/      # official requirement mapping
   notes/      # selected source/research notes
+  ui/v2/      # canonical v2 UI specs, plans, notes, and backlog
 apps/         # local browser/canvas and Streamlit QA tools
 scripts/      # dataset and training utilities
 src/ore_classifier/
@@ -50,8 +51,9 @@ The source manifest in the old repository verified `1236/1236` files and about `
 
 - `docs/plans/25_standalone-ore-classifier-project.md`
 - `docs/plans/26_weak-supervision-sulfide-binary-model.md`
-- `docs/plans/28_ore-pipeline-ui.md`
-- `docs/notes/talc-blue-line-conversion.md`
+- `docs/ui/v2/README.md`
+- `docs/ui/v2/plans/28_ore-pipeline-ui.md`
+- `docs/ui/v2/notes/talc-blue-line-conversion.md`
 - `docs/specs/official-tz-solution-map.ru.md`
 - `docs/official/Скажи мне кто твой шлиф.md`
 - `docs/cards/binary-sulfide-model-card.md`
@@ -75,6 +77,15 @@ python3 apps/ore_pipeline_web.py \
 The default UI backend is heuristic for local smoke reliability. Use
 `--backend ml --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt`
 when the full ML environment is active.
+
+For the Nornickel VM GUI runtime, use the Docker/Compose wrapper:
+
+```bash
+docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+```
+
+Then open `http://<vm-host>:8080/workspace`. The image defaults to the
+heuristic backend and persists UI state under `outputs/ore_pipeline_ui`.
 
 ### Talc Blue-Line Conversion And QA
 

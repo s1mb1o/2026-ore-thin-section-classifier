@@ -11,11 +11,23 @@ python3 apps/ore_pipeline_web.py \
 ```
 
 The ore pipeline app accepts PNG, JPEG, TIFF, and RAW-extension uploads, builds
-display previews for large images, applies illumination normalization,
-denoising, contrast correction, and panorama scaling presets, creates immutable
-run artifacts, shows original/preprocessed/sulfide/final/side-by-side views,
-exports metrics CSV/PDF reports, supports `Fix me` mask edits, and creates a new
-derived run for every `Fix and Restart`.
+display previews for large images, optionally applies deterministic
+geometry-preserving runtime augmentation before preprocessing, including
+color/tone shifts, acquisition noise, and grinding/polishing artifacts such as
+scratches, polishing haze, and pits/dust specks. It applies illumination
+normalization, denoising, contrast correction, and panorama scaling presets,
+edits curated metadata through `Edit Metadata...`, creates immutable run
+artifacts, shows original/augmented/preprocessed/sulfide/final/side-by-side
+views, exports metrics CSV/PDF reports, supports `Fix me` mask edits, and
+creates a new derived run for every `Fix and Restart`. When curated metadata
+contains a calibrated positive `microns_per_pixel` or `pixel_size_um`, the
+result metrics table and CSV export include pixel area, physical area, and scale
+provenance; without calibrated scale metadata, physical area fields stay empty.
+
+The same app includes the v2 `Batch` page at `/batch`: add multiple images,
+edit per-image metadata, share one preprocessing/augmentation setup across the
+group, run images sequentially into separate immutable runs, monitor each card's
+progress, and load any child run back into the normal result viewer.
 
 Implemented talc review app:
 
