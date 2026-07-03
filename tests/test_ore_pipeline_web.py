@@ -6,12 +6,14 @@ import http.client
 import io
 import json
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -21,11 +23,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
+import apps.ore_pipeline_web as ore_pipeline_web  # noqa: E402
 from apps.ore_pipeline_web import (  # noqa: E402
+    ApiError,
     OrePipelineHTTPServer,
     OrePipelineStore,
     RunCancelled,
     build_pdf_report_pages,
+    gpu_status_payload,
     load_font,
     render_html_page,
     text_width,
@@ -133,6 +138,37 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertTrue((self.store.uploads_dir / first["upload_id"] / "upload.json").exists())
         self.assertTrue((self.store.uploads_dir / second["upload_id"] / "upload.json").exists())
 
+    def test_path_upload_hashes_once_and_reuses_metadata_sha1(self) -> None:
+        with mock.patch("apps.ore_pipeline_web.file_sha1", wraps=ore_pipeline_web.file_sha1) as hashed:
+            upload = self.store.register_upload_from_path(self.image_path)
+
+        self.assertEqual(hashed.call_count, 1)
+        self.assertEqual(upload["sha1"], ore_pipeline_web.file_sha1(self.image_path))
+        self.assertEqual(upload["raw_metadata"]["sha1"], upload["sha1"])
+
+    def test_large_upload_defers_full_size_preprocessing_artifact(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        with mock.patch("apps.ore_pipeline_web.FULL_SIZE_PREPROCESS_MAX_PIXELS", 1000):
+            preprocessed = self.store.prepare_upload(
+                upload["upload_id"],
+                {
+                    "illumination_normalization": True,
+                    "denoise": True,
+                    "contrast_correction": True,
+                    "panorama_scaling": True,
+                },
+            )
+            run = self.store.start_run(upload["upload_id"], preprocessed["preprocess"]["preset"], run_async=False)
+
+        self.assertTrue(preprocessed["preprocess"]["full_size_processing_deferred"])
+        self.assertNotIn("preprocessed_full_path", preprocessed["preprocess"])
+        with Image.open(preprocessed["preprocess"]["preprocessed_path"]) as image:
+            self.assertEqual(image.size, (128, 96))
+        self.assertIn("preprocessed", preprocessed["display"])
+
+        self.assertEqual(run["status"], "complete")
+        self.assertNotIn("preprocessed_full_path", run["input"])
+
     def test_upload_preprocess_run_and_download_artifacts(self) -> None:
         upload = self.store.register_upload_from_path(self.image_path)
         self.assertEqual(upload["width"], 160)
@@ -184,6 +220,10 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertEqual(image.size, (128, 96))
         self.assertIn("sulfide", run["masks"])
         self.assertIn("ordinary_overlay", run["display"])
+        self.assertEqual(run["runtime"]["backend"], "heuristic")
+        self.assertIsNone(run["runtime"]["checkpoints"]["binary_sulfide"])
+        self.assertEqual(run["runtime"]["models"]["binary_sulfide"]["backend"], "heuristic")
+        self.assertTrue((self.store.runs_dir / run["run_id"] / "reports/runtime.json").exists())
 
         history = self.store.list_runs()["runs"]
         self.assertEqual(len(history), 1)
@@ -220,7 +260,9 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertTrue(files_by_path["input/preprocessed.png"]["is_image"])
         self.assertEqual(files_by_path["input/preprocessed.png"]["width"], 128)
         self.assertEqual(files_by_path["input/preprocessed.png"]["height"], 96)
+        self.assertTrue(files_by_path["input/preprocessed.png"]["view_url"].startswith("/artifacts/"))
         self.assertIn("reports/ore_summary.json", files_by_path)
+        self.assertIn("reports/runtime.json", files_by_path)
         self.assertFalse(files_by_path["reports/ore_summary.json"]["is_image"])
         self.assertNotIn("reports/run_artifacts.zip", files_by_path)
 
@@ -231,6 +273,7 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("run.json", names)
         self.assertIn("input/preprocessed.png", names)
         self.assertIn("reports/ore_summary.json", names)
+        self.assertIn("reports/runtime.json", names)
         self.assertNotIn("reports/run_artifacts.zip", names)
 
         server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
@@ -247,6 +290,17 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertEqual(payload["run_id"], run["run_id"])
             http_files = {file["path"]: file for file in payload["files"]}
             self.assertEqual(http_files["input/preprocessed.png"]["width"], 128)
+            self.assertTrue(http_files["run.json"]["view_url"].startswith("/artifacts/"))
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", http_files["run.json"]["view_url"])
+            response = connection.getresponse()
+            body = response.read()
+            content_type = response.getheader("Content-Type") or ""
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertIn("application/json", content_type)
+            self.assertIn(b'"run_id"', body)
 
             connection = http.client.HTTPConnection(host, port, timeout=5)
             connection.request("GET", f"/api/runs/{run['run_id']}/artifacts.zip")
@@ -264,6 +318,62 @@ class OrePipelineWebTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_runtime_provenance_enriches_ml_checkpoint_summary(self) -> None:
+        checkpoint = self.root / "ml_best.pt"
+        checkpoint.write_bytes(b"fake")
+        run_dir = self.store.runs_dir / "runtime_probe"
+        (run_dir / "ml_pipeline/binary_sulfide").mkdir(parents=True)
+        (run_dir / "ml_pipeline").mkdir(parents=True, exist_ok=True)
+        (run_dir / "ml_pipeline/binary_sulfide/summary.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "binary-sulfide-inference-v0.2",
+                    "checkpoint": str(checkpoint),
+                    "checkpoint_meta": {
+                        "model": "segformer_b2",
+                        "epoch": 17,
+                        "best_iou_sulfide": 0.97,
+                        "state_dict_compatibility": "segformer_transformers_namespace_remap",
+                    },
+                    "device": "mps",
+                    "tile_size": 1024,
+                    "stride": 768,
+                    "threshold": 0.5,
+                    "tiles": 8,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "ml_pipeline/pipeline_summary.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "ore-pipeline-run-v0.2",
+                    "image": "input/preprocessed.png",
+                    "talc_source": "auto_candidate",
+                    "rule_config": {"ordinary_component_max_area_px": 1000},
+                }
+            ),
+            encoding="utf-8",
+        )
+        metadata = {
+            "run_id": "runtime_probe",
+            "backend": "ml",
+            "checkpoint": str(checkpoint),
+            "completed_at": "2026-07-03T00:00:00+00:00",
+            "reports": {},
+        }
+
+        runtime = self.store._finalize_runtime_provenance(metadata, run_dir)
+
+        self.assertEqual(runtime["backend"], "ml")
+        self.assertEqual(runtime["checkpoints"]["binary_sulfide"], str(checkpoint.resolve()))
+        self.assertEqual(runtime["models"]["binary_sulfide"]["checkpoint_meta"]["model"], "segformer_b2")
+        self.assertEqual(runtime["models"]["binary_sulfide"]["device"], "mps")
+        self.assertEqual(runtime["models"]["talc"]["backend"], "auto_candidate")
+        self.assertEqual(runtime["models"]["final_segmentation"]["backend"], "component_rules")
+        self.assertEqual(metadata["reports"]["runtime_json"], str(run_dir / "reports/runtime.json"))
+        self.assertTrue((run_dir / "reports/runtime.json").exists())
 
     def test_panorama_scaling_uses_explicit_bound_or_factor(self) -> None:
         upload = self.store.register_upload_from_path(self.image_path)
@@ -344,6 +454,7 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertFalse(run["preprocess"]["preset"]["preprocessing_enabled"])
         self.assertNotIn("preprocessed", run["display"])
         self.assertIn("original", run["display"])
+        self.assertIn("non_sulfide_base", run["display"])
         self.assertIn("sulfide_overlay", run["display"])
 
     def test_upload_artifact_mask_is_used_by_next_run(self) -> None:
@@ -679,12 +790,20 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertGreaterEqual(payload["history"]["history_size_bytes"], 0)
         self.assertEqual(payload["history"]["run_status_counts"].get(run["status"]), 1)
         self.assertEqual(payload["app"]["backend"], "heuristic")
+        self.assertIn("logs", payload)
+        self.assertGreaterEqual(len(payload["logs"]["system"]), 1)
 
         server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         host, port = server.server_address[:2]
         try:
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/workspace")
+            response = connection.getresponse()
+            response.read()
+            connection.close()
+
             connection = http.client.HTTPConnection(host, port, timeout=5)
             connection.request("GET", "/api/status")
             response = connection.getresponse()
@@ -693,10 +812,90 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(api_payload["schema_version"], "ore-pipeline-status-v0.1")
             self.assertEqual(api_payload["history"]["runs_total"], payload["history"]["runs_total"])
+            self.assertTrue(any(entry.get("path") == "/workspace" for entry in api_payload["logs"]["access"]))
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_status_payload_reports_foreground_operations(self) -> None:
+        operation_id = self.store.begin_foreground_operation(
+            "preprocess",
+            "preparing upload",
+            path="/api/uploads/upload_demo/preprocess",
+            upload_id="upload_demo",
+        )
+        try:
+            payload = self.store.status_payload()
+            operations = payload["history"]["active_operations"]
+
+            self.assertEqual(len(operations), 1)
+            self.assertEqual(operations[0]["operation_id"], operation_id)
+            self.assertEqual(operations[0]["kind"], "preprocess")
+            self.assertEqual(operations[0]["label"], "preparing upload")
+            self.assertEqual(operations[0]["upload_id"], "upload_demo")
+            self.assertGreaterEqual(operations[0]["elapsed_seconds"], 0)
+            self.assertTrue(any(check["key"] == "active_jobs" for check in payload["health"]["checks"]))
+            self.assertIn(operation_id, self.store._active_runtime_jobs())
+        finally:
+            self.store.finish_foreground_operation(operation_id)
+
+        payload = self.store.status_payload()
+        self.assertEqual(payload["history"]["active_operations"], [])
+        self.assertNotIn(operation_id, self.store._active_runtime_jobs())
+
+    def test_gpu_status_tolerates_nvidia_smi_na_fields(self) -> None:
+        completed = mock.Mock(stdout="0, NVIDIA GB10, 0, [N/A], [N/A], [N/A]\n")
+        with (
+            mock.patch("apps.ore_pipeline_web.shutil.which", return_value="/usr/bin/nvidia-smi"),
+            mock.patch("apps.ore_pipeline_web.subprocess.run", return_value=completed),
+        ):
+            payload = gpu_status_payload()
+
+        self.assertTrue(payload["available"])
+        device = payload["devices"][0]
+        self.assertEqual(device["name"], "NVIDIA GB10")
+        self.assertEqual(device["utilization_percent"], 0.0)
+        self.assertIsNone(device["memory_total_bytes"])
+        self.assertIsNone(device["memory_used_bytes"])
+        self.assertIsNone(device["memory_used_percent"])
+        self.assertIsNone(device["temperature_c"])
+
+    def test_gpu_status_reports_apple_silicon_metal_gpu_without_nvidia_smi(self) -> None:
+        ore_pipeline_web._apple_gpu_devices.cache_clear()
+        profiler_payload = {
+            "SPDisplaysDataType": [
+                {
+                    "_name": "Apple M2 Max",
+                    "sppci_model": "Apple M2 Max",
+                    "sppci_device_type": "spdisplays_gpu",
+                    "sppci_cores": "38",
+                    "spdisplays_mtlgpufamilysupport": "spdisplays_metal4",
+                    "spdisplays_ndrvs": [{"_name": "Color LCD"}, {"_name": "External"}],
+                }
+            ]
+        }
+        completed = mock.Mock(stdout=json.dumps(profiler_payload))
+        try:
+            with (
+                mock.patch("apps.ore_pipeline_web.sys.platform", "darwin"),
+                mock.patch("apps.ore_pipeline_web.shutil.which", side_effect=lambda name: "/usr/sbin/system_profiler" if name == "system_profiler" else None),
+                mock.patch("apps.ore_pipeline_web.subprocess.run", return_value=completed),
+                mock.patch("apps.ore_pipeline_web._torch_mps_available", return_value=True),
+            ):
+                payload = gpu_status_payload()
+        finally:
+            ore_pipeline_web._apple_gpu_devices.cache_clear()
+
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["source"], "system_profiler")
+        device = payload["devices"][0]
+        self.assertEqual(device["name"], "Apple M2 Max")
+        self.assertEqual(device["backend"], "metal")
+        self.assertTrue(device["mps_available"])
+        self.assertEqual(device["cores"], 38)
+        self.assertEqual(device["displays"], 2)
+        self.assertIsNone(device["utilization_percent"])
 
     def test_batch_creates_sequential_runs_and_persists_item_metadata(self) -> None:
         upload_a = self.store.register_upload_from_path(self.image_path)
@@ -818,12 +1017,80 @@ class OrePipelineWebTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_delete_history_endpoint_removes_runs_and_series_but_keeps_uploads_and_settings(self) -> None:
+        upload_a = self.store.register_upload_from_path(self.image_path)
+        upload_b = self.store.register_upload_from_path(self.image_path_2)
+        standalone = self.store.start_run(upload_a["upload_id"], {"panorama_scaling": False}, run_async=False)
+        batch = self.store.create_batch({"upload_ids": [upload_b["upload_id"]]})
+        completed_batch = self.store.run_batch(
+            batch["batch_id"],
+            {
+                "preprocess": {"preprocessing_enabled": True, "panorama_scaling": False},
+                "augmentation": {"enabled": False},
+            },
+            run_async=False,
+        )
+        child_run_ids = [item["run_id"] for item in completed_batch["items"]]
+        all_run_ids = [standalone["run_id"], *child_run_ids]
+        self.store.save_app_settings({"theme": "dark"})
+
+        for run_id in all_run_ids:
+            self.assertTrue((self.store.runs_dir / run_id / "run.json").exists())
+        self.assertTrue((self.store.batches_dir / completed_batch["batch_id"] / "batch_summary.json").exists())
+        self.assertTrue((self.store.uploads_dir / upload_a["upload_id"] / "upload.json").exists())
+        self.assertTrue(self.store.settings_path.exists())
+
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("DELETE", "/api/history")
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["schema_version"], "ore-pipeline-history-delete-v0.1")
+            self.assertEqual(sorted(payload["removed_run_ids"]), sorted(all_run_ids))
+            self.assertEqual(payload["removed_batch_ids"], [completed_batch["batch_id"]])
+            self.assertEqual(self.store.list_runs()["runs"], [])
+            self.assertEqual(self.store.list_batches()["batches"], [])
+            for run_id in all_run_ids:
+                self.assertFalse((self.store.runs_dir / run_id).exists())
+            self.assertFalse((self.store.batches_dir / completed_batch["batch_id"]).exists())
+            self.assertTrue((self.store.uploads_dir / upload_a["upload_id"] / "upload.json").exists())
+            self.assertTrue((self.store.uploads_dir / upload_b["upload_id"] / "upload.json").exists())
+            self.assertTrue(self.store.settings_path.exists())
+            self.assertEqual(self.store.app_settings()["theme"], "dark")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_delete_history_rejects_active_jobs(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        run = self.store.start_run(upload["upload_id"], {"panorama_scaling": False}, run_async=False)
+        with self.store.lock:
+            self.store.jobs[run["run_id"]] = {"status": "running", "progress": 50}
+
+        with self.assertRaises(ApiError):
+            self.store.delete_history()
+
+        self.assertTrue((self.store.runs_dir / run["run_id"] / "run.json").exists())
+
     def test_app_settings_are_persisted_and_exposed_by_api(self) -> None:
+        fake_checkpoint = self.root / "fake_checkpoint.pt"
+        fake_checkpoint.write_bytes(b"fake checkpoint")
         settings = self.store.save_app_settings(
             {
                 "language": "en",
                 "theme": "dark",
                 "show_tiling": True,
+                "runtime": {
+                    "backend": "ml",
+                    "checkpoint": str(fake_checkpoint),
+                },
                 "preprocess": {
                     "preprocessing_enabled": False,
                     "illumination_normalization": True,
@@ -844,6 +1111,10 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(settings["language"], "en")
         self.assertEqual(settings["theme"], "dark")
         self.assertTrue(settings["show_tiling"])
+        self.assertEqual(settings["runtime"]["backend"], "ml")
+        self.assertEqual(settings["runtime"]["checkpoint"], str(fake_checkpoint.resolve()))
+        self.assertEqual(self.store.backend, "ml")
+        self.assertEqual(self.store.checkpoint, fake_checkpoint.resolve())
         self.assertFalse(settings["preprocess"]["preprocessing_enabled"])
         self.assertEqual(settings["preprocess"]["panorama_scaling_mode"], "scale_factor")
         self.assertEqual(settings["preprocess"]["panorama_max_side_px"], 4096)
@@ -859,6 +1130,9 @@ class OrePipelineWebTest(unittest.TestCase):
             panorama_max_side=128,
             preview_max_sides=(128, 256),
         )
+        self.assertEqual(restarted.backend, "ml")
+        self.assertEqual(restarted.checkpoint, fake_checkpoint.resolve())
+        self.assertEqual(restarted.app_settings()["runtime"]["backend"], "ml")
         self.assertEqual(restarted.app_settings()["metadata_defaults"]["om_instrument"], "scope-1")
         self.assertEqual(restarted.app_settings()["preprocess"]["panorama_scaling_mode"], "scale_factor")
         self.assertEqual(restarted.app_settings()["preprocess"]["panorama_scale_factor"], 0.25)
@@ -875,6 +1149,7 @@ class OrePipelineWebTest(unittest.TestCase):
             connection.close()
             self.assertEqual(response.status, 200)
             self.assertEqual(payload["language"], "en")
+            self.assertEqual(payload["runtime"]["backend"], "ml")
 
             connection = http.client.HTTPConnection(host, port, timeout=5)
             body = json.dumps({"theme": "neon"}).encode("utf-8")
@@ -884,6 +1159,83 @@ class OrePipelineWebTest(unittest.TestCase):
             connection.close()
             self.assertEqual(response.status, 400)
             self.assertIn("settings.theme", payload["error"])
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            body = json.dumps({"runtime": {"backend": "ml", "checkpoint": str(self.root / "missing.pt")}}).encode("utf-8")
+            connection.request("PUT", "/api/settings", body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, 400)
+            self.assertIn("settings.runtime.checkpoint", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_runtime_test_endpoint_checks_heuristic_and_ml_probe(self) -> None:
+        fake_checkpoint = self.root / "fake_checkpoint.pt"
+        fake_checkpoint.write_bytes(b"fake checkpoint")
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+
+        def request_runtime_test(body: dict) -> tuple[int, dict]:
+            raw = json.dumps(body).encode("utf-8")
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request(
+                "POST",
+                "/api/runtime/test",
+                body=raw,
+                headers={"Content-Type": "application/json", "Content-Length": str(len(raw))},
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            return response.status, payload
+
+        try:
+            status, payload = request_runtime_test({"runtime": {"backend": "heuristic"}})
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["backend"], "heuristic")
+            self.assertEqual(payload["status"], "ok")
+
+            with mock.patch("apps.ore_pipeline_web.subprocess.run") as run_probe:
+                run_probe.return_value = subprocess.CompletedProcess(
+                    args=["python"],
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "device": "cpu",
+                            "torch": "test",
+                            "transformers": "test",
+                            "checkpoint_meta": {"model": "resunet", "epoch": 1},
+                            "parameter_count": 123,
+                            "seconds": 0.02,
+                        }
+                    )
+                    + "\n",
+                    stderr="",
+                )
+                status, payload = request_runtime_test({"runtime": {"backend": "ml", "checkpoint": str(fake_checkpoint)}})
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["backend"], "ml")
+            self.assertEqual(payload["details"]["checkpoint_meta"]["model"], "resunet")
+            self.assertEqual(self.store.backend, "heuristic")
+
+            with mock.patch("apps.ore_pipeline_web.subprocess.run") as run_probe:
+                run_probe.return_value = subprocess.CompletedProcess(args=["python"], returncode=1, stdout="", stderr="loader failed")
+                status, payload = request_runtime_test({"runtime": {"backend": "ml", "checkpoint": str(fake_checkpoint)}})
+            self.assertEqual(status, 200)
+            self.assertFalse(payload["ok"])
+            self.assertIn("loader failed", payload["message"])
+
+            status, payload = request_runtime_test({"runtime": {"backend": "ml", "checkpoint": str(self.root / "missing.pt")}})
+            self.assertEqual(status, 400)
+            self.assertIn("settings.runtime.checkpoint", payload["error"])
         finally:
             server.shutdown()
             server.server_close()
@@ -953,6 +1305,80 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(self.store._read_run(run_id)["status"], "canceling")
         with self.assertRaises(RunCancelled):
             self.store._check_cancelled(run_id)
+
+    def test_ml_tile_progress_updates_run_payload(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        prepared = self.store.prepare_upload(upload["upload_id"], {"panorama_scaling": False})
+        run_id = "run_tile_progress_test"
+        run_dir = self.store.runs_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        self.store._initialize_run_from_upload(run_id, run_dir, prepared, prepared["preprocess"]["preset"])
+        with self.store.lock:
+            self.store.jobs[run_id] = {
+                "progress": 18,
+                "status": "running",
+                "stage": "running ML tiled inference",
+                "started_at": time.time(),
+                "eta_seconds": None,
+                "cancel_requested": False,
+            }
+        progress_path = run_dir / "ml_pipeline/binary_sulfide/progress.json"
+        progress_path.parent.mkdir(parents=True, exist_ok=True)
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "binary-sulfide-inference-progress-v0.1",
+                    "stage": "running",
+                    "tiles_processed": 3,
+                    "tiles_total": 8,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.store._update_ml_tile_progress(run_id, progress_path)
+        payload = self.store.run_payload(run_id)
+
+        self.assertEqual(payload["tile_progress"]["tiles_processed"], 3)
+        self.assertEqual(payload["tile_progress"]["tiles_total"], 8)
+        self.assertIn("3/8 tiles", payload["stage"])
+        self.assertGreater(payload["progress"], 18)
+        self.assertLess(payload["progress"], 76)
+
+    def test_list_runs_overlays_active_job_progress(self) -> None:
+        upload = self.store.register_upload_from_path(self.image_path)
+        prepared = self.store.prepare_upload(upload["upload_id"], {"panorama_scaling": False})
+        run_id = "run_history_progress_test"
+        run_dir = self.store.runs_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        self.store._initialize_run_from_upload(run_id, run_dir, prepared, prepared["preprocess"]["preset"])
+        with self.store.lock:
+            self.store.jobs[run_id] = {
+                "progress": 43,
+                "status": "running",
+                "stage": "running ML tiled inference (5/12 tiles)",
+                "started_at": time.time(),
+                "eta_seconds": 30,
+                "cancel_requested": False,
+                "tile_progress": {
+                    "schema_version": "ore-pipeline-tile-progress-v0.1",
+                    "stage": "running",
+                    "tiles_processed": 5,
+                    "tiles_total": 12,
+                    "progress_fraction": 5 / 12,
+                },
+            }
+
+        history = self.store.list_runs()["runs"]
+
+        self.assertEqual(history[0]["run_id"], run_id)
+        self.assertEqual(history[0]["status"], "running")
+        self.assertEqual(history[0]["progress"], 43)
+        self.assertEqual(history[0]["stage"], "running ML tiled inference (5/12 tiles)")
+        self.assertEqual(history[0]["eta_seconds"], 30)
+        self.assertEqual(history[0]["tile_progress"]["tiles_processed"], 5)
+        self.assertEqual(history[0]["tile_progress"]["tiles_total"], 12)
 
     def test_run_payload_rehydrates_artifact_urls_after_store_restart(self) -> None:
         upload = self.store.register_upload_from_path(self.image_path)
@@ -1067,6 +1493,17 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("Просмотреть файлы", html)
         self.assertIn("View files", html)
         self.assertIn("Download ZIP", html)
+        self.assertIn("runFilesHeaderAction", html)
+        self.assertIn("runFilesViewAction", html)
+        self.assertIn("run-files-sort", html)
+        self.assertIn("runFilesSortHeader('path'", html)
+        self.assertIn("runFilesSortHeader('kind'", html)
+        self.assertIn("runFilesSortHeader('size'", html)
+        self.assertIn("runFilesSortHeader('image'", html)
+        self.assertIn("data-run-files-sort", html)
+        self.assertIn("function compareRunFiles", html)
+        self.assertIn("state.runFilesSort", html)
+        self.assertIn("target=\"_blank\"", html)
         self.assertIn("/files", html)
         self.assertIn("/artifacts.zip", html)
         self.assertIn("function openRunFilesDialog()", html)
@@ -1110,6 +1547,9 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("function runIsPrepared(run)", html)
         self.assertIn("function runCanBePreparedFromApply(run)", html)
         self.assertIn("function clearResultsPanel()", html)
+        self.assertIn("function clearRunResultsForStart(preparedRun = null)", html)
+        self.assertIn("const preparedRun = runIsPrepared(state.run) ? state.run : null;", html)
+        self.assertLess(html.index("clearRunResultsForStart(preparedRun);"), html.index("const response = await fetch(startUrl"))
         self.assertIn("/prepare", html)
         self.assertIn("/start", html)
         self.assertIn("changed_step: changedStep", html)
@@ -1193,11 +1633,19 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn('id="statusView"', html)
         self.assertIn('id="apiTab"', html)
         self.assertIn('id="apiView"', html)
+        utility_tabs = html.split('class="tabs utility-tabs"', 1)[1].split('</nav>', 1)[0]
+        self.assertIn('id="statusTab"', utility_tabs)
+        self.assertNotIn("hidden-status-tab", utility_tabs)
+        self.assertNotIn('aria-hidden="true"', utility_tabs)
+        self.assertLess(utility_tabs.index('id="statusTab"'), utility_tabs.index('id="apiTab"'))
+        self.assertLess(utility_tabs.index('id="apiTab"'), utility_tabs.index('id="settingsTab"'))
         self.assertIn('id="apiDocsNav"', html)
         self.assertIn('id="apiDocsList"', html)
         self.assertIn('id="statusCards"', html)
         self.assertIn('id="statusHealthTable"', html)
         self.assertIn('id="statusStorageTable"', html)
+        self.assertIn('id="statusSystemLog"', html)
+        self.assertIn('id="statusAccessLog"', html)
         self.assertIn('id="refreshStatusBtn"', html)
         self.assertIn("const API_REFERENCE", html)
         self.assertIn("REST API documentation for the v2 UI", html)
@@ -1221,19 +1669,32 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("/api/batches/{batch_id}/run", html)
         self.assertIn("/api/batches/{batch_id}/cancel", html)
         self.assertIn("/api/batches/{batch_id}/results.csv", html)
+        self.assertIn("/api/history", html)
         self.assertIn('id="settingsLanguage"', html)
         self.assertIn('id="settingsTheme"', html)
         self.assertIn('id="settingsShowTiling"', html)
+        self.assertIn('id="settingsBackend"', html)
+        self.assertIn('id="settingsCheckpoint"', html)
+        self.assertIn('id="testRuntimeBtn"', html)
+        self.assertIn('id="runtimeTestStatus"', html)
+        self.assertIn('id="removeAllHistoryBtn"', html)
         self.assertIn('id="settingsPreprocessingEnabled"', html)
         self.assertIn('id="settingsMetaProject"', html)
         self.assertIn('id="saveSettingsBtn"', html)
         self.assertIn('id="resetSettingsBtn"', html)
         self.assertIn("/api/settings", html)
         self.assertIn("/api/status", html)
+        self.assertIn("/api/runtime/test", html)
         self.assertIn("function loadAppSettings()", html)
-        self.assertIn("function loadSystemStatus()", html)
+        self.assertIn("function testRuntimeFromPage()", html)
+        self.assertIn("function removeAllHistoryFromSettings()", html)
+        self.assertIn("function loadSystemStatus(options = {})", html)
         self.assertIn("function renderSystemStatus(payload", html)
+        self.assertIn("const backendSubvalue = app.backend === 'ml' ? (app.checkpoint || '') : ''", html)
+        self.assertIn("function renderStatusLogs(logs)", html)
         self.assertIn("function saveSettingsObject(settings", html)
+        self.assertIn("settingsRemoveAllHistory", html)
+        self.assertIn("settingsHistoryRemoved", html)
         self.assertIn("ore-pipeline-app-settings-v0.1", html)
         self.assertIn('value="ru"', html)
         self.assertIn("Русский", html)
@@ -1332,6 +1793,16 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("state.historyMode === 'single'", html)
         self.assertIn("fetch('/api/batches')", html)
         self.assertIn("function renderHistoryThumbnail(run)", html)
+        self.assertIn("function renderHistoryProgress(run)", html)
+        self.assertIn("function runProgressPercent(run)", html)
+        self.assertIn("history-progress-bar", html)
+        self.assertIn("function statusActiveJobsText(history)", html)
+        self.assertIn("function setStatusPolling(enabled)", html)
+        self.assertIn("function statusGpuDeviceDetails(device)", html)
+        self.assertIn("statusActiveOperations", html)
+        self.assertIn("active_operations", html)
+        self.assertIn("statusGpuMetal", html)
+        self.assertIn("statusGpuMpsAvailable", html)
         self.assertIn("function openHistoryPreview(url, title)", html)
         self.assertIn("history-row-media", html)
         self.assertIn("history-row-load", html)
@@ -1345,6 +1816,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("function removeRun(runId)", html)
         self.assertIn("data-delete-run", html)
         self.assertIn("historyFilename", html)
+        self.assertIn("historyProgress", html)
+        self.assertIn("historyTileProgress", html)
         self.assertIn("historyOreClassification", html)
         self.assertIn("historyNonSulfides", html)
         self.assertIn("historyRemove", html)
@@ -1356,8 +1829,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("window.history.pushState({page: 'history', historyMode: state.historyMode}, '', slug)", html)
         self.assertIn("function setPage(page, options = {})", html)
         self.assertIn("document.body.dataset.page = nextPage", html)
-        self.assertIn('body[data-page="history"] aside', html)
-        self.assertIn('body[data-page="api"] aside', html)
+        self.assertIn('body[data-page="history"] main > aside', html)
+        self.assertIn('body[data-page="api"] main > aside', html)
         self.assertIn("function resetWindowScroll()", html)
         self.assertIn("resetWindowScroll();", html)
         self.assertIn("window.history.pushState", html)
@@ -1476,8 +1949,10 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("function classVisible(key)", html)
         self.assertIn("function syncClassVisibilityControls()", html)
         self.assertIn("if (layer === 'sulfide')", html)
-        self.assertIn("showImage: classVisible('showNonSulfide')", html)
-        self.assertIn("if (classVisible('showSulfide'))", html)
+        self.assertIn("const showSulfide = classVisible('showSulfide')", html)
+        self.assertIn("const showNonSulfide = classVisible('showNonSulfide')", html)
+        self.assertIn("showSulfide ? baseLayerKey(display) : 'non_sulfide_base'", html)
+        self.assertIn("if (showSulfide)", html)
         self.assertIn("if (classVisible('showSulfideArtifacts'))", html)
         self.assertIn("if (classVisible('showFinalArtifacts'))", html)
         self.assertIn("showImage: classVisible('showBackground')", html)

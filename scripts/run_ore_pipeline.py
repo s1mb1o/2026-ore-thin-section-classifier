@@ -48,6 +48,7 @@ def main() -> int:
     )
     parser.add_argument("--talc-min-area-px", type=int, default=320)
     parser.add_argument("--preview-max-side", type=int, default=1800)
+    parser.add_argument("--progress-json", type=Path, default=None)
     args = parser.parse_args()
 
     if args.talc_mask is not None and args.auto_talc_candidate:
@@ -57,30 +58,31 @@ def main() -> int:
     inference_dir = args.out_dir / "binary_sulfide"
     analysis_dir = args.out_dir / "ore_analysis"
     talc_dir = args.out_dir / "talc_candidate"
-    run(
-        [
-            sys.executable,
-            "scripts/infer_binary_sulfide.py",
-            "--image",
-            str(args.image),
-            "--checkpoint",
-            str(args.checkpoint),
-            "--out-dir",
-            str(inference_dir),
-            "--tile-size",
-            str(args.tile_size),
-            "--stride",
-            str(args.stride),
-            "--batch-size",
-            str(args.batch_size),
-            "--device",
-            args.device,
-            "--threshold",
-            str(args.threshold),
-            "--preview-max-side",
-            str(args.preview_max_side),
-        ]
-    )
+    inference_cmd = [
+        sys.executable,
+        "scripts/infer_binary_sulfide.py",
+        "--image",
+        str(args.image),
+        "--checkpoint",
+        str(args.checkpoint),
+        "--out-dir",
+        str(inference_dir),
+        "--tile-size",
+        str(args.tile_size),
+        "--stride",
+        str(args.stride),
+        "--batch-size",
+        str(args.batch_size),
+        "--device",
+        args.device,
+        "--threshold",
+        str(args.threshold),
+        "--preview-max-side",
+        str(args.preview_max_side),
+    ]
+    if args.progress_json is not None:
+        inference_cmd.extend(["--progress-json", str(args.progress_json)])
+    run(inference_cmd)
 
     talc_mask_path: Path | None = None
     talc_paths: dict[str, str] = {}

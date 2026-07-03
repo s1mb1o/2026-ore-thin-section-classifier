@@ -39,6 +39,7 @@ def main() -> int:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--preview-max-side", type=int, default=2048)
+    parser.add_argument("--progress-json", type=Path, default=None)
     parser.add_argument("--save-full-overlay", action="store_true")
     args = parser.parse_args()
 
@@ -54,6 +55,13 @@ def main() -> int:
     width, height = image.size
     tiles = iter_tiles(width=width, height=height, tile_size=args.tile_size, stride=args.stride)
     weight = tile_weight(args.tile_size)
+    write_inference_progress(
+        args.progress_json,
+        tiles_processed=0,
+        tiles_total=len(tiles),
+        stage="initialized",
+        started=started,
+    )
 
     with tempfile.TemporaryDirectory(prefix="sulfide_infer_", dir=str(args.out_dir)) as tmp:
         prob_sum = np.memmap(Path(tmp) / "prob_sum.dat", mode="w+", dtype=np.float32, shape=(height, width))
@@ -73,6 +81,13 @@ def main() -> int:
                     prob_sum[y_slice, x_slice] += prob[:valid_h, :valid_w] * tile_weight_valid
                     weight_sum[y_slice, x_slice] += tile_weight_valid
                     processed += 1
+                write_inference_progress(
+                    args.progress_json,
+                    tiles_processed=processed,
+                    tiles_total=len(tiles),
+                    stage="running",
+                    started=started,
+                )
 
         prob = np.asarray(prob_sum / np.maximum(weight_sum, 1e-6), dtype=np.float32)
         confidence = np.clip(prob * 255.0, 0, 255).astype(np.uint8)
@@ -131,8 +146,40 @@ def main() -> int:
         },
     }
     (args.out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+    write_inference_progress(
+        args.progress_json,
+        tiles_processed=processed,
+        tiles_total=len(tiles),
+        stage="complete",
+        started=started,
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
     return 0
+
+
+def write_inference_progress(
+    path: Path | None,
+    *,
+    tiles_processed: int,
+    tiles_total: int,
+    stage: str,
+    started: float,
+) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "binary-sulfide-inference-progress-v0.1",
+        "stage": stage,
+        "tiles_processed": int(tiles_processed),
+        "tiles_total": int(tiles_total),
+        "progress_fraction": float(tiles_processed / max(tiles_total, 1)),
+        "seconds": round(time.time() - started, 3),
+        "updated_at": time.time(),
+    }
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def preprocess_tile(image: Image.Image, tile: Tile) -> torch.Tensor:

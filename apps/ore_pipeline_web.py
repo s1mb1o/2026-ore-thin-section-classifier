@@ -17,10 +17,12 @@ import threading
 import time
 import urllib.parse
 import zipfile
+from collections import deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -62,8 +64,12 @@ DEFAULT_WORKSPACE_DIR = ROOT / "outputs/ore_pipeline_ui"
 DEFAULT_CHECKPOINT = ROOT / "models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 220 * 1024 * 1024
+LOG_ENTRY_LIMIT = 300
+STATUS_LOG_LIMIT = 80
+RUNTIME_TEST_TIMEOUT_SECONDS = 90
 DISPLAY_TILE_SIZE = 1024
 DISPLAY_TILE_STRIDE = 768
+FULL_SIZE_PREPROCESS_MAX_PIXELS = 24_000_000
 RAW_EXTENSIONS = {".raw", ".dng", ".cr2", ".cr3", ".nef", ".arw", ".orf", ".rw2", ".raf", ".pef", ".srw"}
 IMAGE_EXTENSIONS = RAW_EXTENSIONS | {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 CLASS_COLORS = {
@@ -108,6 +114,9 @@ CURATED_METADATA_SCHEMA_VERSION = "ore-pipeline-curated-metadata-v0.1"
 APP_SETTINGS_SCHEMA_VERSION = "ore-pipeline-app-settings-v0.1"
 BATCH_SCHEMA_VERSION = "ore-pipeline-batch-v0.1"
 BATCH_ITEM_SCHEMA_VERSION = "ore-pipeline-batch-item-v0.1"
+RUNTIME_PROVENANCE_SCHEMA_VERSION = "ore-pipeline-runtime-provenance-v0.1"
+ACTIVE_RUN_STATUSES = {"queued", "running", "canceling"}
+RUN_TERMINAL_STATUSES = {"complete", "failed", "canceled"}
 BATCH_ACTIVE_STATUSES = {"queued", "running", "canceling"}
 BATCH_TERMINAL_STATUSES = {"complete", "failed", "partial", "canceled"}
 PANORAMA_SCALING_MODE_MAX_SIDE = "max_side"
@@ -124,6 +133,10 @@ DEFAULT_APP_SETTINGS = {
     "language": "ru",
     "theme": "system",
     "show_tiling": False,
+    "runtime": {
+        "backend": "heuristic",
+        "checkpoint": str(DEFAULT_CHECKPOINT.resolve()) if DEFAULT_CHECKPOINT.exists() else "",
+    },
     "preprocess": {
         "preprocessing_enabled": True,
         "illumination_normalization": True,
@@ -198,7 +211,7 @@ def file_sha1(path: Path, chunk_size: int = 4 * 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def load_image_pil(path: Path) -> Image.Image:
+def load_image_pil(path: Path, max_side: int | None = None) -> Image.Image:
     suffix = path.suffix.lower()
     if suffix in RAW_EXTENSIONS:
         try:
@@ -216,7 +229,14 @@ def load_image_pil(path: Path) -> Image.Image:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"failed to decode RAW image: {exc}") from exc
     try:
         with Image.open(path) as image:
+            if max_side and max(image.size) > max_side:
+                try:
+                    image.draft("RGB", (int(max_side), int(max_side)))
+                except Exception:
+                    pass
             image = ImageOps.exif_transpose(image)
+            if max_side and max(image.size) > max_side:
+                image.thumbnail((int(max_side), int(max_side)), Image.Resampling.BILINEAR)
             return image.convert("RGB")
     except Exception as exc:  # noqa: BLE001 - report unsupported image to the UI.
         raise ApiError(HTTPStatus.BAD_REQUEST, f"failed to decode image: {exc}") from exc
@@ -232,7 +252,10 @@ def image_dimensions(path: Path) -> tuple[int, int]:
 
 
 def downscaled_image(path: Path, max_side: int | None = None, size: tuple[int, int] | None = None) -> Image.Image:
-    image = load_image_pil(path)
+    decode_max_side = max_side
+    if decode_max_side is None and size is not None:
+        decode_max_side = max(size)
+    image = load_image_pil(path, max_side=decode_max_side)
     return scaled_image_copy(image, max_side=max_side, size=size)
 
 
@@ -409,6 +432,15 @@ def json_safe_value(value: Any) -> Any:
     return str(value)
 
 
+def compact_text(value: Any, max_chars: int = 4000) -> str:
+    text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+    if len(text) <= max_chars:
+        return text
+    head_chars = max_chars // 2
+    tail_chars = max_chars - head_chars - 20
+    return f"{text[:head_chars]}\n...[truncated]...\n{text[-tail_chars:]}"
+
+
 def default_app_settings() -> dict[str, Any]:
     return json.loads(json.dumps(DEFAULT_APP_SETTINGS))
 
@@ -473,7 +505,35 @@ def normalize_settings_preprocess(payload: Any, base: dict[str, Any] | None = No
     }
 
 
-def normalize_app_settings_payload(payload: Any, base: dict[str, Any] | None = None) -> dict[str, Any]:
+def normalize_settings_runtime(payload: Any, base: dict[str, Any] | None = None, *, validate_checkpoint: bool = False) -> dict[str, Any]:
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime must be an object")
+    fallback = base if isinstance(base, dict) else DEFAULT_APP_SETTINGS["runtime"]
+    backend = str(payload.get("backend", fallback.get("backend", "heuristic")) or "heuristic").lower()
+    if backend not in {"heuristic", "ml"}:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime.backend must be heuristic or ml")
+    checkpoint_value = str(payload.get("checkpoint", fallback.get("checkpoint", "")) or "").strip()
+    if checkpoint_value:
+        checkpoint_path = Path(checkpoint_value).expanduser()
+        if not checkpoint_path.is_absolute():
+            checkpoint_path = ROOT / checkpoint_path
+        checkpoint_value = str(checkpoint_path.resolve())
+    if backend == "ml":
+        if not checkpoint_value:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime.checkpoint is required for ml backend")
+        if validate_checkpoint and not Path(checkpoint_value).exists():
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"settings.runtime.checkpoint does not exist: {checkpoint_value}")
+    return {"backend": backend, "checkpoint": checkpoint_value}
+
+
+def normalize_app_settings_payload(
+    payload: Any,
+    base: dict[str, Any] | None = None,
+    *,
+    validate_runtime: bool = False,
+) -> dict[str, Any]:
     if payload is None:
         payload = {}
     if not isinstance(payload, dict):
@@ -481,6 +541,8 @@ def normalize_app_settings_payload(payload: Any, base: dict[str, Any] | None = N
     fallback = default_app_settings()
     if isinstance(base, dict):
         fallback.update({key: base[key] for key in ("language", "theme", "show_tiling") if key in base})
+        if isinstance(base.get("runtime"), dict):
+            fallback["runtime"] = normalize_settings_runtime(base["runtime"])
         if isinstance(base.get("preprocess"), dict):
             fallback["preprocess"] = normalize_settings_preprocess(base["preprocess"])
         if isinstance(base.get("metadata_defaults"), dict):
@@ -505,6 +567,11 @@ def normalize_app_settings_payload(payload: Any, base: dict[str, Any] | None = N
         "language": language,
         "theme": theme,
         "show_tiling": bool(payload.get("show_tiling", fallback["show_tiling"])),
+        "runtime": normalize_settings_runtime(
+            payload.get("runtime", fallback["runtime"]),
+            fallback["runtime"],
+            validate_checkpoint=validate_runtime,
+        ),
         "preprocess": normalize_settings_preprocess(payload.get("preprocess", fallback["preprocess"]), fallback["preprocess"]),
         "metadata_defaults": {
             str(key): json_safe_value(value)
@@ -562,7 +629,14 @@ def panorama_scaling_target(
     }
 
 
-def extract_image_raw_metadata(path: Path, *, original_name: str, width: int, height: int) -> dict[str, Any]:
+def extract_image_raw_metadata(
+    path: Path,
+    *,
+    original_name: str,
+    width: int,
+    height: int,
+    sha1: str | None = None,
+) -> dict[str, Any]:
     stat = path.stat()
     metadata: dict[str, Any] = {
         "schema_version": "ore-pipeline-raw-image-metadata-v0.1",
@@ -570,7 +644,7 @@ def extract_image_raw_metadata(path: Path, *, original_name: str, width: int, he
         "stored_path": str(path),
         "extension": path.suffix.lower(),
         "file_size_bytes": int(stat.st_size),
-        "sha1": file_sha1(path),
+        "sha1": sha1 or file_sha1(path),
         "width": int(width),
         "height": int(height),
         "warnings": [],
@@ -667,14 +741,17 @@ def apply_preprocessing(image: Image.Image, preset: dict[str, Any]) -> Image.Ima
     return result
 
 
-def save_image(path: Path, image: Image.Image) -> None:
+def save_image(path: Path, image: Image.Image, *, optimize: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    png_kwargs: dict[str, Any] = {"optimize": optimize}
+    if not optimize:
+        png_kwargs["compress_level"] = 1
     if image.mode == "RGBA":
-        image.save(path, format="PNG", optimize=True)
+        image.save(path, format="PNG", **png_kwargs)
     elif image.mode == "L":
-        image.save(path, format="PNG", optimize=True)
+        image.save(path, format="PNG", **png_kwargs)
     else:
-        image.convert("RGB").save(path, format="PNG", optimize=True)
+        image.convert("RGB").save(path, format="PNG", **png_kwargs)
 
 
 def save_preview_pyramid(
@@ -687,23 +764,29 @@ def save_preview_pyramid(
     prefer_png: bool = False,
 ) -> list[dict[str, Any]]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    previews: list[dict[str, Any]] = []
+    generated: list[dict[str, Any]] = []
     seen: set[tuple[int, int]] = set()
-    for max_side in sorted(max_sides):
-        preview = image.copy()
-        if max(preview.size) > max_side:
+    targets = sorted({int(max_side) for max_side in max_sides if int(max_side) > 0}, reverse=True)
+    if not targets:
+        targets = [max(image.size)]
+    working = image.copy()
+    for max_side in targets:
+        if max(working.size) > max_side:
+            resized = working.copy()
             resample = Image.Resampling.NEAREST if nearest else Image.Resampling.BILINEAR
-            preview.thumbnail((max_side, max_side), resample)
+            resized.thumbnail((max_side, max_side), resample)
+            working = resized
+        preview = working.copy()
         if preview.size in seen:
             continue
         seen.add(preview.size)
         ext = ".png" if prefer_png or preview.mode in {"RGBA", "L"} else ".jpg"
         path = out_dir / f"{stem}_{max(preview.size)}{ext}"
         if ext == ".png":
-            preview.save(path, format="PNG", optimize=True)
+            preview.save(path, format="PNG", optimize=False, compress_level=1)
         else:
-            preview.convert("RGB").save(path, format="JPEG", quality=90, optimize=True)
-        previews.append(
+            preview.convert("RGB").save(path, format="JPEG", quality=88, optimize=False)
+        generated.append(
             {
                 "max_side": max(preview.size),
                 "width": preview.size[0],
@@ -711,7 +794,20 @@ def save_preview_pyramid(
                 "path": str(path),
             }
         )
-    return previews
+    return list(reversed(generated))
+
+
+def should_defer_full_size_processing(
+    *,
+    source_width: int,
+    source_height: int,
+    target_max_side: int,
+) -> bool:
+    source_pixels = int(source_width) * int(source_height)
+    return (
+        max(int(source_width), int(source_height)) > int(target_max_side)
+        and source_pixels > FULL_SIZE_PREPROCESS_MAX_PIXELS
+    )
 
 
 def build_tiling_manifest(
@@ -756,6 +852,18 @@ def colored_overlay(mask: np.ndarray, class_id: int | None, rgba: tuple[int, int
     overlay = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
     overlay[active] = np.array(rgba, dtype=np.uint8)
     return Image.fromarray(overlay, mode="RGBA")
+
+
+def masked_rgb_layer(image: Image.Image, active_mask: np.ndarray) -> Image.Image:
+    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    mask = active_mask.astype(bool)
+    if mask.shape != rgb.shape[:2]:
+        resized = Image.fromarray(mask.astype(np.uint8) * 255, mode="L").resize((rgb.shape[1], rgb.shape[0]), Image.Resampling.NEAREST)
+        mask = np.asarray(resized) > 0
+    rgba = np.zeros((rgb.shape[0], rgb.shape[1], 4), dtype=np.uint8)
+    rgba[..., :3] = rgb
+    rgba[..., 3] = mask.astype(np.uint8) * 255
+    return Image.fromarray(rgba, mode="RGBA")
 
 
 def final_mask_from_classified(classified: np.ndarray, talc_mask: np.ndarray | None) -> np.ndarray:
@@ -1169,9 +1277,89 @@ def disk_status_payload(path: Path) -> dict[str, Any]:
     }
 
 
+def _parse_optional_nvidia_number(value: str) -> float | None:
+    normalized = value.strip()
+    if not normalized or normalized.upper() in {"[N/A]", "N/A", "NA", "NONE", "NULL"}:
+        return None
+    return float(normalized)
+
+
+def _parse_optional_int(value: Any) -> int | None:
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+@lru_cache(maxsize=1)
+def _torch_mps_available() -> bool:
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        return bool(mps_backend and mps_backend.is_available())
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _apple_gpu_devices() -> list[dict[str, Any]]:
+    if sys.platform != "darwin":
+        return []
+    system_profiler = shutil.which("system_profiler")
+    if not system_profiler:
+        return []
+    try:
+        result = subprocess.run(
+            [system_profiler, "SPDisplaysDataType", "-json", "-detailLevel", "mini"],
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=3.0,
+        )
+        payload = json.loads(result.stdout or "{}")
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
+        return []
+    devices = []
+    for index, entry in enumerate(payload.get("SPDisplaysDataType") or []):
+        if not isinstance(entry, dict):
+            continue
+        model = str(entry.get("sppci_model") or entry.get("_name") or "").strip()
+        device_type = str(entry.get("sppci_device_type") or "").lower()
+        if not model or ("gpu" not in device_type and "apple" not in model.lower()):
+            continue
+        displays = entry.get("spdisplays_ndrvs") if isinstance(entry.get("spdisplays_ndrvs"), list) else []
+        devices.append(
+            {
+                "index": index,
+                "name": model,
+                "backend": "metal",
+                "source": "system_profiler",
+                "mps_available": _torch_mps_available(),
+                "cores": _parse_optional_int(entry.get("sppci_cores")),
+                "metal_family": entry.get("spdisplays_mtlgpufamilysupport"),
+                "displays": len(displays),
+                "utilization_percent": None,
+                "memory_total_bytes": None,
+                "memory_used_bytes": None,
+                "memory_used_percent": None,
+                "temperature_c": None,
+            }
+        )
+    return devices
+
+
 def gpu_status_payload() -> dict[str, Any]:
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
+        apple_devices = _apple_gpu_devices()
+        if apple_devices:
+            return {
+                "available": True,
+                "source": "system_profiler",
+                "message": "Apple Metal GPU detected; utilization metrics unavailable via nvidia-smi",
+                "devices": apple_devices,
+            }
         return {"available": False, "source": "nvidia-smi", "message": "nvidia-smi not found", "devices": []}
     command = [
         nvidia_smi,
@@ -1187,17 +1375,24 @@ def gpu_status_payload() -> dict[str, Any]:
         if len(row) < 6:
             continue
         index, name, util, memory_total, memory_used, temperature = [part.strip() for part in row[:6]]
-        total_mib = int(float(memory_total or 0))
-        used_mib = int(float(memory_used or 0))
+        total_mib = _parse_optional_nvidia_number(memory_total)
+        used_mib = _parse_optional_nvidia_number(memory_used)
+        memory_total_bytes = int(total_mib * 1024 * 1024) if total_mib is not None else None
+        memory_used_bytes = int(used_mib * 1024 * 1024) if used_mib is not None else None
+        memory_used_percent = (
+            used_mib / total_mib * 100.0
+            if used_mib is not None and total_mib is not None and total_mib > 0
+            else None
+        )
         devices.append(
             {
-                "index": int(index or 0),
+                "index": int(_parse_optional_nvidia_number(index) or 0),
                 "name": name,
-                "utilization_percent": float(util or 0.0),
-                "memory_total_bytes": total_mib * 1024 * 1024,
-                "memory_used_bytes": used_mib * 1024 * 1024,
-                "memory_used_percent": used_mib / max(total_mib, 1) * 100.0,
-                "temperature_c": float(temperature or 0.0),
+                "utilization_percent": _parse_optional_nvidia_number(util),
+                "memory_total_bytes": memory_total_bytes,
+                "memory_used_bytes": memory_used_bytes,
+                "memory_used_percent": memory_used_percent,
+                "temperature_c": _parse_optional_nvidia_number(temperature),
             }
         )
     return {"available": bool(devices), "source": "nvidia-smi", "message": "" if devices else "no devices", "devices": devices}
@@ -1230,12 +1425,268 @@ class OrePipelineStore:
         self.artifacts: dict[str, Path] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
         self.batch_jobs: dict[str, dict[str, Any]] = {}
+        self.foreground_operations: dict[str, dict[str, Any]] = {}
+        self.system_log: deque[dict[str, Any]] = deque(maxlen=LOG_ENTRY_LIMIT)
         self.lock = threading.RLock()
         self.allowed_roots = [ROOT.resolve(), self.workspace_dir.resolve()]
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.batches_dir.mkdir(parents=True, exist_ok=True)
         self.settings_dir.mkdir(parents=True, exist_ok=True)
+        self._load_persisted_runtime_settings()
+        self.record_system_event(
+            "info",
+            "service initialized",
+            backend=self.backend,
+            workspace_dir=str(self.workspace_dir),
+            checkpoint=str(self.checkpoint) if self.checkpoint else None,
+        )
+
+    def record_system_event(self, level: str, message: str, **fields: Any) -> None:
+        entry = {
+            "timestamp": utc_now_iso(),
+            "level": str(level or "info").lower(),
+            "message": str(message),
+        }
+        details = {key: json_safe_value(value) for key, value in fields.items() if value is not None}
+        if details:
+            entry["details"] = details
+        with self.lock:
+            self.system_log.append(entry)
+
+    def system_log_payload(self, limit: int = STATUS_LOG_LIMIT) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), LOG_ENTRY_LIMIT))
+        with self.lock:
+            return list(reversed(list(self.system_log)[-limit:]))
+
+    def begin_foreground_operation(self, kind: str, label: str, **fields: Any) -> str:
+        operation_id = f"op_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000_000:09d}"
+        operation = {
+            "operation_id": operation_id,
+            "kind": str(kind or "operation"),
+            "label": str(label or kind or "operation"),
+            "status": "running",
+            "started_at": time.time(),
+            "started_at_iso": utc_now_iso(),
+        }
+        details = {key: json_safe_value(value) for key, value in fields.items() if value is not None}
+        operation.update(details)
+        with self.lock:
+            self.foreground_operations[operation_id] = operation
+        return operation_id
+
+    def finish_foreground_operation(self, operation_id: str) -> None:
+        with self.lock:
+            self.foreground_operations.pop(operation_id, None)
+
+    def active_foreground_operations_payload(self) -> list[dict[str, Any]]:
+        now = time.time()
+        with self.lock:
+            operations = []
+            for operation in self.foreground_operations.values():
+                item = {key: value for key, value in operation.items() if key != "started_at"}
+                item["elapsed_seconds"] = max(0.0, now - float(operation.get("started_at", now)))
+                operations.append(item)
+        return sorted(operations, key=lambda item: str(item.get("started_at_iso") or ""))
+
+    def current_runtime_settings(self) -> dict[str, Any]:
+        return normalize_settings_runtime(
+            {
+                "backend": self.backend,
+                "checkpoint": str(self.checkpoint) if self.checkpoint else "",
+            }
+        )
+
+    def _app_settings_base(self) -> dict[str, Any]:
+        settings = default_app_settings()
+        settings["runtime"] = self.current_runtime_settings()
+        return settings
+
+    def _active_runtime_jobs(self) -> list[str]:
+        active: list[str] = []
+        with self.lock:
+            active.extend(
+                run_id
+                for run_id, job in self.jobs.items()
+                if str(job.get("status") or "").lower() in ACTIVE_RUN_STATUSES
+            )
+            active.extend(
+                batch_id
+                for batch_id, job in self.batch_jobs.items()
+                if str(job.get("status") or "").lower() in BATCH_ACTIVE_STATUSES
+            )
+            active.extend(
+                operation_id
+                for operation_id, operation in self.foreground_operations.items()
+                if str(operation.get("status") or "").lower() == "running"
+            )
+        return active
+
+    def _apply_runtime_settings(self, runtime: dict[str, Any], *, validate_checkpoint: bool = True) -> dict[str, Any]:
+        normalized = normalize_settings_runtime(runtime, base=self.current_runtime_settings(), validate_checkpoint=validate_checkpoint)
+        with self.lock:
+            self.backend = normalized["backend"]
+            self.checkpoint = Path(normalized["checkpoint"]) if normalized["checkpoint"] else None
+        return self.current_runtime_settings()
+
+    def _load_persisted_runtime_settings(self) -> None:
+        if not self.settings_path.exists():
+            return
+        try:
+            payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            settings = normalize_app_settings_payload(payload, base=self._app_settings_base(), validate_runtime=True)
+            applied = self._apply_runtime_settings(settings["runtime"], validate_checkpoint=True)
+        except (json.JSONDecodeError, ApiError, OSError) as exc:
+            self.record_system_event("warning", "runtime settings ignored", error=str(exc))
+            return
+        self.record_system_event("info", "runtime settings loaded", **applied)
+
+    def _runtime_checkpoint_path(self, checkpoint: str | Path | None) -> str | None:
+        if checkpoint is None:
+            return None
+        checkpoint_text = str(checkpoint).strip()
+        if not checkpoint_text:
+            return None
+        try:
+            checkpoint_path = Path(checkpoint_text).expanduser()
+            if not checkpoint_path.is_absolute():
+                checkpoint_path = ROOT / checkpoint_path
+            return str(checkpoint_path.resolve())
+        except OSError:
+            return checkpoint_text
+
+    def _initial_runtime_provenance(
+        self,
+        *,
+        backend: str | None = None,
+        checkpoint: str | Path | None = None,
+    ) -> dict[str, Any]:
+        backend_value = str(backend or self.backend or "heuristic").lower()
+        checkpoint_path = self._runtime_checkpoint_path(checkpoint if checkpoint is not None else self.checkpoint)
+        binary_checkpoint = checkpoint_path if backend_value == "ml" else None
+        talc_backend = "auto_candidate" if backend_value == "ml" else "heuristic_candidate"
+        return {
+            "schema_version": RUNTIME_PROVENANCE_SCHEMA_VERSION,
+            "backend": backend_value,
+            "recorded_at": utc_now_iso(),
+            "python_executable": sys.executable,
+            "checkpoints": {
+                "binary_sulfide": binary_checkpoint,
+                "talc": None,
+                "final_segmentation": None,
+            },
+            "models": {
+                "binary_sulfide": {
+                    "backend": backend_value,
+                    "checkpoint": binary_checkpoint,
+                    "role": "sulfide/non-sulfide segmentation",
+                    "source": "ML checkpoint" if backend_value == "ml" else "heuristic_segmentation",
+                },
+                "talc": {
+                    "backend": talc_backend,
+                    "checkpoint": None,
+                    "role": "talc candidate detection",
+                },
+                "final_segmentation": {
+                    "backend": "component_rules",
+                    "checkpoint": None,
+                    "role": "ordinary/fine intergrowth and final class metrics",
+                    "rule_config": json_safe_value(DEFAULT_RULE_CONFIG),
+                },
+            },
+        }
+
+    def _runtime_provenance_from_metadata(self, metadata: dict[str, Any], run_dir: Path | None = None) -> dict[str, Any]:
+        runtime = metadata.get("runtime") if isinstance(metadata.get("runtime"), dict) else {}
+        backend = str(runtime.get("backend") or metadata.get("backend") or self.backend or "heuristic").lower()
+        if run_dir is not None and (run_dir / "ml_pipeline/binary_sulfide/summary.json").exists():
+            backend = "ml"
+        checkpoints = runtime.get("checkpoints") if isinstance(runtime.get("checkpoints"), dict) else {}
+        checkpoint = (
+            checkpoints.get("binary_sulfide")
+            or runtime.get("checkpoint")
+            or metadata.get("checkpoint")
+            or (str(self.checkpoint) if self.checkpoint else None)
+        )
+        provenance = self._initial_runtime_provenance(backend=backend, checkpoint=checkpoint)
+        for key, value in runtime.items():
+            if key not in {"schema_version", "backend", "checkpoints", "models", "recorded_at", "python_executable"}:
+                provenance[key] = json_safe_value(value)
+        if runtime.get("recorded_at"):
+            provenance["recorded_at"] = json_safe_value(runtime["recorded_at"])
+        if runtime.get("python_executable"):
+            provenance["python_executable"] = str(runtime["python_executable"])
+        return provenance
+
+    def _read_optional_json(self, path: Path) -> dict[str, Any]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _finalize_runtime_provenance(self, metadata: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+        runtime = self._runtime_provenance_from_metadata(metadata, run_dir)
+        binary_summary = self._read_optional_json(run_dir / "ml_pipeline/binary_sulfide/summary.json")
+        pipeline_summary = self._read_optional_json(run_dir / "ml_pipeline/pipeline_summary.json")
+        if binary_summary:
+            checkpoint = self._runtime_checkpoint_path(binary_summary.get("checkpoint") or runtime["checkpoints"].get("binary_sulfide"))
+            runtime["backend"] = "ml"
+            runtime["checkpoints"]["binary_sulfide"] = checkpoint
+            runtime["models"]["binary_sulfide"] = {
+                **runtime["models"].get("binary_sulfide", {}),
+                "backend": "ml",
+                "checkpoint": checkpoint,
+                "source": "ML checkpoint",
+                "schema_version": binary_summary.get("schema_version"),
+                "checkpoint_meta": json_safe_value(binary_summary.get("checkpoint_meta") or {}),
+                "device": binary_summary.get("device"),
+                "tile_size": binary_summary.get("tile_size"),
+                "stride": binary_summary.get("stride"),
+                "threshold": binary_summary.get("threshold"),
+                "tiles": binary_summary.get("tiles"),
+            }
+        if pipeline_summary:
+            runtime["pipeline"] = {
+                "schema_version": pipeline_summary.get("schema_version"),
+                "image": pipeline_summary.get("image"),
+                "talc_source": pipeline_summary.get("talc_source"),
+                "rule_config": json_safe_value(pipeline_summary.get("rule_config") or {}),
+            }
+            runtime["models"]["talc"] = {
+                **runtime["models"].get("talc", {}),
+                "backend": pipeline_summary.get("talc_source") or runtime["models"].get("talc", {}).get("backend"),
+                "checkpoint": None,
+                "role": "talc candidate detection",
+            }
+            runtime["models"]["final_segmentation"] = {
+                **runtime["models"].get("final_segmentation", {}),
+                "backend": "component_rules",
+                "checkpoint": None,
+                "rule_config": json_safe_value(pipeline_summary.get("rule_config") or DEFAULT_RULE_CONFIG),
+            }
+        runtime["completed_at"] = metadata.get("completed_at") or runtime.get("completed_at")
+        runtime["backend"] = str(runtime.get("backend") or metadata.get("backend") or self.backend or "heuristic").lower()
+        metadata["runtime"] = runtime
+        metadata["backend"] = runtime["backend"]
+        metadata["checkpoint"] = runtime["checkpoints"].get("binary_sulfide")
+        runtime_path = run_dir / "reports/runtime.json"
+        self._write_json(runtime_path, runtime)
+        metadata.setdefault("reports", {})["runtime_json"] = str(runtime_path)
+        return runtime
+
+    def _ensure_runtime_provenance(self, run_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        run_dir = self.runs_dir / run_id
+        runtime = data.get("runtime")
+        runtime_report_path = run_dir / "reports/runtime.json"
+        if isinstance(runtime, dict) and runtime.get("schema_version") == RUNTIME_PROVENANCE_SCHEMA_VERSION and runtime_report_path.exists():
+            return data
+        try:
+            self._finalize_runtime_provenance(data, run_dir)
+            self._write_json(run_dir / "run.json", data)
+        except Exception as exc:  # noqa: BLE001 - compatibility layer should not block run loading.
+            self.record_system_event("warning", "runtime provenance regeneration failed", run_id=run_id, error=str(exc))
+        return data
 
     def register_upload_from_bytes(self, data: bytes, original_name: str) -> dict[str, Any]:
         suffix = Path(original_name).suffix.lower()
@@ -1253,11 +1704,11 @@ class OrePipelineStore:
         suffix = Path(original_name).suffix.lower()
         if suffix not in IMAGE_EXTENSIONS:
             raise ApiError(HTTPStatus.BAD_REQUEST, "supported image formats: PNG, JPEG, TIFF, RAW")
-        digest = file_sha1(path)[:10]
-        upload_id, upload_dir = self._create_upload_dir(digest)
+        sha1 = file_sha1(path)
+        upload_id, upload_dir = self._create_upload_dir(sha1[:10])
         original_path = upload_dir / safe_name(original_name)
         hardlink_or_copy(path, original_path)
-        return self._register_upload_file(upload_id, upload_dir, original_path, original_name)
+        return self._register_upload_file(upload_id, upload_dir, original_path, original_name, sha1=sha1)
 
     def _create_upload_dir(self, digest: str) -> tuple[str, Path]:
         with self.lock:
@@ -1271,11 +1722,30 @@ class OrePipelineStore:
                     time.sleep(0)
         raise ApiError(HTTPStatus.CONFLICT, "could not allocate unique upload id")
 
-    def _register_upload_file(self, upload_id: str, upload_dir: Path, original_path: Path, original_name: str) -> dict[str, Any]:
+    def _register_upload_file(
+        self,
+        upload_id: str,
+        upload_dir: Path,
+        original_path: Path,
+        original_name: str,
+        *,
+        sha1: str | None = None,
+    ) -> dict[str, Any]:
         width, height = image_dimensions(original_path)
         preview_dir = upload_dir / "display/original"
-        previews = save_preview_pyramid(load_image_pil(original_path), preview_dir, "original", self.preview_max_sides)
-        raw_metadata = extract_image_raw_metadata(original_path, original_name=original_name, width=width, height=height)
+        previews = save_preview_pyramid(
+            load_image_pil(original_path, max_side=max(self.preview_max_sides)),
+            preview_dir,
+            "original",
+            self.preview_max_sides,
+        )
+        raw_metadata = extract_image_raw_metadata(
+            original_path,
+            original_name=original_name,
+            width=width,
+            height=height,
+            sha1=sha1,
+        )
         metadata = {
             "schema_version": "ore-pipeline-upload-v0.1",
             "upload_id": upload_id,
@@ -1352,7 +1822,13 @@ class OrePipelineStore:
             source_scaled = True
         else:
             source_scaled = False
-        source = load_image_pil(original_path)
+        full_size_processing_deferred = should_defer_full_size_processing(
+            source_width=int(metadata["width"]),
+            source_height=int(metadata["height"]),
+            target_max_side=target_max_side,
+        )
+        decode_max_side = target_max_side if full_size_processing_deferred else None
+        source = load_image_pil(original_path, max_side=decode_max_side)
         augmented_image = apply_augmentation(source, augmentation) if augmentation_enabled(augmentation) else source
         if augmentation_enabled(augmentation):
             augmentation_dir = upload_dir / "augmentation"
@@ -1374,6 +1850,7 @@ class OrePipelineStore:
                 "height": augmented_image.size[1],
                 "source_width": int(metadata["width"]),
                 "source_height": int(metadata["height"]),
+                "source_scaled_for_processing": full_size_processing_deferred,
                 "display": augmented_previews,
             }
             self._write_json(augmentation_dir / "augmentation.json", augmentation_metadata)
@@ -1385,16 +1862,21 @@ class OrePipelineStore:
                 "enabled": False,
                 "settings": augmentation,
             }
-        preprocessed_full = apply_preprocessing(augmented_image, preset) if preprocessing_enabled else augmented_image
+        preprocessed_stage = apply_preprocessing(augmented_image, preset) if preprocessing_enabled else augmented_image
         preprocess_dir = upload_dir / "preprocessed"
         preprocessed_full_path = preprocess_dir / "preprocessed_full.png"
-        if preprocessing_enabled:
-            save_image(preprocessed_full_path, preprocessed_full)
-        analysis_image = scaled_image_copy(preprocessed_full, max_side=target_max_side)
+        if preprocessing_enabled and not full_size_processing_deferred:
+            save_image(preprocessed_full_path, preprocessed_stage)
+        analysis_image = scaled_image_copy(preprocessed_stage, max_side=target_max_side)
         preprocessed_path = preprocess_dir / "preprocessed.png"
         save_image(preprocessed_path, analysis_image)
         previews = (
-            save_preview_pyramid(preprocessed_full, preprocess_dir / "display", "preprocessed", self.preview_max_sides)
+            save_preview_pyramid(
+                analysis_image if full_size_processing_deferred else preprocessed_stage,
+                preprocess_dir / "display",
+                "preprocessed",
+                self.preview_max_sides,
+            )
             if preprocessing_enabled
             else []
         )
@@ -1414,17 +1896,19 @@ class OrePipelineStore:
             "analysis_path": str(preprocessed_path),
             "width": analysis_image.size[0],
             "height": analysis_image.size[1],
-            "full_width": preprocessed_full.size[0],
-            "full_height": preprocessed_full.size[1],
+            "full_width": preprocessed_stage.size[0],
+            "full_height": preprocessed_stage.size[1],
             "source_width": int(metadata["width"]),
             "source_height": int(metadata["height"]),
             "source_scaled_for_processing": source_scaled,
+            "full_size_processing_deferred": full_size_processing_deferred,
+            "full_size_preprocess_max_pixels": FULL_SIZE_PREPROCESS_MAX_PIXELS,
             "target_max_side": target_max_side,
             "panorama_scaling": panorama_scaling,
             "display": previews,
             "tiling": tiling,
         }
-        if preprocessing_enabled:
+        if preprocessing_enabled and not full_size_processing_deferred:
             preprocess_metadata["preprocessed_full_path"] = str(preprocessed_full_path)
         self._write_json(preprocess_dir / "preprocess.json", preprocess_metadata)
         metadata["augmentation"] = augmentation_metadata
@@ -1496,6 +1980,7 @@ class OrePipelineStore:
                 "eta_seconds": None,
                 "cancel_requested": False,
             }
+        self.record_system_event("info", "run queued", run_id=run_id, upload_id=upload_id)
         if run_async:
             thread = threading.Thread(target=self._run_job_guarded, args=(run_id,), daemon=True)
             thread.start()
@@ -1548,6 +2033,8 @@ class OrePipelineStore:
         metadata["progress"] = 0
         metadata["eta_seconds"] = None
         metadata["backend"] = parent.get("backend", self.backend)
+        metadata["checkpoint"] = parent.get("checkpoint", str(self.checkpoint) if self.checkpoint else None)
+        metadata["runtime"] = self._runtime_provenance_from_metadata(parent, self.runs_dir / str(parent.get("run_id") or run_id))
         metadata["derivation"] = {
             "type": "apply_pipeline_settings",
             "parent_run_id": parent_run_id,
@@ -1563,6 +2050,13 @@ class OrePipelineStore:
             preprocessing_enabled=bool((upload.get("preprocess") or {}).get("enabled", True)),
         )
         self._write_json(target_run_dir / "run.json", metadata)
+        self.record_system_event(
+            "info",
+            "prepared run updated" if status == "prepared" else "prepared run created",
+            run_id=target_run_id,
+            parent_run_id=parent_run_id,
+            changed_step=changed_step,
+        )
         return self.run_payload(target_run_id)
 
     def start_prepared_run(
@@ -1586,6 +2080,9 @@ class OrePipelineStore:
         metadata["stage"] = "queued"
         metadata["progress"] = 1
         metadata["eta_seconds"] = None
+        runtime = self._runtime_provenance_from_metadata(metadata, run_dir)
+        runtime["started_at"] = utc_now_iso()
+        metadata["runtime"] = runtime
         self._write_json(run_dir / "run.json", metadata)
         with self.lock:
             self.jobs[run_id] = {
@@ -1596,6 +2093,7 @@ class OrePipelineStore:
                 "eta_seconds": None,
                 "cancel_requested": False,
             }
+        self.record_system_event("info", "prepared run queued", run_id=run_id)
         if run_async:
             thread = threading.Thread(target=self._run_job_guarded, args=(run_id,), daemon=True)
             thread.start()
@@ -1639,6 +2137,9 @@ class OrePipelineStore:
         run_metadata["status"] = "complete"
         run_metadata["progress"] = 100
         run_metadata["backend"] = parent.get("backend", self.backend)
+        run_metadata["checkpoint"] = parent.get("checkpoint", str(self.checkpoint) if self.checkpoint else None)
+        run_metadata["runtime"] = self._runtime_provenance_from_metadata(parent, parent_dir)
+        run_metadata["runtime"]["derived_from_run_id"] = parent_run_id
         run_metadata["preprocess"]["enabled"] = bool((parent.get("preprocess") or {}).get("enabled", True))
         run_metadata["augmentation"] = parent.get("augmentation") or {"enabled": False, "settings": default_augmentation_settings()}
         run_metadata["derivation"] = derivation
@@ -1655,6 +2156,7 @@ class OrePipelineStore:
         self._finalize_run_metadata(run_metadata, run_dir)
         (run_dir / "edit_comment.txt").write_text(comment + "\n", encoding="utf-8")
         self._write_json(run_dir / "run.json", run_metadata)
+        self.record_system_event("info", "edit recalculated", run_id=run_id, parent_run_id=parent_run_id, edit_layer=edit_layer)
         return self.run_payload(run_id)
 
     def list_runs(self) -> dict[str, Any]:
@@ -1664,14 +2166,19 @@ class OrePipelineStore:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 continue
+            run_id = str(data.get("run_id") or path.parent.name)
+            data = self._merge_active_run_job(run_id, data)
             summary = data.get("summary") or {}
             thumbnail = self.history_thumbnail_payload(data)
             runs.append(
                 {
-                    "run_id": data.get("run_id"),
+                    "run_id": run_id,
                     "created_at": data.get("created_at"),
                     "status": data.get("status"),
                     "progress": data.get("progress", 0),
+                    "stage": data.get("stage"),
+                    "eta_seconds": data.get("eta_seconds"),
+                    "tile_progress": data.get("tile_progress"),
                     "parent_run_id": (data.get("derivation") or {}).get("parent_run_id"),
                     "edit_layer": (data.get("derivation") or {}).get("edit_layer"),
                     "ore_class_ru": summary.get("ore_class_ru"),
@@ -1685,7 +2192,7 @@ class OrePipelineStore:
             )
         return {"schema_version": "ore-pipeline-history-v0.1", "runs": runs}
 
-    def status_payload(self) -> dict[str, Any]:
+    def status_payload(self, *, access_log: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         runs_payload = self.list_runs()
         batches_payload = self.list_batches()
         runs = runs_payload.get("runs", [])
@@ -1702,13 +2209,14 @@ class OrePipelineStore:
             active_runs = [
                 {"run_id": run_id, "status": job.get("status"), "progress": job.get("progress", 0)}
                 for run_id, job in self.jobs.items()
-                if str(job.get("status") or "") in BATCH_ACTIVE_STATUSES
+                if str(job.get("status") or "").lower() in ACTIVE_RUN_STATUSES
             ]
             active_batches = [
                 {"batch_id": batch_id, "status": job.get("status"), "progress": job.get("progress", 0)}
                 for batch_id, job in self.batch_jobs.items()
-                if str(job.get("status") or "") in BATCH_ACTIVE_STATUSES
+                if str(job.get("status") or "").lower() in BATCH_ACTIVE_STATUSES
             ]
+        active_operations = self.active_foreground_operations_payload()
         runs_size = directory_size_summary(self.runs_dir)
         batches_size = directory_size_summary(self.batches_dir)
         uploads_size = directory_size_summary(self.uploads_dir)
@@ -1745,8 +2253,18 @@ class OrePipelineStore:
                 checks.append({"key": "ram_available", "status": "ok", "message": f"{available_percent:.1f}%"})
         if cpu.get("load_percent_1m") is not None and float(cpu["load_percent_1m"]) > 200.0:
             checks.append({"key": "cpu_load", "status": "warning", "message": f"{float(cpu['load_percent_1m']):.1f}%"})
-        if active_runs or active_batches:
-            checks.append({"key": "active_jobs", "status": "warning", "message": f"{len(active_runs)} runs, {len(active_batches)} series"})
+        if active_runs or active_batches or active_operations:
+            operation_labels = ", ".join(str(operation.get("label") or operation.get("kind") or "") for operation in active_operations[:3])
+            operation_text = f", {len(active_operations)} foreground"
+            if operation_labels:
+                operation_text += f" ({operation_labels})"
+            checks.append(
+                {
+                    "key": "active_jobs",
+                    "status": "warning",
+                    "message": f"{len(active_runs)} runs, {len(active_batches)} series{operation_text}",
+                }
+            )
         overall = "ok"
         if any(check["status"] == "error" for check in checks):
             overall = "error"
@@ -1781,24 +2299,158 @@ class OrePipelineStore:
                 "total_workspace_size_bytes": history_size + int(uploads_size["size_bytes"]),
                 "active_runs": active_runs,
                 "active_batches": active_batches,
+                "active_operations": active_operations,
             },
             "storage_scan": {"runs": runs_size, "batches": batches_size, "uploads": uploads_size},
+            "logs": {
+                "system": self.system_log_payload(),
+                "access": access_log or [],
+                "limit": STATUS_LOG_LIMIT,
+            },
         }
 
     def app_settings(self) -> dict[str, Any]:
         if not self.settings_path.exists():
-            return default_app_settings()
+            return normalize_app_settings_payload({}, base=self._app_settings_base())
         try:
             payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            return default_app_settings()
-        return normalize_app_settings_payload(payload)
+            return normalize_app_settings_payload({}, base=self._app_settings_base())
+        return normalize_app_settings_payload(payload, base=self._app_settings_base())
 
     def save_app_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        settings = normalize_app_settings_payload(payload, base=self.app_settings())
+        settings = normalize_app_settings_payload(payload, base=self.app_settings(), validate_runtime=True)
+        runtime_before = self.current_runtime_settings()
+        runtime_after = normalize_settings_runtime(settings.get("runtime"), base=runtime_before, validate_checkpoint=True)
+        if runtime_after != runtime_before:
+            active_jobs = self._active_runtime_jobs()
+            if active_jobs:
+                raise ApiError(HTTPStatus.CONFLICT, f"runtime backend cannot be changed while jobs are active: {', '.join(active_jobs)}")
+            settings["runtime"] = self._apply_runtime_settings(runtime_after, validate_checkpoint=True)
+            self.record_system_event("info", "runtime settings changed", **settings["runtime"])
         settings["updated_at"] = utc_now_iso()
         self._write_json(self.settings_path, settings)
         return settings
+
+    def test_runtime(self, payload: dict[str, Any]) -> dict[str, Any]:
+        runtime_payload: Any = payload.get("runtime")
+        settings_payload = payload.get("settings")
+        if runtime_payload is None and isinstance(settings_payload, dict):
+            runtime_payload = settings_payload.get("runtime")
+        if runtime_payload is None:
+            runtime_payload = payload
+        runtime = normalize_settings_runtime(runtime_payload, base=self.current_runtime_settings(), validate_checkpoint=True)
+        started = time.time()
+        base_result: dict[str, Any] = {
+            "schema_version": "ore-pipeline-runtime-test-v0.1",
+            "generated_at": utc_now_iso(),
+            "backend": runtime["backend"],
+            "checkpoint": runtime["checkpoint"] or None,
+            "ok": False,
+            "status": "error",
+            "seconds": 0.0,
+        }
+        if runtime["backend"] == "heuristic":
+            result = {
+                **base_result,
+                "ok": True,
+                "status": "ok",
+                "message": "heuristic backend is available",
+                "seconds": round(time.time() - started, 3),
+                "details": {"module": "heuristic_segmentation.segmentation", "function": "segment_image"},
+            }
+            self.record_system_event("info", "runtime test ok", backend="heuristic")
+            return result
+
+        active_jobs = self._active_runtime_jobs()
+        if active_jobs:
+            raise ApiError(HTTPStatus.CONFLICT, f"runtime test cannot run while jobs are active: {', '.join(active_jobs)}")
+
+        checkpoint = Path(runtime["checkpoint"])
+        probe_script = r"""
+import json
+import sys
+import time
+from pathlib import Path
+
+root = Path(sys.argv[1])
+checkpoint = Path(sys.argv[2])
+sys.path.insert(0, str(root / "src"))
+started = time.time()
+import torch
+try:
+    import transformers
+    transformers_version = transformers.__version__
+except Exception:
+    transformers_version = "unavailable"
+from ore_classifier.model_io import load_binary_segmentation_checkpoint, resolve_device
+device = resolve_device("auto")
+model, checkpoint_meta = load_binary_segmentation_checkpoint(checkpoint, device)
+parameter_count = int(sum(parameter.numel() for parameter in model.parameters()))
+print(json.dumps({
+    "device": str(device),
+    "torch": torch.__version__,
+    "transformers": transformers_version,
+    "checkpoint_meta": checkpoint_meta,
+    "parameter_count": parameter_count,
+    "seconds": round(time.time() - started, 3),
+}, default=str))
+"""
+        command = [sys.executable, "-c", probe_script, str(ROOT), str(checkpoint)]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=RUNTIME_TEST_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            elapsed = round(time.time() - started, 3)
+            result = {
+                **base_result,
+                "seconds": elapsed,
+                "message": f"ML runtime probe timed out after {elapsed:.1f}s",
+                "details": {
+                    "timeout_seconds": RUNTIME_TEST_TIMEOUT_SECONDS,
+                    "stdout": compact_text(exc.stdout),
+                    "stderr": compact_text(exc.stderr),
+                },
+            }
+            self.record_system_event("warning", "runtime test failed", backend="ml", error=result["message"])
+            return result
+
+        elapsed = round(time.time() - started, 3)
+        stdout = (completed.stdout or "").strip()
+        stderr = (completed.stderr or "").strip()
+        if completed.returncode:
+            error_text = compact_text(stderr or stdout or f"runtime probe exited with code {completed.returncode}")
+            result = {
+                **base_result,
+                "seconds": elapsed,
+                "message": error_text,
+                "details": {"returncode": completed.returncode, "stdout": compact_text(stdout), "stderr": compact_text(stderr)},
+            }
+            self.record_system_event("warning", "runtime test failed", backend="ml", error=error_text)
+            return result
+
+        try:
+            details = json.loads(stdout.splitlines()[-1]) if stdout else {}
+        except (json.JSONDecodeError, IndexError):
+            details = {"stdout": compact_text(stdout)}
+        checkpoint_meta = details.get("checkpoint_meta") if isinstance(details.get("checkpoint_meta"), dict) else {}
+        model_name = str(checkpoint_meta.get("model") or "unknown")
+        device = str(details.get("device") or "cpu")
+        result = {
+            **base_result,
+            "ok": True,
+            "status": "ok",
+            "seconds": elapsed,
+            "message": f"ML checkpoint loaded: model={model_name}, device={device}",
+            "details": json_safe_value(details),
+        }
+        self.record_system_event("info", "runtime test ok", backend="ml", checkpoint=str(checkpoint), model=model_name, seconds=elapsed)
+        return result
 
     def create_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
         batch_id = f"batch_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000_000:09d}"
@@ -1961,6 +2613,58 @@ class OrePipelineStore:
             "history": self.list_runs()["runs"],
         }
 
+    def delete_history(self) -> dict[str, Any]:
+        active_jobs = self._active_runtime_jobs()
+        if active_jobs:
+            raise ApiError(HTTPStatus.CONFLICT, f"history cannot be removed while jobs are active: {', '.join(active_jobs)}")
+
+        runs_root = self.runs_dir.resolve()
+        batches_root = self.batches_dir.resolve()
+        run_dirs = [
+            path.resolve()
+            for path in self.runs_dir.iterdir()
+            if path.is_dir() and path.resolve() != runs_root and is_relative_to(path.resolve(), runs_root)
+        ]
+        batch_dirs = [
+            path.resolve()
+            for path in self.batches_dir.iterdir()
+            if path.is_dir() and path.resolve() != batches_root and is_relative_to(path.resolve(), batches_root)
+        ]
+        removed_run_ids = sorted(path.name for path in run_dirs if (path / "run.json").exists())
+        removed_batch_ids = sorted(path.name for path in batch_dirs if (path / "batch_summary.json").exists())
+
+        with self.lock:
+            active_jobs = self._active_runtime_jobs()
+            if active_jobs:
+                raise ApiError(HTTPStatus.CONFLICT, f"history cannot be removed while jobs are active: {', '.join(active_jobs)}")
+            self.jobs.clear()
+            self.batch_jobs.clear()
+            self.artifacts = {
+                key: value
+                for key, value in self.artifacts.items()
+                if not is_relative_to(value.resolve(), runs_root) and not is_relative_to(value.resolve(), batches_root)
+            }
+
+        for run_dir in run_dirs:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        for batch_dir in batch_dirs:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
+        self.batches_dir.mkdir(parents=True, exist_ok=True)
+        self.record_system_event(
+            "warning",
+            "history removed",
+            removed_runs=len(removed_run_ids),
+            removed_batches=len(removed_batch_ids),
+        )
+        return {
+            "schema_version": "ore-pipeline-history-delete-v0.1",
+            "removed_run_ids": removed_run_ids,
+            "removed_batch_ids": removed_batch_ids,
+            "runs": [],
+            "batches": [],
+        }
+
     def run_batch(self, batch_id: str, payload: dict[str, Any] | None = None, *, run_async: bool = True) -> dict[str, Any]:
         summary = self._read_batch(batch_id)
         if summary.get("status") in BATCH_ACTIVE_STATUSES:
@@ -1991,6 +2695,7 @@ class OrePipelineStore:
                 "active_run_id": None,
                 "started_at": time.time(),
             }
+        self.record_system_event("info", "series queued", batch_id=batch_id, item_count=len(summary.get("items", [])))
         if run_async:
             thread = threading.Thread(target=self._run_batch_guarded, args=(batch_id, True), daemon=True)
             thread.start()
@@ -2025,6 +2730,7 @@ class OrePipelineStore:
                 item["updated_at"] = utc_now_iso()
         self._finalize_batch_summary(summary)
         self._write_batch(summary)
+        self.record_system_event("warning", "series cancellation requested", batch_id=batch_id, active_run_id=active_run_id)
         return self.batch_payload(batch_id)
 
     def batch_payload(self, batch_id: str) -> dict[str, Any]:
@@ -2114,13 +2820,14 @@ class OrePipelineStore:
                 data["canceled_at"] = utc_now_iso()
                 self.jobs[run_id] = {"status": "canceled", "progress": progress, "eta_seconds": None}
         self._write_json(run_path, data)
+        self.record_system_event("warning", "run cancellation requested", run_id=run_id, status=data.get("status"))
         return self.run_payload(run_id)
 
     def run_payload(self, run_id: str) -> dict[str, Any]:
         data = self._read_run(run_id)
-        job = self.jobs.get(run_id)
-        if job and data.get("status") not in {"complete", "failed", "canceled"}:
-            data = {**data, **job}
+        data = self._ensure_non_sulfide_display_layer(run_id, data)
+        data = self._ensure_runtime_provenance(run_id, data)
+        data = self._merge_active_run_job(run_id, data)
         raw_summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
         summary = add_artifact_summary_fields(raw_summary, self._artifact_mask_for_summary(run_id)) if raw_summary else {}
         scale = data.get("scale") or None
@@ -2149,8 +2856,41 @@ class OrePipelineStore:
             "history": self.list_runs()["runs"],
         }
 
+    def _merge_active_run_job(self, run_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        if str(data.get("status") or "").lower() in RUN_TERMINAL_STATUSES:
+            return data
+        with self.lock:
+            job = self.jobs.get(run_id)
+            if not job:
+                return data
+            return {**data, **job}
+
+    def _ensure_non_sulfide_display_layer(self, run_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        if str(data.get("status") or "").lower() != "complete":
+            return data
+        display = data.get("display") if isinstance(data.get("display"), dict) else {}
+        if display.get("non_sulfide_base"):
+            return data
+        run_dir = self.runs_dir / run_id
+        required = [run_dir / "input/preprocessed.png", run_dir / "masks/sulfide_mask.png", run_dir / "masks/final_mask.png"]
+        if not all(path.exists() for path in required):
+            return data
+        try:
+            self._build_display_layers(
+                run_dir,
+                preprocessing_enabled=bool((data.get("preprocess") or {}).get("enabled", True)),
+            )
+            refreshed_display = json.loads((run_dir / "display/display.json").read_text(encoding="utf-8"))["layers"]
+        except Exception as exc:  # noqa: BLE001 - compatibility layer should not break run loading.
+            self.record_system_event("warning", "non-sulfide display regeneration failed", run_id=run_id, error=str(exc))
+            return data
+        data["display"] = refreshed_display
+        self._write_json(run_dir / "run.json", data)
+        return data
+
     def run_files_payload(self, run_id: str) -> dict[str, Any]:
         run_dir = self._existing_run_dir(run_id)
+        self._ensure_runtime_provenance(run_id, self._read_run(run_id))
         files = []
         for path in sorted(item for item in run_dir.rglob("*") if item.is_file()):
             relative_path = path.relative_to(run_dir).as_posix()
@@ -2169,6 +2909,7 @@ class OrePipelineStore:
 
     def run_zip_path(self, run_id: str) -> Path:
         run_dir = self._existing_run_dir(run_id)
+        self._ensure_runtime_provenance(run_id, self._read_run(run_id))
         zip_path = run_dir / "reports/run_artifacts.zip"
         zip_path.parent.mkdir(parents=True, exist_ok=True)
         files = []
@@ -2199,6 +2940,7 @@ class OrePipelineStore:
             "name": path.name,
             "size_bytes": int(stat.st_size),
             "content_type": content_type,
+            "view_url": self.artifact_url(path),
             "is_image": False,
         }
         try:
@@ -2364,6 +3106,8 @@ class OrePipelineStore:
             "status": "running",
             "progress": 0,
             "backend": self.backend,
+            "checkpoint": str(self.checkpoint) if self.checkpoint else None,
+            "runtime": self._initial_runtime_provenance(backend=self.backend, checkpoint=self.checkpoint),
             "input": {
                 "upload_id": upload_id,
                 "original_artifact_path": str(run_dir / "input/original_source"),
@@ -2394,6 +3138,7 @@ class OrePipelineStore:
     def _run_job_guarded(self, run_id: str) -> None:
         try:
             self._run_job(run_id)
+            self.record_system_event("info", "run complete", run_id=run_id)
         except RunCancelled:
             run_path = self.runs_dir / run_id / "run.json"
             data = json.loads(run_path.read_text(encoding="utf-8"))
@@ -2406,22 +3151,51 @@ class OrePipelineStore:
             self._write_json(run_path, data)
             with self.lock:
                 self.jobs[run_id] = {"status": "canceled", "progress": progress, "eta_seconds": None}
+            self.record_system_event("warning", "run canceled", run_id=run_id, progress=progress)
         except Exception as exc:  # noqa: BLE001 - keep server alive and expose failure.
             run_path = self.runs_dir / run_id / "run.json"
             data = json.loads(run_path.read_text(encoding="utf-8"))
             data["status"] = "failed"
             data["error"] = str(exc)
             data["progress"] = 100
+            try:
+                runtime = self._runtime_provenance_from_metadata(data, self.runs_dir / run_id)
+                runtime["failed_at"] = utc_now_iso()
+                data["runtime"] = runtime
+                data["backend"] = runtime["backend"]
+                data["checkpoint"] = runtime["checkpoints"].get("binary_sulfide")
+                self._write_json(self.runs_dir / run_id / "reports/runtime.json", runtime)
+                data.setdefault("reports", {})["runtime_json"] = str(self.runs_dir / run_id / "reports/runtime.json")
+            except Exception as provenance_exc:  # noqa: BLE001 - preserve original failure.
+                self.record_system_event(
+                    "warning",
+                    "runtime provenance write failed after run error",
+                    run_id=run_id,
+                    error=str(provenance_exc),
+                )
             self._write_json(run_path, data)
             with self.lock:
                 self.jobs[run_id] = {"status": "failed", "progress": 100, "error": str(exc), "eta_seconds": None}
+            self.record_system_event("error", "run failed", run_id=run_id, error=str(exc))
 
     def _run_job(self, run_id: str) -> None:
         run_dir = self.runs_dir / run_id
         self._set_progress(run_id, 8, "preparing immutable run artifacts")
         self._check_cancelled(run_id)
-        if self.backend == "ml":
-            self._run_ml_backend(run_id, run_dir)
+        run_metadata = self._read_run(run_id)
+        runtime = self._runtime_provenance_from_metadata(run_metadata, run_dir)
+        runtime["started_at"] = utc_now_iso()
+        run_metadata["runtime"] = runtime
+        run_metadata["backend"] = runtime["backend"]
+        run_metadata["checkpoint"] = runtime["checkpoints"].get("binary_sulfide")
+        self._write_json(run_dir / "run.json", run_metadata)
+        run_backend = runtime["backend"]
+        run_checkpoint = runtime["checkpoints"].get("binary_sulfide") or run_metadata.get(
+            "checkpoint",
+            str(self.checkpoint) if self.checkpoint else None,
+        )
+        if run_backend == "ml":
+            self._run_ml_backend(run_id, run_dir, checkpoint=run_checkpoint)
         else:
             self._run_heuristic_backend(run_id, run_dir)
         self._check_cancelled(run_id)
@@ -2470,28 +3244,36 @@ class OrePipelineStore:
             artifact_mask=artifact_mask,
         )
 
-    def _run_ml_backend(self, run_id: str, run_dir: Path) -> None:
-        if self.checkpoint is None or not self.checkpoint.exists():
+    def _run_ml_backend(self, run_id: str, run_dir: Path, *, checkpoint: str | Path | None = None) -> None:
+        effective_checkpoint = Path(checkpoint).expanduser() if checkpoint else self.checkpoint
+        if effective_checkpoint and not effective_checkpoint.is_absolute():
+            effective_checkpoint = ROOT / effective_checkpoint
+        effective_checkpoint = effective_checkpoint.resolve() if effective_checkpoint else None
+        if effective_checkpoint is None or not effective_checkpoint.exists():
             raise ApiError(HTTPStatus.BAD_REQUEST, "ML backend requires --checkpoint")
         self._set_progress(run_id, 18, "running ML tiled inference")
         ml_dir = run_dir / "ml_pipeline"
+        tile_progress_path = ml_dir / "binary_sulfide/progress.json"
         cmd = [
             sys.executable,
             str(ROOT / "scripts/run_ore_pipeline.py"),
             "--image",
             str(run_dir / "input/preprocessed.png"),
             "--checkpoint",
-            str(self.checkpoint),
+            str(effective_checkpoint),
             "--out-dir",
             str(ml_dir),
             "--auto-talc-candidate",
             "--preview-max-side",
             str(max(self.preview_max_sides)),
+            "--progress-json",
+            str(tile_progress_path),
         ]
         log_path = run_dir / "ml_pipeline.log"
         with log_path.open("w", encoding="utf-8") as log:
             process = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
             while process.poll() is None:
+                self._update_ml_tile_progress(run_id, tile_progress_path)
                 if self._cancel_requested(run_id):
                     process.terminate()
                     try:
@@ -2503,6 +3285,7 @@ class OrePipelineStore:
                 time.sleep(0.5)
             if process.returncode:
                 raise subprocess.CalledProcessError(process.returncode, cmd)
+        self._update_ml_tile_progress(run_id, tile_progress_path)
         self._set_progress(run_id, 76, "collecting ML outputs")
         self._check_cancelled(run_id)
         ore_summary = json.loads((ml_dir / "ore_analysis/ore_summary.json").read_text(encoding="utf-8"))
@@ -2703,6 +3486,8 @@ class OrePipelineStore:
         preprocessed = Image.open(run_dir / "input/preprocessed.png").convert("RGB")
         sulfide = np.asarray(Image.open(run_dir / "masks/sulfide_mask.png").convert("L"))
         final_mask = np.asarray(Image.open(run_dir / "masks/final_mask.png").convert("L"))
+        analyzed_path = run_dir / "masks/analyzed_mask.png"
+        analyzed_mask = np.asarray(Image.open(analyzed_path).convert("L")) if analyzed_path.exists() else None
         artifact_path = run_dir / "masks/artifact_mask.png"
         artifact_mask = np.asarray(Image.open(artifact_path).convert("L")) if artifact_path.exists() else None
         if preprocessing_enabled is None:
@@ -2714,6 +3499,13 @@ class OrePipelineStore:
                 preprocessing_enabled = True
         layers = {
             "original": save_preview_pyramid(original, display_dir / "original", "original", self.preview_max_sides),
+            "non_sulfide_base": save_preview_pyramid(
+                masked_rgb_layer(preprocessed, self._non_sulfide_display_mask(sulfide, analyzed_mask, artifact_mask)),
+                display_dir / "non_sulfide_base",
+                "non_sulfide_base",
+                self.preview_max_sides,
+                prefer_png=True,
+            ),
             "sulfide_overlay": save_preview_pyramid(
                 colored_overlay(sulfide, None, (245, 190, 35, 145)),
                 display_dir / "sulfide_overlay",
@@ -2777,6 +3569,23 @@ class OrePipelineStore:
             )
         display_manifest = {"schema_version": "ore-pipeline-display-v0.1", "layers": layers}
         self._write_json(display_dir / "display.json", display_manifest)
+
+    def _non_sulfide_display_mask(
+        self,
+        sulfide_mask: np.ndarray,
+        analyzed_mask: np.ndarray | None,
+        artifact_mask: np.ndarray | None,
+    ) -> np.ndarray:
+        active = sulfide_mask <= 0
+        if analyzed_mask is not None:
+            if analyzed_mask.shape != active.shape:
+                analyzed_mask = read_binary_mask_from_array((analyzed_mask > 0).astype(np.uint8) * 255, active.shape)
+            active &= analyzed_mask > 0
+        if artifact_mask is not None:
+            if artifact_mask.shape != active.shape:
+                artifact_mask = read_binary_mask_from_array((artifact_mask > 0).astype(np.uint8) * 255, active.shape)
+            active &= artifact_mask <= 0
+        return active
 
     def _build_prepared_display_layers(self, run_dir: Path, *, preprocessing_enabled: bool) -> None:
         display_dir = run_dir / "display"
@@ -2872,6 +3681,7 @@ class OrePipelineStore:
             "summary_json": str(run_dir / "reports/ore_summary.json"),
             "component_features_csv": str(run_dir / "reports/component_features.csv"),
         }
+        self._finalize_runtime_provenance(metadata, run_dir)
 
     def _cancel_requested(self, run_id: str) -> bool:
         with self.lock:
@@ -2881,7 +3691,34 @@ class OrePipelineStore:
         if self._cancel_requested(run_id):
             raise RunCancelled()
 
-    def _set_progress(self, run_id: str, progress: int, status: str) -> None:
+    def _update_ml_tile_progress(self, run_id: str, progress_path: Path) -> None:
+        try:
+            payload = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        tiles_total = int(payload.get("tiles_total") or payload.get("tiles") or 0)
+        tiles_processed = int(payload.get("tiles_processed") or 0)
+        if tiles_total <= 0:
+            return
+        tiles_processed = max(0, min(tiles_processed, tiles_total))
+        fraction = tiles_processed / max(tiles_total, 1)
+        progress = min(74, max(18, 18 + int(round(fraction * 56))))
+        tile_progress = {
+            "schema_version": "ore-pipeline-tile-progress-v0.1",
+            "stage": str(payload.get("stage") or "running"),
+            "tiles_processed": tiles_processed,
+            "tiles_total": tiles_total,
+            "progress_fraction": fraction,
+        }
+        self._set_progress(
+            run_id,
+            progress,
+            f"running ML tiled inference ({tiles_processed}/{tiles_total} tiles)",
+            extra={"tile_progress": tile_progress},
+        )
+
+    def _set_progress(self, run_id: str, progress: int, status: str, *, extra: dict[str, Any] | None = None) -> None:
+        extra = json_safe_value(extra or {})
         with self.lock:
             previous = self.jobs.get(run_id, {})
             started = previous.get("started_at", time.time())
@@ -2890,7 +3727,7 @@ class OrePipelineStore:
             eta = None
             if progress > 1:
                 eta = max(0, int(elapsed * (100 - progress) / max(progress, 1)))
-            self.jobs[run_id] = {
+            job_payload = {
                 "progress": progress,
                 "status": "canceling" if cancel_requested else "running",
                 "stage": "canceling" if cancel_requested else status,
@@ -2898,6 +3735,9 @@ class OrePipelineStore:
                 "eta_seconds": None if cancel_requested else eta,
                 "cancel_requested": cancel_requested,
             }
+            if isinstance(extra, dict):
+                job_payload.update(extra)
+            self.jobs[run_id] = job_payload
         run_path = self.runs_dir / run_id / "run.json"
         if run_path.exists():
             data = json.loads(run_path.read_text(encoding="utf-8"))
@@ -2905,6 +3745,8 @@ class OrePipelineStore:
             data["status"] = "canceling" if cancel_requested else "running"
             data["stage"] = "canceling" if cancel_requested else status
             data["eta_seconds"] = None if cancel_requested else eta
+            if isinstance(extra, dict):
+                data.update(extra)
             self._write_json(run_path, data)
 
     def _run_batch_guarded(self, batch_id: str, child_run_async: bool = True) -> None:
@@ -2928,6 +3770,7 @@ class OrePipelineStore:
             self._write_batch(summary)
             with self.lock:
                 self.batch_jobs[batch_id] = {"status": "failed", "progress": 100, "error": str(exc), "cancel_requested": False}
+            self.record_system_event("error", "series failed", batch_id=batch_id, error=str(exc))
 
     def _run_batch(self, batch_id: str, *, child_run_async: bool = True) -> None:
         summary = self._read_batch(batch_id)
@@ -3045,6 +3888,7 @@ class OrePipelineStore:
         self._write_batch(summary)
         with self.lock:
             self.batch_jobs[batch_id] = {"status": summary["status"], "progress": 100, "cancel_requested": False, "active_run_id": None}
+        self.record_system_event("info", "series complete", batch_id=batch_id, status=summary["status"])
 
     def _batch_cancel_requested(self, batch_id: str) -> bool:
         with self.lock:
@@ -3929,36 +4773,65 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write("%s - - [%s] %s\n" % (self.client_address[0], self.log_date_time_string(), fmt % args))
 
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        self.server.record_access_event(
+            client=self.client_address[0],
+            method=getattr(self, "command", ""),
+            path=getattr(self, "path", ""),
+            status=code,
+            size=size,
+        )
+        self.log_message('"%s" %s %s', getattr(self, "requestline", ""), str(code), str(size))
+
+    def _record_handler_error(self, exc: Exception, status: int) -> None:
+        parsed = urllib.parse.urlparse(getattr(self, "path", ""))
+        self.server.store.record_system_event(
+            "error" if int(status) >= 500 else "warning",
+            "request failed",
+            method=getattr(self, "command", ""),
+            path=parsed.path,
+            status=int(status),
+            error=str(exc),
+        )
+
     def do_GET(self) -> None:  # noqa: N802
         try:
             self._handle_get()
         except ApiError as exc:
+            self._record_handler_error(exc, exc.status)
             self.send_json({"error": exc.message}, status=exc.status)
         except Exception as exc:  # noqa: BLE001 - keep local app alive.
+            self._record_handler_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:  # noqa: N802
         try:
             self._handle_post()
         except ApiError as exc:
+            self._record_handler_error(exc, exc.status)
             self.send_json({"error": exc.message}, status=exc.status)
         except Exception as exc:  # noqa: BLE001 - keep local app alive.
+            self._record_handler_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_PUT(self) -> None:  # noqa: N802
         try:
             self._handle_put()
         except ApiError as exc:
+            self._record_handler_error(exc, exc.status)
             self.send_json({"error": exc.message}, status=exc.status)
         except Exception as exc:  # noqa: BLE001 - keep local app alive.
+            self._record_handler_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_DELETE(self) -> None:  # noqa: N802
         try:
             self._handle_delete()
         except ApiError as exc:
+            self._record_handler_error(exc, exc.status)
             self.send_json({"error": exc.message}, status=exc.status)
         except Exception as exc:  # noqa: BLE001 - keep local app alive.
+            self._record_handler_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _handle_get(self) -> None:
@@ -3974,7 +4847,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
             self.send_json(self.server.store.app_settings())
             return
         if path == "/api/status":
-            self.send_json(self.server.store.status_payload())
+            self.send_json(self.server.status_payload())
             return
         if path == "/api/batches":
             self.send_json(self.server.store.list_batches())
@@ -4030,11 +4903,18 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path == "/api/uploads":
-            self.send_json(self.handle_upload())
+            operation_id = self.server.store.begin_foreground_operation("upload", "receiving upload", path=path)
+            try:
+                self.send_json(self.handle_upload())
+            finally:
+                self.server.store.finish_foreground_operation(operation_id)
             return
         payload = self.read_json_payload()
         if path == "/api/batches":
             self.send_json(self.server.store.create_batch(payload))
+            return
+        if path == "/api/runtime/test":
+            self.send_json(self.server.store.test_runtime(payload))
             return
         if path.startswith("/api/batches/") and path.endswith("/items"):
             batch_id = urllib.parse.unquote(path.removeprefix("/api/batches/").removesuffix("/items"))
@@ -4050,7 +4930,16 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/api/uploads/") and path.endswith("/preprocess"):
             upload_id = urllib.parse.unquote(path.removeprefix("/api/uploads/").removesuffix("/preprocess"))
-            self.send_json(self.server.store.prepare_upload(upload_id, preset_from_payload(payload), augmentation_from_payload(payload)))
+            operation_id = self.server.store.begin_foreground_operation(
+                "preprocess",
+                "preparing upload",
+                path=path,
+                upload_id=upload_id,
+            )
+            try:
+                self.send_json(self.server.store.prepare_upload(upload_id, preset_from_payload(payload), augmentation_from_payload(payload)))
+            finally:
+                self.server.store.finish_foreground_operation(operation_id)
             return
         if path.startswith("/api/uploads/") and path.endswith("/artifact-mask"):
             upload_id = urllib.parse.unquote(path.removeprefix("/api/uploads/").removesuffix("/artifact-mask"))
@@ -4060,26 +4949,45 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
             upload_id = str(payload.get("upload_id") or "")
             if not upload_id:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "upload_id is required")
-            self.send_json(
-                self.server.store.start_run(
-                    upload_id,
-                    preset_from_payload(payload),
-                    run_async=True,
-                    curated_metadata=payload.get("curated_metadata"),
-                    augmentation_settings=augmentation_from_payload(payload),
-                )
+            operation_id = self.server.store.begin_foreground_operation(
+                "run_prepare",
+                "preparing run",
+                path=path,
+                upload_id=upload_id,
             )
+            try:
+                self.send_json(
+                    self.server.store.start_run(
+                        upload_id,
+                        preset_from_payload(payload),
+                        run_async=True,
+                        curated_metadata=payload.get("curated_metadata"),
+                        augmentation_settings=augmentation_from_payload(payload),
+                    )
+                )
+            finally:
+                self.server.store.finish_foreground_operation(operation_id)
             return
         if path.startswith("/api/runs/") and path.endswith("/prepare"):
             run_id = urllib.parse.unquote(path.removeprefix("/api/runs/").removesuffix("/prepare"))
-            self.send_json(
-                self.server.store.prepare_run_from_apply(
-                    run_id,
-                    preset_from_payload(payload),
-                    augmentation_settings=augmentation_from_payload(payload),
-                    changed_step=str(payload.get("changed_step") or ""),
-                )
+            operation_id = self.server.store.begin_foreground_operation(
+                "run_prepare",
+                "preparing derived run",
+                path=path,
+                run_id=run_id,
+                changed_step=str(payload.get("changed_step") or ""),
             )
+            try:
+                self.send_json(
+                    self.server.store.prepare_run_from_apply(
+                        run_id,
+                        preset_from_payload(payload),
+                        augmentation_settings=augmentation_from_payload(payload),
+                        changed_step=str(payload.get("changed_step") or ""),
+                    )
+                )
+            finally:
+                self.server.store.finish_foreground_operation(operation_id)
             return
         if path.startswith("/api/runs/") and path.endswith("/start"):
             run_id = urllib.parse.unquote(path.removeprefix("/api/runs/").removesuffix("/start"))
@@ -4122,6 +5030,9 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
     def _handle_delete(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/history":
+            self.send_json(self.server.store.delete_history())
+            return
         if path.startswith("/api/batches/"):
             parts = [urllib.parse.unquote(part) for part in path.strip("/").split("/")]
             if len(parts) == 5 and parts[:2] == ["api", "batches"] and parts[3] == "items":
@@ -4219,7 +5130,39 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
 class OrePipelineHTTPServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], store: OrePipelineStore) -> None:
         self.store = store
+        self.access_log: deque[dict[str, Any]] = deque(maxlen=LOG_ENTRY_LIMIT)
+        self.log_lock = threading.RLock()
         super().__init__(server_address, OrePipelineHandler)
+        self.store.record_system_event("info", "http server listening", host=str(server_address[0]), port=int(self.server_address[1]))
+
+    def record_access_event(self, *, client: str, method: str, path: str, status: int | str, size: int | str) -> None:
+        parsed = urllib.parse.urlparse(path or "")
+        try:
+            status_value: int | str = int(status)
+        except (TypeError, ValueError):
+            status_value = str(status)
+        try:
+            size_value: int | str = int(size)
+        except (TypeError, ValueError):
+            size_value = str(size)
+        entry = {
+            "timestamp": utc_now_iso(),
+            "client": str(client or ""),
+            "method": str(method or ""),
+            "path": parsed.path or "/",
+            "status": status_value,
+            "size_bytes": size_value,
+        }
+        with self.log_lock:
+            self.access_log.append(entry)
+
+    def access_log_payload(self, limit: int = STATUS_LOG_LIMIT) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), LOG_ENTRY_LIMIT))
+        with self.log_lock:
+            return list(reversed(list(self.access_log)[-limit:]))
+
+    def status_payload(self) -> dict[str, Any]:
+        return self.store.status_payload(access_log=self.access_log_payload())
 
 
 def render_html_page() -> str:
@@ -4352,8 +5295,9 @@ HTML_PAGE = r"""<!doctype html>
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+    header { display: grid; grid-template-columns: auto minmax(24px, 1fr) auto; align-items: center; gap: 10px; padding: 8px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
     h1 { margin: 0; font-size: 18px; font-weight: 720; letter-spacing: 0; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
     button, select, input, textarea { font: inherit; }
     button { border: 1px solid var(--line); background: var(--button-bg); color: var(--text); border-radius: 6px; padding: 8px 11px; cursor: pointer; }
     button.primary { background: var(--accent); border-color: var(--accent); color: white; }
@@ -4364,13 +5308,15 @@ HTML_PAGE = r"""<!doctype html>
     .tabs { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
     .tab { min-width: 0; }
     .tab.active { border-color: var(--accent); color: var(--accent); }
+    .header-spacer { min-width: 24px; }
     .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; min-width: 0; }
+    .header-actions .tabs { flex-wrap: nowrap; }
     .theme-control, .language-control { width: auto; min-width: 128px; }
     main { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); min-height: calc(100vh - 57px); }
     aside { padding: 16px; border-right: 1px solid var(--line); background: var(--panel-alt); overflow: auto; }
     section.workspace { padding: 16px; min-width: 0; }
     body[data-page="batch"] main, body[data-page="history"] main, body[data-page="settings"] main, body[data-page="status"] main, body[data-page="api"] main { grid-template-columns: 1fr; }
-    body[data-page="batch"] aside, body[data-page="history"] aside, body[data-page="settings"] aside, body[data-page="status"] aside, body[data-page="api"] aside { display: none; }
+    body[data-page="batch"] main > aside, body[data-page="history"] main > aside, body[data-page="settings"] main > aside, body[data-page="status"] main > aside, body[data-page="api"] main > aside { display: none; }
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
     .panel h2 { margin: 0 0 10px; font-size: 15px; }
     .drop-zone { border: 2px dashed #9aa6b6; border-radius: 8px; padding: 18px; min-height: 132px; display: grid; place-items: center; text-align: center; background: var(--drop-bg); cursor: pointer; }
@@ -4444,10 +5390,17 @@ HTML_PAGE = r"""<!doctype html>
     .history-page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
     .history-page-head h2 { margin-bottom: 0; }
     .history-table-wrap { overflow: auto; }
-    .history-table { min-width: 1040px; }
+    .history-table { min-width: 1160px; }
     .history-table td.numeric, .history-table th.numeric { text-align: right; white-space: nowrap; }
     .history-table th.thumbnail, .history-table td.thumbnail { width: 74px; text-align: center; }
+    .history-table th.progress, .history-table td.progress { min-width: 150px; }
     .history-table td.filename { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .history-progress-cell { display: grid; gap: 4px; min-width: 140px; }
+    .history-progress-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+    .history-progress-head strong { font-size: 12px; font-weight: 750; white-space: nowrap; }
+    .history-progress-bar { height: 6px; border-radius: 999px; overflow: hidden; background: var(--line); }
+    .history-progress-bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+    .history-progress-cell small, .history-row-progress { color: var(--muted); font-size: 12px; line-height: 1.25; }
     .history-thumb-button { width: 56px; height: 42px; padding: 0; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; background: var(--viewer-bg); border-color: var(--line); }
     .history-thumb-button img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .history-thumb-placeholder { color: var(--muted); }
@@ -4465,6 +5418,10 @@ HTML_PAGE = r"""<!doctype html>
     .run-files-table { min-width: 760px; }
     .run-files-table td:first-child { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
     .run-files-table td.numeric, .run-files-table th.numeric { text-align: right; white-space: nowrap; }
+    .run-files-table td.action, .run-files-table th.action { text-align: right; white-space: nowrap; }
+    .run-files-sort { appearance: none; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 800; padding: 0; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+    .run-files-sort:hover, .run-files-sort:focus-visible { color: var(--accent); outline: none; }
+    .run-files-sort-indicator { color: var(--accent); min-width: 10px; text-align: center; }
     .metadata-entry { display: grid; gap: 6px; margin-top: 10px; }
     .metadata-entry button { width: 100%; }
     .settings-page { display: grid; gap: 14px; max-width: 1120px; }
@@ -4489,6 +5446,8 @@ HTML_PAGE = r"""<!doctype html>
     .status-table { min-width: 720px; }
     .status-table td:nth-child(2), .status-table th:nth-child(2) { text-align: right; white-space: nowrap; }
     .status-table td:nth-child(3) { color: var(--muted); }
+    .status-log-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .status-log { min-height: 220px; max-height: 420px; margin: 0; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: #0d1117; color: #d8e7ff; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
     .api-page { display: grid; gap: 14px; }
     .api-hero { display: grid; gap: 8px; }
     .api-base { display: inline-flex; width: max-content; max-width: 100%; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
@@ -4593,7 +5552,7 @@ HTML_PAGE = r"""<!doctype html>
     .hidden { display: none !important; }
     @media (max-width: 980px) {
       main, .result-grid, .modal-body { grid-template-columns: 1fr; }
-      .metadata-grid, .settings-grid, .batch-gallery, .status-grid, .api-layout, .api-endpoint { grid-template-columns: 1fr; }
+      .metadata-grid, .settings-grid, .batch-gallery, .status-grid, .status-log-grid, .api-layout, .api-endpoint { grid-template-columns: 1fr; }
       .api-docs-nav { position: static; max-height: none; }
       .panorama-scaling-controls, .settings-panorama-controls { grid-template-columns: 1fr; }
       .panorama-scaling-controls { padding-left: 0; }
@@ -4602,6 +5561,8 @@ HTML_PAGE = r"""<!doctype html>
     }
     @media (max-width: 700px) {
       header { display: grid; grid-template-columns: 1fr; }
+      .header-spacer { display: none; }
+      .primary-tabs { width: 100%; }
       .header-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: stretch; }
       .theme-control, .language-control { width: 100%; min-width: 0; }
       .tabs { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -4617,7 +5578,13 @@ HTML_PAGE = r"""<!doctype html>
 </head>
 <body>
   <header>
-    <h1 data-i18n="appTitle">Классификатор рудного шлифа</h1>
+    <h1 class="visually-hidden" data-i18n="appTitle">Классификатор рудного шлифа</h1>
+    <nav class="tabs primary-tabs">
+      <button class="tab active" id="workspaceTab" data-i18n="workspaceTab">Рабочее место</button>
+      <button class="tab" id="batchTab" data-i18n="batchTab">Серии</button>
+      <button class="tab" id="historyTab" data-i18n="historyTab">История</button>
+    </nav>
+    <div class="header-spacer"></div>
     <div class="header-actions">
       <select id="languageSelect" class="language-control" aria-label="Язык" data-i18n-aria-label="languageLabel">
         <option value="ru" data-i18n="languageRussian">Русский</option>
@@ -4628,13 +5595,10 @@ HTML_PAGE = r"""<!doctype html>
         <option value="light" data-i18n="themeLight">Светлая</option>
         <option value="dark" data-i18n="themeDark">Темная</option>
       </select>
-      <nav class="tabs">
-        <button class="tab active" id="workspaceTab" data-i18n="workspaceTab">Рабочее место</button>
-        <button class="tab" id="batchTab" data-i18n="batchTab">Серии</button>
-        <button class="tab" id="historyTab" data-i18n="historyTab">История</button>
-        <button class="tab" id="settingsTab" data-i18n="settingsTab">Настройки</button>
+      <nav class="tabs utility-tabs">
         <button class="tab" id="statusTab" data-i18n="statusTab">Статус</button>
         <button class="tab" id="apiTab" data-i18n="apiTab">API</button>
+        <button class="tab" id="settingsTab" data-i18n="settingsTab">Настройки</button>
       </nav>
     </div>
   </header>
@@ -4860,6 +5824,21 @@ HTML_PAGE = r"""<!doctype html>
             </div>
           </div>
           <div class="panel">
+            <h2 data-i18n="settingsRuntime">Runtime</h2>
+            <p class="muted" data-i18n="settingsRuntimeIntro">Переключение применяется сразу для новых запусков. Уже созданные run остаются с записанным backend/checkpoint.</p>
+            <div class="settings-grid">
+              <label class="settings-field"><span data-i18n="settingsBackend">Backend</span><select id="settingsBackend">
+                <option value="heuristic" data-i18n="settingsBackendHeuristic">heuristic</option>
+                <option value="ml" data-i18n="settingsBackendMl">ML</option>
+              </select></label>
+              <label class="settings-field full"><span data-i18n="settingsCheckpoint">Checkpoint</span><input id="settingsCheckpoint" type="text"></label>
+            </div>
+            <div class="settings-actions">
+              <button id="testRuntimeBtn" type="button" data-i18n="settingsRuntimeTest">Проверить</button>
+              <span id="runtimeTestStatus" class="muted"></span>
+            </div>
+          </div>
+          <div class="panel">
             <h2 data-i18n="settingsPreprocessDefaults">Предобработка по умолчанию</h2>
             <div class="settings-preprocess-defaults">
               <div class="settings-grid settings-preprocess-main">
@@ -4910,6 +5889,13 @@ HTML_PAGE = r"""<!doctype html>
             </div>
           </div>
           <div class="panel">
+            <h2 data-i18n="settingsHistory">История</h2>
+            <p class="muted" data-i18n="settingsHistoryIntro">Удаляет все сохраненные запуски и серии. Загруженные исходные изображения и настройки остаются.</p>
+            <div class="settings-actions">
+              <button id="removeAllHistoryBtn" class="danger" type="button" data-i18n="settingsRemoveAllHistory">Удалить всю историю</button>
+            </div>
+          </div>
+          <div class="panel">
             <div class="settings-actions">
               <button id="saveSettingsBtn" class="primary" type="button" data-i18n="settingsSave">Сохранить настройки</button>
               <button id="resetSettingsBtn" type="button" data-i18n="settingsReset">Сбросить по умолчанию</button>
@@ -4942,6 +5928,16 @@ HTML_PAGE = r"""<!doctype html>
             <h2 data-i18n="statusHistoryStorage">История и хранилище</h2>
             <div class="status-table-wrap">
               <table id="statusStorageTable" class="status-table"></table>
+            </div>
+          </div>
+          <div class="status-log-grid">
+            <div class="panel">
+              <h2 data-i18n="statusSystemLog">Системный журнал</h2>
+              <pre id="statusSystemLog" class="status-log"></pre>
+            </div>
+            <div class="panel">
+              <h2 data-i18n="statusAccessLog">Журнал доступа</h2>
+              <pre id="statusAccessLog" class="status-log"></pre>
             </div>
           </div>
         </div>
@@ -5207,6 +6203,8 @@ HTML_PAGE = r"""<!doctype html>
       historyRuns: [],
       historyBatches: [],
       systemStatus: null,
+      runFilesPayload: null,
+      runFilesSort: {key: 'path', dir: 'asc'},
       metadataTarget: {type: 'workspace', itemId: null},
       returnToBatchId: null,
       viewMode: 'original',
@@ -5300,6 +6298,10 @@ HTML_PAGE = r"""<!doctype html>
       language: DEFAULT_LANGUAGE,
       theme: 'system',
       show_tiling: false,
+      runtime: {
+        backend: 'heuristic',
+        checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt'
+      },
       preprocess: {...DEFAULT_PREPROCESS_PRESET},
       metadata_defaults: {}
     };
@@ -5572,10 +6574,22 @@ HTML_PAGE = r"""<!doctype html>
         path: '/api/settings',
         title: 'Read settings',
         titleRu: 'Получить настройки',
-        summary: 'Read server-backed UI defaults for language, theme, preprocessing, tiling, and session metadata.',
-        summaryRu: 'Возвращает серверные настройки UI: язык, тему, предобработку, тайлинг и шаблон метаданных сессии.',
+        summary: 'Read server-backed UI defaults for language, theme, runtime backend/checkpoint, preprocessing, tiling, and session metadata.',
+        summaryRu: 'Возвращает серверные настройки UI: язык, тему, runtime backend/checkpoint, предобработку, тайлинг и шаблон метаданных сессии.',
         body: null,
-        response: {schema_version: 'ore-pipeline-app-settings-v0.1', language: 'ru', theme: 'system'}
+        response: {schema_version: 'ore-pipeline-app-settings-v0.1', language: 'ru', theme: 'system', runtime: {backend: 'heuristic', checkpoint: 'models/.../best.pt'}}
+      },
+      {
+        id: 'delete-history',
+        group: 'Settings',
+        method: 'DELETE',
+        path: '/api/history',
+        title: 'Remove all history',
+        titleRu: 'Удалить всю историю',
+        summary: 'Delete all saved run and Series artifacts while leaving uploads and app settings intact. The request is rejected while jobs are active.',
+        summaryRu: 'Удаляет все сохраненные артефакты запусков и серий, не трогая загрузки и настройки приложения. Запрос отклоняется при активных заданиях.',
+        body: null,
+        response: {schema_version: 'ore-pipeline-history-delete-v0.1', removed_run_ids: [], removed_batch_ids: []}
       },
       {
         id: 'save-settings',
@@ -5584,24 +6598,39 @@ HTML_PAGE = r"""<!doctype html>
         path: '/api/settings',
         title: 'Save settings',
         titleRu: 'Сохранить настройки',
-        summary: 'Persist app defaults for every browser that opens the same workspace.',
-        summaryRu: 'Сохраняет настройки приложения для всех браузеров, открывающих тот же workspace.',
+        summary: 'Persist app defaults and apply the runtime backend/checkpoint immediately for new runs.',
+        summaryRu: 'Сохраняет настройки приложения и сразу применяет runtime backend/checkpoint для новых запусков.',
         body: {
           schema_version: 'ore-pipeline-app-settings-v0.1',
           language: 'ru',
           theme: 'system',
           show_tiling: false,
+          runtime: {backend: 'heuristic', checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt'},
           preprocess: {...DEFAULT_PREPROCESS_PRESET},
           metadata_defaults: {}
         },
         response: {schema_version: 'ore-pipeline-app-settings-v0.1', updated_at: '2026-07-03T12:00:00+00:00'}
+      },
+      {
+        id: 'runtime-test',
+        group: 'Settings',
+        method: 'POST',
+        path: '/api/runtime/test',
+        title: 'Test runtime',
+        titleRu: 'Проверить runtime',
+        summary: 'Validate an unsaved runtime backend/checkpoint selection. ML mode loads the checkpoint through the same model loader used by runs, without creating a run.',
+        summaryRu: 'Проверяет выбранный backend/checkpoint без сохранения настроек. Для ML checkpoint загружается тем же загрузчиком модели, что и в run, но новый run не создается.',
+        body: {runtime: {backend: 'ml', checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt'}},
+        response: {schema_version: 'ore-pipeline-runtime-test-v0.1', backend: 'ml', ok: true, status: 'ok'}
       }
     ];
     let statusMessage = {key: 'statusWaiting', params: {}};
     let settingsStatusMessage = null;
+    let runtimeTestStatusMessage = null;
     let uploadWarningMessage = null;
     let uploadProgressMessage = null;
     let uploadProgressTimer = null;
+    let statusPollTimer = null;
     let activePollRunId = null;
     const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'canceling']);
     const SUPPORTED_UPLOAD_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.tif', '.tiff', '.raw', '.dng', '.cr2', '.cr3', '.nef', '.arw', '.orf', '.rw2', '.raf', '.pef', '.srw']);
@@ -5673,16 +6702,33 @@ HTML_PAGE = r"""<!doctype html>
         settingsIntro: 'Эти настройки сохраняются на сервере приложения и применяются для всех браузеров, открывающих этот рабочий каталог.',
         settingsUiDefaults: 'Интерфейс',
         settingsShowTilingDefault: 'показывать тайлы по умолчанию',
+        settingsRuntime: 'Runtime',
+        settingsRuntimeIntro: 'Переключение применяется сразу для новых запусков. Уже созданные run остаются с записанным backend/checkpoint.',
+        settingsBackend: 'Backend',
+        settingsBackendHeuristic: 'heuristic',
+        settingsBackendMl: 'ML',
+        settingsCheckpoint: 'Checkpoint',
+        settingsRuntimeTest: 'Проверить',
+        settingsRuntimeTesting: 'Проверка runtime...',
+        settingsRuntimeTestOkHeuristic: 'Эвристический backend доступен.',
+        settingsRuntimeTestOkMl: 'ML backend загружен: {model}, {device}, {seconds} с.',
+        settingsRuntimeTestFailed: 'Проверка runtime не прошла: {error}',
         settingsPreprocessDefaults: 'Предобработка по умолчанию',
         settingsMetadataDefaults: 'Метаданные сессии по умолчанию',
+        settingsHistory: 'История',
+        settingsHistoryIntro: 'Удаляет все сохраненные запуски и серии. Загруженные исходные изображения и настройки остаются.',
+        settingsRemoveAllHistory: 'Удалить всю историю',
         settingsSave: 'Сохранить настройки',
         settingsReset: 'Сбросить по умолчанию',
         settingsLoaded: 'Настройки загружены.',
         settingsSaved: 'Настройки сохранены.',
         settingsResetDone: 'Настройки сброшены.',
+        settingsHistoryRemoved: 'История удалена: запусков — {runs}, серий — {batches}.',
+        settingsHistoryRemoveFailed: 'Не удалось удалить историю: {error}',
         settingsLoadFailed: 'Не удалось загрузить настройки: {error}',
         settingsSaveFailed: 'Не удалось сохранить настройки: {error}',
         settingsResetConfirm: 'Сбросить системные настройки по умолчанию?',
+        settingsRemoveAllHistoryConfirm: 'Удалить всю историю запусков и серий? Это действие нельзя отменить.',
         statusPage: 'Статус системы',
         statusLoading: 'Загрузка статуса...',
         statusRefresh: 'Обновить',
@@ -5690,6 +6736,9 @@ HTML_PAGE = r"""<!doctype html>
         statusLoadFailed: 'Не удалось загрузить статус: {error}',
         statusHealthChecks: 'Проверки здоровья',
         statusHistoryStorage: 'История и хранилище',
+        statusSystemLog: 'Системный журнал',
+        statusAccessLog: 'Журнал доступа',
+        statusLogEmpty: 'Записей нет.',
         statusOverall: 'Состояние',
         statusCpu: 'CPU',
         statusGpu: 'GPU',
@@ -5706,6 +6755,9 @@ HTML_PAGE = r"""<!doctype html>
         statusGpuNotDetected: 'GPU не обнаружен',
         statusGpuDevice: 'GPU {index}: {name}',
         statusGpuUtil: '{util}% · {used} / {total}',
+        statusGpuMetal: 'Metal · MPS: {mps} · ядер: {cores} · дисплеев: {displays}',
+        statusGpuMpsAvailable: 'доступен',
+        statusGpuMpsUnavailable: 'недоступен',
         statusCpuValue: '{load}% load · {cpus} CPU',
         statusRamValue: '{used} / {total}',
         statusFlashValue: '{used} / {total}',
@@ -5726,6 +6778,9 @@ HTML_PAGE = r"""<!doctype html>
         statusStorageTotalWorkspace: 'всего workspace',
         statusActiveJobs: 'Активные задания',
         statusNoActiveJobs: 'нет активных заданий',
+        statusActiveRuns: 'запуски {count}',
+        statusActiveSeries: 'серии {count}',
+        statusActiveOperations: 'операции {count}',
         inputImage: 'Входное изображение',
         dropImageHere: 'Перетащите изображение сюда',
         dropImageHelp: 'или нажмите, чтобы открыть PNG, JPEG, TIFF, RAW',
@@ -5881,9 +6936,11 @@ HTML_PAGE = r"""<!doctype html>
         runFilesHeaderKind: 'Тип',
         runFilesHeaderSize: 'Размер',
         runFilesHeaderImageSize: 'Изображение',
+        runFilesHeaderAction: 'Действия',
         runFilesSummary: '{count} файлов · {size}',
         runFilesImageKind: 'изображение',
         runFilesFileKind: 'файл',
+        runFilesViewAction: 'Просмотр',
         downloadZip: 'Скачать ZIP',
         historyPage: 'История запусков',
         historyModeAllRuns: 'все запуски',
@@ -5968,6 +7025,8 @@ HTML_PAGE = r"""<!doctype html>
         historyPreviewOpen: 'Открыть превью {name}',
         historyFilename: 'Файл',
         historyDate: 'Дата',
+        historyProgress: 'Прогресс',
+        historyTileProgress: 'тайлы {processed}/{total}',
         historyOreClassification: 'Классификация руды',
         historySulfides: 'Сульфиды',
         historyNonSulfides: 'Не сульфиды',
@@ -6075,16 +7134,33 @@ HTML_PAGE = r"""<!doctype html>
         settingsIntro: 'These settings are saved by the app server and apply to every browser that opens this workspace.',
         settingsUiDefaults: 'Interface',
         settingsShowTilingDefault: 'show tiling by default',
+        settingsRuntime: 'Runtime',
+        settingsRuntimeIntro: 'The switch is applied immediately for new runs. Existing runs keep their recorded backend/checkpoint.',
+        settingsBackend: 'Backend',
+        settingsBackendHeuristic: 'heuristic',
+        settingsBackendMl: 'ML',
+        settingsCheckpoint: 'Checkpoint',
+        settingsRuntimeTest: 'Test',
+        settingsRuntimeTesting: 'Testing runtime...',
+        settingsRuntimeTestOkHeuristic: 'Heuristic backend is available.',
+        settingsRuntimeTestOkMl: 'ML backend loaded: {model}, {device}, {seconds}s.',
+        settingsRuntimeTestFailed: 'Runtime test failed: {error}',
         settingsPreprocessDefaults: 'Default preprocessing',
         settingsMetadataDefaults: 'Default session metadata',
+        settingsHistory: 'History',
+        settingsHistoryIntro: 'Removes all saved runs and series. Uploaded source images and settings stay intact.',
+        settingsRemoveAllHistory: 'Remove all history',
         settingsSave: 'Save settings',
         settingsReset: 'Reset to defaults',
         settingsLoaded: 'Settings loaded.',
         settingsSaved: 'Settings saved.',
         settingsResetDone: 'Settings reset.',
+        settingsHistoryRemoved: 'History removed: {runs} runs, {batches} series.',
+        settingsHistoryRemoveFailed: 'Could not remove history: {error}',
         settingsLoadFailed: 'Could not load settings: {error}',
         settingsSaveFailed: 'Could not save settings: {error}',
         settingsResetConfirm: 'Reset system settings to defaults?',
+        settingsRemoveAllHistoryConfirm: 'Remove all run and series history? This cannot be undone.',
         statusPage: 'System Status',
         statusLoading: 'Loading status...',
         statusRefresh: 'Refresh',
@@ -6092,6 +7168,9 @@ HTML_PAGE = r"""<!doctype html>
         statusLoadFailed: 'Could not load status: {error}',
         statusHealthChecks: 'Health checks',
         statusHistoryStorage: 'History and storage',
+        statusSystemLog: 'System log',
+        statusAccessLog: 'Access log',
+        statusLogEmpty: 'No log entries.',
         statusOverall: 'Health',
         statusCpu: 'CPU',
         statusGpu: 'GPU',
@@ -6108,6 +7187,9 @@ HTML_PAGE = r"""<!doctype html>
         statusGpuNotDetected: 'GPU not detected',
         statusGpuDevice: 'GPU {index}: {name}',
         statusGpuUtil: '{util}% · {used} / {total}',
+        statusGpuMetal: 'Metal · MPS: {mps} · cores: {cores} · displays: {displays}',
+        statusGpuMpsAvailable: 'available',
+        statusGpuMpsUnavailable: 'unavailable',
         statusCpuValue: '{load}% load · {cpus} CPU',
         statusRamValue: '{used} / {total}',
         statusFlashValue: '{used} / {total}',
@@ -6128,6 +7210,9 @@ HTML_PAGE = r"""<!doctype html>
         statusStorageTotalWorkspace: 'total workspace',
         statusActiveJobs: 'Active jobs',
         statusNoActiveJobs: 'no active jobs',
+        statusActiveRuns: 'runs {count}',
+        statusActiveSeries: 'series {count}',
+        statusActiveOperations: 'operations {count}',
         inputImage: 'Input image',
         dropImageHere: 'Drop image here',
         dropImageHelp: 'or click to open PNG, JPEG, TIFF, RAW',
@@ -6283,9 +7368,11 @@ HTML_PAGE = r"""<!doctype html>
         runFilesHeaderKind: 'Type',
         runFilesHeaderSize: 'Size',
         runFilesHeaderImageSize: 'Image',
+        runFilesHeaderAction: 'Actions',
         runFilesSummary: '{count} files · {size}',
         runFilesImageKind: 'image',
         runFilesFileKind: 'file',
+        runFilesViewAction: 'View',
         downloadZip: 'Download ZIP',
         historyPage: 'History page',
         historyModeAllRuns: 'all runs',
@@ -6370,6 +7457,8 @@ HTML_PAGE = r"""<!doctype html>
         historyPreviewOpen: 'Open preview for {name}',
         historyFilename: 'Filename',
         historyDate: 'Date',
+        historyProgress: 'Progress',
+        historyTileProgress: 'tiles {processed}/{total}',
         historyOreClassification: 'Ore classification',
         historySulfides: 'Sulfides',
         historyNonSulfides: 'Non-sulfides',
@@ -6436,8 +7525,10 @@ HTML_PAGE = r"""<!doctype html>
       return (Number(value || 0) * 100).toFixed(1);
     }
     function formatBytes(bytes) {
-      const value = Number(bytes || 0);
-      if (!Number.isFinite(value) || value <= 0) return '0 B';
+      if (bytes === null || bytes === undefined || bytes === '') return '—';
+      const value = Number(bytes);
+      if (!Number.isFinite(value) || value < 0) return '—';
+      if (value === 0) return '0 B';
       const units = ['B', 'KiB', 'MiB', 'GiB'];
       let scaled = value;
       let unitIndex = 0;
@@ -6472,6 +7563,63 @@ HTML_PAGE = r"""<!doctype html>
       const entries = Object.entries(counts || {}).sort(([left], [right]) => left.localeCompare(right));
       return entries.length ? entries.map(([key, value]) => `${key}: ${formatCount(value)}`).join(' · ') : '—';
     }
+    function statusActiveJobsText(history) {
+      const activeRuns = Array.isArray(history && history.active_runs) ? history.active_runs : [];
+      const activeBatches = Array.isArray(history && history.active_batches) ? history.active_batches : [];
+      const activeOperations = Array.isArray(history && history.active_operations) ? history.active_operations : [];
+      const parts = [];
+      if (activeRuns.length) parts.push(t('statusActiveRuns', {count: activeRuns.length}));
+      if (activeBatches.length) parts.push(t('statusActiveSeries', {count: activeBatches.length}));
+      if (activeOperations.length) parts.push(t('statusActiveOperations', {count: activeOperations.length}));
+      if (!parts.length) return t('statusNoActiveJobs');
+      const operationDetails = activeOperations.slice(0, 2).map(operation => {
+        const label = operation.label || operation.kind || '';
+        const elapsed = Math.round(Number(operation.elapsed_seconds || 0));
+        return label ? `${label} ${elapsed}s` : '';
+      }).filter(Boolean);
+      return parts.concat(operationDetails).join(' · ');
+    }
+    function statusGpuDeviceDetails(device) {
+      if (device && device.backend === 'metal') {
+        return t('statusGpuMetal', {
+          mps: device.mps_available ? t('statusGpuMpsAvailable') : t('statusGpuMpsUnavailable'),
+          cores: device.cores ?? '—',
+          displays: device.displays ?? '—'
+        });
+      }
+      return t('statusGpuUtil', {
+        util: formatPercentValue(device && device.utilization_percent),
+        used: formatBytes(device && device.memory_used_bytes),
+        total: formatBytes(device && device.memory_total_bytes)
+      });
+    }
+    function statusLogDetails(entry) {
+      const details = entry && entry.details && typeof entry.details === 'object' ? entry.details : null;
+      if (!details || !Object.keys(details).length) return '';
+      return ' ' + JSON.stringify(details);
+    }
+    function statusLogLine(entry, type) {
+      const timestamp = entry && entry.timestamp ? formatDate(entry.timestamp) : '';
+      if (type === 'access') {
+        const size = entry && entry.size_bytes !== undefined && entry.size_bytes !== '-' ? ` · ${formatBytes(entry.size_bytes)}` : '';
+        return `${timestamp} ${entry.method || ''} ${entry.path || ''} -> ${entry.status || ''}${size} · ${entry.client || ''}`.trim();
+      }
+      return `${timestamp} [${entry.level || 'info'}] ${entry.message || ''}${statusLogDetails(entry)}`.trim();
+    }
+    function renderStatusLogs(logs) {
+      const systemEntries = Array.isArray(logs && logs.system) ? logs.system : [];
+      const accessEntries = Array.isArray(logs && logs.access) ? logs.access : [];
+      if ($('statusSystemLog')) {
+        $('statusSystemLog').textContent = systemEntries.length
+          ? systemEntries.map(entry => statusLogLine(entry, 'system')).join('\n')
+          : t('statusLogEmpty');
+      }
+      if ($('statusAccessLog')) {
+        $('statusAccessLog').textContent = accessEntries.length
+          ? accessEntries.map(entry => statusLogLine(entry, 'access')).join('\n')
+          : t('statusLogEmpty');
+      }
+    }
     function renderSystemStatus(payload = state.systemStatus) {
       state.systemStatus = payload;
       if (!$('statusCards')) return;
@@ -6479,6 +7627,7 @@ HTML_PAGE = r"""<!doctype html>
         $('statusCards').innerHTML = '';
         $('statusHealthTable').innerHTML = '';
         $('statusStorageTable').innerHTML = '';
+        renderStatusLogs(null);
         return;
       }
       $('statusGeneratedAt').textContent = t('statusUpdatedAt', {date: formatDate(payload.generated_at)});
@@ -6493,18 +7642,11 @@ HTML_PAGE = r"""<!doctype html>
         ? gpu.devices.map(device => escapeHtml(t('statusGpuDevice', {index: device.index, name: device.name}))).join('<br>')
         : escapeHtml(t('statusGpuNotDetected'));
       const gpuSubvalue = gpu.available && Array.isArray(gpu.devices) && gpu.devices.length
-        ? gpu.devices.map(device => t('statusGpuUtil', {
-            util: formatPercentValue(device.utilization_percent),
-            used: formatBytes(device.memory_used_bytes),
-            total: formatBytes(device.memory_total_bytes)
-          })).join(' · ')
+        ? gpu.devices.map(device => statusGpuDeviceDetails(device)).join(' · ')
         : (gpu.message || '');
+      const backendSubvalue = app.backend === 'ml' ? (app.checkpoint || '') : '';
       $('statusCards').innerHTML = [
-        statusCard('statusOverall', healthPill(health.overall), t('statusActiveJobs') + ': ' + (
-          ((history.active_runs || []).length || (history.active_batches || []).length)
-            ? `${(history.active_runs || []).length} / ${(history.active_batches || []).length}`
-            : t('statusNoActiveJobs')
-        )),
+        statusCard('statusOverall', healthPill(health.overall), t('statusActiveJobs') + ': ' + statusActiveJobsText(history)),
         statusCard('statusCpu', escapeHtml(t('statusCpuValue', {load: formatPercentValue(cpu.load_percent_1m), cpus: cpu.logical_cpus || '—'})), `1m ${formatPercentValue(cpu.load_average_1m)} · 5m ${formatPercentValue(cpu.load_average_5m)} · 15m ${formatPercentValue(cpu.load_average_15m)}`),
         statusCard('statusGpu', gpuValue, gpuSubvalue),
         statusCard('statusRam', escapeHtml(t('statusRamValue', {used: formatBytes(ram.used_bytes), total: formatBytes(ram.total_bytes)})), `${formatPercentValue(ram.used_percent)}%`),
@@ -6512,7 +7654,7 @@ HTML_PAGE = r"""<!doctype html>
         statusCard('statusHistorySize', escapeHtml(t('statusHistoryValue', {size: formatBytes(history.history_size_bytes)})), `${t('statusStorageUploads')}: ${formatBytes(history.uploads_size_bytes)}`),
         statusCard('statusRuns', escapeHtml(t('statusRunsValue', {count: formatCount(history.runs_total)})), statusCountsText(history.run_status_counts)),
         statusCard('statusSeries', escapeHtml(t('statusSeriesValue', {count: formatCount(history.batches_total)})), statusCountsText(history.batch_status_counts)),
-        statusCard('statusBackend', escapeHtml(t('statusBackendValue', {backend: app.backend || '—'})), app.checkpoint || ''),
+        statusCard('statusBackend', escapeHtml(t('statusBackendValue', {backend: app.backend || '—'})), backendSubvalue),
         statusCard('statusUptime', escapeHtml(t('statusUptimeValue', {seconds: Math.round(Number(app.uptime_seconds || 0))})), app.started_at ? formatDate(app.started_at) : '')
       ].join('');
       const checks = Array.isArray(health.checks) ? health.checks : [];
@@ -6528,10 +7670,11 @@ HTML_PAGE = r"""<!doctype html>
       $('statusStorageTable').innerHTML = `<thead><tr><th>${escapeHtml(t('statusStorageItem'))}</th><th>${escapeHtml(t('statusStorageSize'))}</th><th>${escapeHtml(t('statusStorageDetails'))}</th></tr></thead><tbody>` + storageRows.map(row => (
         `<tr><td>${escapeHtml(row[0])}</td><td>${escapeHtml(formatBytes(row[1]))}</td><td>${escapeHtml(row[2])}</td></tr>`
       )).join('') + '</tbody>';
+      renderStatusLogs(payload.logs || {});
     }
-    async function loadSystemStatus() {
+    async function loadSystemStatus(options = {}) {
       if (!$('statusGeneratedAt')) return;
-      $('statusGeneratedAt').textContent = t('statusLoading');
+      if (!options.silent) $('statusGeneratedAt').textContent = t('statusLoading');
       try {
         const response = await fetch('/api/status');
         const payload = await response.json();
@@ -6540,6 +7683,17 @@ HTML_PAGE = r"""<!doctype html>
       } catch (error) {
         $('statusGeneratedAt').textContent = t('statusLoadFailed', {error: error.message || t('unknownError')});
       }
+    }
+    function setStatusPolling(enabled) {
+      if (!enabled) {
+        if (statusPollTimer) clearInterval(statusPollTimer);
+        statusPollTimer = null;
+        return;
+      }
+      if (statusPollTimer) return;
+      statusPollTimer = setInterval(() => {
+        if (document.body.dataset.page === 'status') loadSystemStatus({silent: true});
+      }, 2000);
     }
     function apiEndpointText(endpoint, key) {
       if (currentLanguage() === 'ru') return endpoint[`${key}Ru`] || endpoint[key] || '';
@@ -6747,6 +7901,7 @@ HTML_PAGE = r"""<!doctype html>
       document.querySelectorAll('[data-i18n-aria-label]').forEach(node => { node.setAttribute('aria-label', t(node.dataset.i18nAriaLabel)); });
       if (statusMessage) $('progressText').textContent = t(statusMessage.key, statusMessage.params);
       if (settingsStatusMessage) $('settingsStatus').textContent = t(settingsStatusMessage.key, settingsStatusMessage.params);
+      if (runtimeTestStatusMessage && $('runtimeTestStatus')) $('runtimeTestStatus').textContent = t(runtimeTestStatusMessage.key, runtimeTestStatusMessage.params);
       if (uploadWarningMessage) setUploadWarning(uploadWarningMessage.key, uploadWarningMessage.params);
       if (uploadProgressMessage) setUploadProgress(uploadProgressMessage.key, uploadProgressMessage.progress, uploadProgressMessage.params);
       updateAugmentationValueLabels();
@@ -6902,6 +8057,13 @@ HTML_PAGE = r"""<!doctype html>
         return {};
       }
     }
+    function normalizedRuntimeSettings(runtime = {}, fallback = DEFAULT_APP_SETTINGS.runtime) {
+      const values = runtime && typeof runtime === 'object' ? runtime : {};
+      const fallbackValues = fallback && typeof fallback === 'object' ? fallback : DEFAULT_APP_SETTINGS.runtime;
+      const backend = ['heuristic', 'ml'].includes(values.backend) ? values.backend : (fallbackValues.backend || 'heuristic');
+      const checkpoint = typeof values.checkpoint === 'string' ? values.checkpoint : (fallbackValues.checkpoint || '');
+      return {backend, checkpoint};
+    }
     function normalizedAppSettings(settings = {}) {
       const values = settings && typeof settings === 'object' ? settings : {};
       const language = I18N[values.language] ? values.language : DEFAULT_APP_SETTINGS.language;
@@ -6912,6 +8074,7 @@ HTML_PAGE = r"""<!doctype html>
         language,
         theme,
         show_tiling: Boolean(values.show_tiling),
+        runtime: normalizedRuntimeSettings(values.runtime || {}, DEFAULT_APP_SETTINGS.runtime),
         preprocess: normalizedPreprocessPreset(values.preprocess || {}, DEFAULT_APP_SETTINGS.preprocess),
         metadata_defaults: {...metadataDefaults}
       };
@@ -6922,6 +8085,9 @@ HTML_PAGE = r"""<!doctype html>
         language: storedLanguageChoice(),
         theme: storedThemeChoice(),
         show_tiling: false,
+        runtime: state.systemStatus && state.systemStatus.app
+          ? {backend: state.systemStatus.app.backend, checkpoint: state.systemStatus.app.checkpoint || ''}
+          : DEFAULT_APP_SETTINGS.runtime,
         preprocess: storedPreprocessPreset(),
         metadata_defaults: metadataDefaultsFromLocalStorage()
       });
@@ -7168,6 +8334,8 @@ HTML_PAGE = r"""<!doctype html>
       $('settingsLanguage').value = normalized.language;
       $('settingsTheme').value = normalized.theme;
       $('settingsShowTiling').checked = normalized.show_tiling;
+      $('settingsBackend').value = normalized.runtime.backend;
+      $('settingsCheckpoint').value = normalized.runtime.checkpoint || '';
       $('settingsPreprocessingEnabled').checked = normalized.preprocess.preprocessing_enabled;
       $('settingsIllumination').checked = normalized.preprocess.illumination_normalization;
       $('settingsDenoise').checked = normalized.preprocess.denoise;
@@ -7203,6 +8371,10 @@ HTML_PAGE = r"""<!doctype html>
         language: $('settingsLanguage').value,
         theme: $('settingsTheme').value,
         show_tiling: $('settingsShowTiling').checked,
+        runtime: {
+          backend: $('settingsBackend').value,
+          checkpoint: $('settingsCheckpoint').value.trim()
+        },
         preprocess: {
           preprocessing_enabled: $('settingsPreprocessingEnabled').checked,
           illumination_normalization: $('settingsIllumination').checked,
@@ -7220,6 +8392,26 @@ HTML_PAGE = r"""<!doctype html>
       settingsStatusMessage = key ? {key, params} : null;
       if (!$('settingsStatus')) return;
       $('settingsStatus').textContent = key ? t(key, params) : '';
+    }
+    function setRuntimeTestStatus(key = null, params = {}) {
+      runtimeTestStatusMessage = key ? {key, params} : null;
+      if (!$('runtimeTestStatus')) return;
+      $('runtimeTestStatus').textContent = key ? t(key, params) : '';
+    }
+    function runtimeTestSuccessStatus(payload) {
+      const details = payload && payload.details && typeof payload.details === 'object' ? payload.details : {};
+      const checkpointMeta = details.checkpoint_meta && typeof details.checkpoint_meta === 'object' ? details.checkpoint_meta : {};
+      if (payload && payload.backend === 'ml') {
+        return {
+          key: 'settingsRuntimeTestOkMl',
+          params: {
+            model: checkpointMeta.model || 'model',
+            device: details.device || 'cpu',
+            seconds: Number(payload.seconds || details.seconds || 0).toFixed(1)
+          }
+        };
+      }
+      return {key: 'settingsRuntimeTestOkHeuristic', params: {}};
     }
     function applyAppSettings(settings) {
       const normalized = normalizedAppSettings(settings);
@@ -7268,6 +8460,61 @@ HTML_PAGE = r"""<!doctype html>
         await saveSettingsObject(DEFAULT_APP_SETTINGS, 'settingsResetDone');
       } catch (error) {
         setSettingsStatus('settingsSaveFailed', {error: error.message || t('unknownError')});
+      }
+    }
+    async function removeAllHistoryFromSettings() {
+      if (!window.confirm(t('settingsRemoveAllHistoryConfirm'))) return;
+      const button = $('removeAllHistoryBtn');
+      if (button) button.disabled = true;
+      try {
+        const response = await fetch('/api/history', {method: 'DELETE'});
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'history delete failed');
+        activePollRunId = null;
+        state.run = null;
+        state.batch = null;
+        state.batchPollId = null;
+        state.returnToBatchId = null;
+        state.historyRuns = [];
+        state.historyBatches = [];
+        clearResultsPanel();
+        updateRunControls(null);
+        resetViewerToInputLayer();
+        renderHistory();
+        renderHistoryPage();
+        setSettingsStatus('settingsHistoryRemoved', {
+          runs: (payload.removed_run_ids || []).length,
+          batches: (payload.removed_batch_ids || []).length
+        });
+        if (document.body.dataset.page === 'status') loadSystemStatus();
+      } catch (error) {
+        setSettingsStatus('settingsHistoryRemoveFailed', {error: error.message || t('unknownError')});
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+    async function testRuntimeFromPage() {
+      const button = $('testRuntimeBtn');
+      if (button) button.disabled = true;
+      setRuntimeTestStatus('settingsRuntimeTesting');
+      try {
+        const response = await fetch('/api/runtime/test', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({runtime: collectSettingsForm().runtime})
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'runtime test failed');
+        if (payload.ok) {
+          const status = runtimeTestSuccessStatus(payload);
+          setRuntimeTestStatus(status.key, status.params);
+        } else {
+          setRuntimeTestStatus('settingsRuntimeTestFailed', {error: payload.message || t('unknownError')});
+        }
+      } catch (error) {
+        setRuntimeTestStatus('settingsRuntimeTestFailed', {error: error.message || t('unknownError')});
+      } finally {
+        if (button) button.disabled = false;
       }
     }
     function setStatus(key, params = {}) {
@@ -7633,8 +8880,12 @@ HTML_PAGE = r"""<!doctype html>
         return;
       }
       if (layer === 'sulfide') {
-        await drawLayer(display, baseLayerKey(display), clipX, clipW, {showImage: classVisible('showNonSulfide')});
-        if (classVisible('showSulfide')) {
+        const showSulfide = classVisible('showSulfide');
+        const showNonSulfide = classVisible('showNonSulfide');
+        if (showNonSulfide) {
+          await drawLayer(display, showSulfide ? baseLayerKey(display) : 'non_sulfide_base', clipX, clipW);
+        }
+        if (showSulfide) {
           await drawOverlay(display.sulfide_overlay, clipX, clipW, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly});
         }
         if (classVisible('showSulfideArtifacts')) {
@@ -8069,6 +9320,21 @@ HTML_PAGE = r"""<!doctype html>
       $('pdfLink').removeAttribute('href');
       $('runFilesZipLink').removeAttribute('href');
       $('runFilesBtn').disabled = true;
+    }
+    function resetViewerToInputLayer() {
+      state.sideLayer = 'none';
+      if (layerAvailable('preprocessed')) state.viewMode = 'preprocessed';
+      else if (layerAvailable('augmented')) state.viewMode = 'augmented';
+      else state.viewMode = 'original';
+      updateViewControls();
+      drawMain();
+    }
+    function clearRunResultsForStart(preparedRun = null) {
+      clearResultsPanel();
+      state.run = preparedRun;
+      state.images.clear();
+      state.boundaryImages.clear();
+      resetViewerToInputLayer();
     }
     async function saveMetadataFromDialog() {
       const domain = collectMetadataDomain();
@@ -8560,16 +9826,18 @@ HTML_PAGE = r"""<!doctype html>
       savePreprocessPreset();
       $('startBtn').disabled = true;
       state.returnToBatchId = null;
+      const preparedRun = runIsPrepared(state.run) ? state.run : null;
+      clearRunResultsForStart(preparedRun);
       setProgress(1);
       setStatus('statusProgress', {stage: stageLabel('queued'), progress: 1, eta: ''});
       try {
-        const startPayload = runIsPrepared(state.run)
+        const startPayload = preparedRun
           ? {}
           : {upload_id: state.upload.upload_id, ...presetPayload(), augmentation: augmentationPayload()};
         const curatedMetadata = currentMetadataPayloadForSubmission();
         if (curatedMetadata) startPayload.curated_metadata = curatedMetadata;
-        const startUrl = runIsPrepared(state.run)
-          ? `/api/runs/${encodeURIComponent(state.run.run_id)}/start`
+        const startUrl = preparedRun
+          ? `/api/runs/${encodeURIComponent(preparedRun.run_id)}/start`
           : '/api/runs/start';
         const response = await fetch(startUrl, {
           method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -8672,17 +9940,65 @@ HTML_PAGE = r"""<!doctype html>
       if (!file || !file.is_image || !file.width || !file.height) return '';
       return `${file.width}x${file.height}`;
     }
+    function runFileSortValue(file, key) {
+      if (key === 'kind') return {missing: false, value: file && file.is_image ? 'image' : 'file'};
+      if (key === 'size') {
+        const size = Number(file && file.size_bytes);
+        return {missing: !Number.isFinite(size), value: Number.isFinite(size) ? size : 0};
+      }
+      if (key === 'image') {
+        const width = Number(file && file.width);
+        const height = Number(file && file.height);
+        const hasSize = Boolean(file && file.is_image && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0);
+        return {missing: !hasSize, value: hasSize ? width * height : 0};
+      }
+      return {missing: false, value: String((file && (file.path || file.name)) || '').toLowerCase()};
+    }
+    function compareRunFiles(left, right, key, dir) {
+      const leftValue = runFileSortValue(left, key);
+      const rightValue = runFileSortValue(right, key);
+      if (leftValue.missing !== rightValue.missing) return leftValue.missing ? 1 : -1;
+      let result = 0;
+      if (typeof leftValue.value === 'number' && typeof rightValue.value === 'number') {
+        result = leftValue.value - rightValue.value;
+      } else {
+        result = String(leftValue.value).localeCompare(String(rightValue.value), localeCode(), {numeric: true, sensitivity: 'base'});
+      }
+      if (result === 0) {
+        result = String((left && (left.path || left.name)) || '').localeCompare(String((right && (right.path || right.name)) || ''), localeCode(), {numeric: true, sensitivity: 'base'});
+      }
+      return dir === 'desc' ? -result : result;
+    }
+    function sortedRunFiles(files) {
+      const key = state.runFilesSort.key || 'path';
+      const dir = state.runFilesSort.dir === 'desc' ? 'desc' : 'asc';
+      return (files || []).map((file, index) => ({file, index})).sort((left, right) => {
+        const result = compareRunFiles(left.file, right.file, key, dir);
+        return result || left.index - right.index;
+      }).map(item => item.file);
+    }
+    function runFilesSortHeader(key, label, className = '') {
+      const active = state.runFilesSort.key === key;
+      const dir = active && state.runFilesSort.dir === 'desc' ? 'desc' : 'asc';
+      const ariaSort = active ? (dir === 'desc' ? 'descending' : 'ascending') : 'none';
+      const indicator = active ? (dir === 'desc' ? 'v' : '^') : '';
+      return `<th class="${escapeHtml(className)}" aria-sort="${ariaSort}"><button class="run-files-sort" type="button" data-run-files-sort="${escapeHtml(key)}"><span>${escapeHtml(label)}</span><span class="run-files-sort-indicator" aria-hidden="true">${escapeHtml(indicator)}</span></button></th>`;
+    }
     function renderRunFiles(payload) {
-      const files = payload.files || [];
+      state.runFilesPayload = payload;
+      const files = sortedRunFiles(payload.files || []);
       $('runFilesStatus').textContent = files.length ? '' : t('runFilesEmpty');
       $('runFilesSummary').textContent = t('runFilesSummary', {
         count: payload.file_count ?? files.length,
         size: formatBytes(payload.total_size_bytes || 0)
       });
       $('runFilesZipLink').href = (payload.downloads && payload.downloads.artifacts_zip) || (state.run && state.run.downloads && state.run.downloads.artifacts_zip) || '';
-      $('runFilesTable').innerHTML = `<thead><tr><th>${escapeHtml(t('runFilesHeaderPath'))}</th><th>${escapeHtml(t('runFilesHeaderKind'))}</th><th class="numeric">${escapeHtml(t('runFilesHeaderSize'))}</th><th class="numeric">${escapeHtml(t('runFilesHeaderImageSize'))}</th></tr></thead><tbody>` + files.map(file => {
+      $('runFilesTable').innerHTML = `<thead><tr>${runFilesSortHeader('path', t('runFilesHeaderPath'))}${runFilesSortHeader('kind', t('runFilesHeaderKind'))}${runFilesSortHeader('size', t('runFilesHeaderSize'), 'numeric')}${runFilesSortHeader('image', t('runFilesHeaderImageSize'), 'numeric')}<th class="action">${escapeHtml(t('runFilesHeaderAction'))}</th></tr></thead><tbody>` + files.map(file => {
         const kind = file.is_image ? t('runFilesImageKind') : t('runFilesFileKind');
-        return `<tr><td>${escapeHtml(file.path || file.name || '')}</td><td>${escapeHtml(kind)}</td><td class="numeric">${escapeHtml(formatBytes(file.size_bytes))}</td><td class="numeric">${escapeHtml(imageDimensionsText(file))}</td></tr>`;
+        const view = file.view_url
+          ? `<a href="${escapeHtml(file.view_url)}" target="_blank" rel="noopener">${escapeHtml(t('runFilesViewAction'))}</a>`
+          : '';
+        return `<tr><td>${escapeHtml(file.path || file.name || '')}</td><td>${escapeHtml(kind)}</td><td class="numeric">${escapeHtml(formatBytes(file.size_bytes))}</td><td class="numeric">${escapeHtml(imageDimensionsText(file))}</td><td class="action">${view}</td></tr>`;
       }).join('') + '</tbody>';
     }
     async function openRunFilesDialog() {
@@ -8690,6 +10006,8 @@ HTML_PAGE = r"""<!doctype html>
       $('runFilesStatus').textContent = t('runFilesLoading');
       $('runFilesSummary').textContent = '';
       $('runFilesTable').innerHTML = '';
+      state.runFilesPayload = null;
+      state.runFilesSort = {key: 'path', dir: 'asc'};
       $('runFilesZipLink').href = (state.run.downloads && state.run.downloads.artifacts_zip) || `/api/runs/${encodeURIComponent(state.run.run_id)}/artifacts.zip`;
       $('runFilesDialog').showModal();
       try {
@@ -8766,6 +10084,41 @@ HTML_PAGE = r"""<!doctype html>
         .map(([status, value]) => `${batchStatusLabel(status)}: ${Number(value || 0)}`);
       return parts.join(' · ') || '—';
     }
+    function runProgressPercent(run) {
+      const value = Number(run && run.progress);
+      return Math.round(clampNumber(Number.isFinite(value) ? value : 0, 0, 100));
+    }
+    function runProgressDetails(run) {
+      if (!run || !runIsActive(run)) return '';
+      const parts = [];
+      const statusText = stageLabel(run.status || 'running');
+      if (run.stage) {
+        const stageText = stageLabel(run.stage);
+        if (stageText && stageText !== statusText) parts.push(stageText);
+      }
+      const tileProgress = run.tile_progress || {};
+      const tilesTotal = Number(tileProgress.tiles_total || 0);
+      if (tilesTotal > 0) {
+        const tilesProcessed = Math.max(0, Math.min(Number(tileProgress.tiles_processed || 0), tilesTotal));
+        parts.push(t('historyTileProgress', {processed: Math.round(tilesProcessed), total: Math.round(tilesTotal)}));
+      }
+      if (run.eta_seconds != null) parts.push(t('statusEta', {seconds: run.eta_seconds}).trim());
+      return parts.join(' · ');
+    }
+    function renderHistoryProgress(run) {
+      const progress = runProgressPercent(run);
+      const active = runIsActive(run);
+      const label = stageLabel((run && run.status) || 'complete');
+      const details = runProgressDetails(run);
+      const bar = active
+        ? `<div class="history-progress-bar" aria-hidden="true"><span style="width:${progress}%"></span></div>`
+        : '';
+      return `<div class="history-progress-cell">
+        <div class="history-progress-head"><span>${escapeHtml(label)}</span><strong>${escapeHtml(progress + '%')}</strong></div>
+        ${bar}
+        ${details ? `<small>${escapeHtml(details)}</small>` : ''}
+      </div>`;
+    }
     function renderBatchHistoryTable(batches) {
       if (!batches.length) return `<p class="muted">${escapeHtml(t('historyNoBatches'))}</p>`;
       const rows = batches.map(batch => {
@@ -8801,6 +10154,7 @@ HTML_PAGE = r"""<!doctype html>
           <td class="thumbnail">${renderHistoryThumbnail(run)}</td>
           <td class="filename" title="${escapeHtml(runFilename(run))}">${escapeHtml(runFilename(run))}</td>
           <td>${escapeHtml(formatDate(run.created_at))}</td>
+          <td class="progress">${renderHistoryProgress(run)}</td>
           <td>${escapeHtml(oreClassText(summary))}</td>
           <td class="numeric">${escapeHtml(formatFraction(sulfide))}</td>
           <td class="numeric">${escapeHtml(formatFraction(Math.max(0, 1 - sulfide)))}</td>
@@ -8815,6 +10169,7 @@ HTML_PAGE = r"""<!doctype html>
           <th class="thumbnail">${escapeHtml(t('historyThumbnail'))}</th>
           <th>${escapeHtml(t('historyFilename'))}</th>
           <th>${escapeHtml(t('historyDate'))}</th>
+          <th class="progress">${escapeHtml(t('historyProgress'))}</th>
           <th>${escapeHtml(t('historyOreClassification'))}</th>
           <th class="numeric">${escapeHtml(t('historySulfides'))}</th>
           <th class="numeric">${escapeHtml(t('historyNonSulfides'))}</th>
@@ -8845,6 +10200,7 @@ HTML_PAGE = r"""<!doctype html>
       const title = runFilename(run) || run.run_id || t('historyPreviewTitle');
       const date = formatDate(run.created_at);
       const summaryText = localizedRunText(run) || run.status || '';
+      const progressText = runIsActive(run) ? `${stageLabel(run.status || 'running')} · ${runProgressPercent(run)}%` : '';
       return `<div class="history-row">
         <div class="history-row-media">
           ${renderHistoryThumbnail(run)}
@@ -8854,6 +10210,7 @@ HTML_PAGE = r"""<!doctype html>
           <div class="history-row-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
           <div class="history-row-run">${escapeHtml(run.run_id || '')}</div>
           <div class="muted">${escapeHtml(date)}</div>
+          ${progressText ? `<div class="history-row-progress">${escapeHtml(progressText)}</div>` : ''}
           <div class="history-row-summary">${escapeHtml(summaryText)}</div>
         </div>
       </div>`;
@@ -8866,6 +10223,17 @@ HTML_PAGE = r"""<!doctype html>
     $('closeRunFilesBtn').addEventListener('click', () => $('runFilesDialog').close());
     $('runFilesDialog').addEventListener('click', event => {
       if (event.target === $('runFilesDialog')) $('runFilesDialog').close();
+    });
+    $('runFilesTable').addEventListener('click', event => {
+      const button = event.target.closest('[data-run-files-sort]');
+      if (!button || !state.runFilesPayload) return;
+      const key = button.dataset.runFilesSort;
+      if (state.runFilesSort.key === key) {
+        state.runFilesSort.dir = state.runFilesSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.runFilesSort = {key, dir: 'asc'};
+      }
+      renderRunFiles(state.runFilesPayload);
     });
     $('editPreprocessBtn').addEventListener('click', () => $('preprocessDialog').showModal());
     $('closePreprocessBtn').addEventListener('click', () => $('preprocessDialog').close());
@@ -9040,6 +10408,7 @@ HTML_PAGE = r"""<!doctype html>
           }
         }
       }
+      setStatusPolling(nextPage === 'status');
       if (nextPage === 'history') refreshHistory();
       if (nextPage === 'settings') renderSettingsForm(currentAppSettings());
       if (nextPage === 'status') loadSystemStatus();
@@ -9094,6 +10463,8 @@ HTML_PAGE = r"""<!doctype html>
     });
     $('saveSettingsBtn').addEventListener('click', saveSettingsFromPage);
     $('resetSettingsBtn').addEventListener('click', resetSettingsFromPage);
+    $('removeAllHistoryBtn').addEventListener('click', removeAllHistoryFromSettings);
+    $('testRuntimeBtn').addEventListener('click', testRuntimeFromPage);
     ['settingsPanoramaScaling','settingsPanoramaScalingMode'].forEach(id => $(id).addEventListener('change', () => updatePanoramaScalingControls('settings')));
     window.addEventListener('popstate', event => setPage(pageFromLocation(event.state && event.state.historyMode), {push: false}));
     loadAppSettings();

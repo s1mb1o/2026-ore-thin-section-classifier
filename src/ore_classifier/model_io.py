@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import torch
@@ -30,8 +31,10 @@ def load_binary_segmentation_checkpoint(path: Path, device: torch.device):
         model = create_segformer_for_eval(model_name)
     else:
         raise ValueError(f"Unsupported checkpoint model={model_name!r}")
+    state_dict = checkpoint["model"]
+    compatibility_note = "exact"
     try:
-        model.load_state_dict(checkpoint["model"])
+        compatibility_note = _load_state_dict_strictly(model, state_dict)
     except RuntimeError as exc:
         raise RuntimeError(_checkpoint_load_error(path, checkpoint, exc)) from exc
     model.to(device)
@@ -39,6 +42,7 @@ def load_binary_segmentation_checkpoint(path: Path, device: torch.device):
         "model": model_name,
         "epoch": checkpoint.get("epoch"),
         "best_iou_sulfide": checkpoint.get("best_iou_sulfide"),
+        "state_dict_compatibility": compatibility_note,
         "train_args": train_args,
     }
 
@@ -71,6 +75,134 @@ def create_segformer_for_eval(model_name: str):
             label2id={"not_sulfide": 0, "sulfide": 1},
         )
     return SegformerForSemanticSegmentation(config)
+
+
+def _load_state_dict_strictly(model: torch.nn.Module, state_dict: dict[str, Any]) -> str:
+    try:
+        model.load_state_dict(state_dict)
+        return "exact"
+    except RuntimeError as original_exc:
+        remapped = remap_segformer_state_dict_for_model(state_dict, model.state_dict())
+        if remapped is state_dict:
+            raise original_exc
+        try:
+            model.load_state_dict(remapped)
+        except RuntimeError:
+            raise original_exc
+        return "segformer_transformers_namespace_remap"
+
+
+def remap_segformer_state_dict_for_model(
+    checkpoint_state: dict[str, Any], model_state: dict[str, Any]
+) -> dict[str, Any]:
+    """Remap between Transformers SegFormer module namespaces when shapes match."""
+    checkpoint_keys = set(checkpoint_state)
+    model_keys = set(model_state)
+    if checkpoint_keys == model_keys:
+        return checkpoint_state
+
+    if any(key.startswith("segformer.stages.") for key in checkpoint_keys) and any(
+        key.startswith("segformer.encoder.") for key in model_keys
+    ):
+        remapped = {_segformer_stages_to_encoder_key(key): value for key, value in checkpoint_state.items()}
+        if _state_dict_keys_and_shapes_match(remapped, model_state):
+            return remapped
+
+    if any(key.startswith("segformer.encoder.") for key in checkpoint_keys) and any(
+        key.startswith("segformer.stages.") for key in model_keys
+    ):
+        remapped = {_segformer_encoder_to_stages_key(key): value for key, value in checkpoint_state.items()}
+        if _state_dict_keys_and_shapes_match(remapped, model_state):
+            return remapped
+
+    return checkpoint_state
+
+
+def _state_dict_keys_and_shapes_match(candidate: dict[str, Any], model_state: dict[str, Any]) -> bool:
+    if set(candidate) != set(model_state):
+        return False
+    for key, value in candidate.items():
+        candidate_shape = getattr(value, "shape", None)
+        model_shape = getattr(model_state[key], "shape", None)
+        if candidate_shape != model_shape:
+            return False
+    return True
+
+
+def _segformer_stages_to_encoder_key(key: str) -> str:
+    key = re.sub(
+        r"^segformer\.stages\.(\d+)\.patch_embeddings\.",
+        r"segformer.encoder.patch_embeddings.\1.",
+        key,
+    )
+    key = re.sub(
+        r"^segformer\.stages\.(\d+)\.blocks\.(\d+)\.",
+        r"segformer.encoder.block.\1.\2.",
+        key,
+    )
+    key = re.sub(
+        r"^segformer\.stages\.(\d+)\.layer_norm\.",
+        r"segformer.encoder.layer_norm.\1.",
+        key,
+    )
+    key = re.sub(
+        r"^decode_head\.linear_projections\.(\d+)\.",
+        r"decode_head.linear_c.\1.",
+        key,
+    )
+    replacements = (
+        ("layernorm_before.", "layer_norm_1."),
+        ("layernorm_after.", "layer_norm_2."),
+        ("attention.q_proj.", "attention.self.query."),
+        ("attention.k_proj.", "attention.self.key."),
+        ("attention.v_proj.", "attention.self.value."),
+        ("attention.o_proj.", "attention.output.dense."),
+        ("attention.sequence_reduction.sequence_reduction.", "attention.self.sr."),
+        ("attention.sequence_reduction.layer_norm.", "attention.self.layer_norm."),
+        ("mlp.fc1.", "mlp.dense1."),
+        ("mlp.fc2.", "mlp.dense2."),
+    )
+    for old, new in replacements:
+        key = key.replace(old, new)
+    return key
+
+
+def _segformer_encoder_to_stages_key(key: str) -> str:
+    key = re.sub(
+        r"^segformer\.encoder\.patch_embeddings\.(\d+)\.",
+        r"segformer.stages.\1.patch_embeddings.",
+        key,
+    )
+    key = re.sub(
+        r"^segformer\.encoder\.block\.(\d+)\.(\d+)\.",
+        r"segformer.stages.\1.blocks.\2.",
+        key,
+    )
+    key = re.sub(
+        r"^segformer\.encoder\.layer_norm\.(\d+)\.",
+        r"segformer.stages.\1.layer_norm.",
+        key,
+    )
+    key = re.sub(
+        r"^decode_head\.linear_c\.(\d+)\.",
+        r"decode_head.linear_projections.\1.",
+        key,
+    )
+    replacements = (
+        ("layer_norm_1.", "layernorm_before."),
+        ("layer_norm_2.", "layernorm_after."),
+        ("attention.self.query.", "attention.q_proj."),
+        ("attention.self.key.", "attention.k_proj."),
+        ("attention.self.value.", "attention.v_proj."),
+        ("attention.output.dense.", "attention.o_proj."),
+        ("attention.self.sr.", "attention.sequence_reduction.sequence_reduction."),
+        ("attention.self.layer_norm.", "attention.sequence_reduction.layer_norm."),
+        ("mlp.dense1.", "mlp.fc1."),
+        ("mlp.dense2.", "mlp.fc2."),
+    )
+    for old, new in replacements:
+        key = key.replace(old, new)
+    return key
 
 
 def forward_logits(model, images: torch.Tensor, target_hw: tuple[int, int]) -> torch.Tensor:
