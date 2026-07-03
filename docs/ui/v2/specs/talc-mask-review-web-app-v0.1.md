@@ -25,8 +25,8 @@ Build a lightweight local web app:
 - Python backend with `http.server.ThreadingHTTPServer` or equivalent minimal
   stdlib server.
 - Generated HTML/CSS plus vanilla JavaScript.
-- Browser `canvas` for image display, mask overlay, polygon/rectangle editing,
-  brush left-draw/right-erase editing, pan/zoom, and SAM2 prompts.
+- Browser `canvas` for image display, mask overlay, fill, polygon/rectangle
+  editing, brush left-draw/right-erase editing, pan/zoom, and SAM2 prompts.
 - File-based outputs compatible with the current converter and training
   manifests.
 
@@ -180,8 +180,8 @@ app should show a clear setup screen with the exact direct-input command.
    talc mask.
 7. Inspect the clean original, annotated MS Paint draft, autodetected mask, and
    current talc mask.
-8. Edit the current talc mask with brush left-draw/right-erase, direct editable
-   polygon regions, direct editable rectangle regions, or SAM2 assist.
+8. Edit the current talc mask with brush left-draw/right-erase, fill, direct
+   editable polygon regions, direct editable rectangle regions, or SAM2 assist.
 9. Use undo when an edit is wrong.
 10. Press top-right `Save` to persist the current sample.
 11. Press top-right `Save & Next` to persist the current sample and move to the next
@@ -222,6 +222,16 @@ Base image modes:
 - Sulfide mask (sulfide/non-sulfide mask segmentation).
 - Current mask view.
 
+The viewer includes a display-only dark-pixel brightness threshold slider for
+photo backgrounds. It computes perceptual luma per pixel as
+`0.299*R + 0.587*G + 0.114*B`; pixels with luma less than or equal to the
+slider value stay visible as the original RGB pixel, while pixels brighter than
+the slider value are painted white. `255` is the off state, `0` paints the
+background white, and `90` is exposed as a quick practical talc-candidate
+starting point for reflected-light images. The filter must not alter the talc
+mask; it is stored only as review/view metadata in working state and reviewed
+patch JSON.
+
 Overlay toggles:
 
 - Talc mask.
@@ -244,24 +254,28 @@ shows whether any overlap still exists.
 
 Required controls:
 
-- A single top toolbar ordered Brush, Rectangle, Polygon, SAM2, Undo, Zoom In,
-  Zoom Out, Fit, followed by active-tool parameters.
+- A single top toolbar ordered Brush, Fill, Rectangle, Polygon, SAM2, Undo,
+  Zoom In, Zoom Out, Fit, followed by active-tool parameters.
 - Top-right Save and Save & Next actions.
 - Zoom by mouse wheel/trackpad over the canvas, plus toolbar Zoom In, Zoom Out,
   and Fit controls.
 - Brush add with left mouse.
 - Brush erase with right mouse.
+- Fill bounded area.
 - Filled polygon.
 - Filled rectangle.
 - SAM2 assist.
 - Undo.
+- Keyboard shortcuts: `B` selects Brush, `F` selects Fill, and text inputs keep
+  normal typing behavior.
 Brush width appears in the toolbar only when Brush is active and applies only
 to Brush. In Brush mode, left mouse adds talc and right mouse erases without
 opening the browser context menu. While hovering over the image in Brush mode,
 the canvas shows a circle matching the current draw/erase area. Polygon,
-rectangle, and SAM2 operate on filled regions. Polygon and rectangle drafts are
-cancelled with right mouse, not with separate `Apply` or `Cancel` controls.
-SAM2 parameters appear in the same toolbar only when SAM2 is active.
+Fill, rectangle, polygon, and SAM2 operate on filled regions. Polygon and
+rectangle drafts are cancelled with right mouse, not with separate `Apply` or
+`Cancel` controls. SAM2 parameters appear in the same toolbar only when SAM2 is
+active.
 
 Edits update the current working talc mask. The app should auto-save this
 working mask after each applied edit so leaving and reopening a sample does not
@@ -269,6 +283,14 @@ lose work. `Save` marks the current working mask as reviewed and writes the
 review patch; `Save & Next` does the same and navigates to the next queue row.
 Live polygon/rectangle regions stay editable only while the current image is
 open; saving flattens them into the reviewed mask PNG.
+
+### Fill Tool
+
+Fill click adds talc to the connected non-boundary region under the cursor.
+Boundaries are raw/closed blue annotation strokes, sulfide pixels, existing
+current talc-mask regions, and image edges. Fill is additive, undoable,
+autosaved, and respects the default sulfide-protection guard for newly added
+pixels.
 
 ### Polygon Tool
 
@@ -474,6 +496,11 @@ serving artifact bytes.
   "reviewer": "",
   "notes": "",
   "edits": [],
+  "view_settings": {
+    "brightness_threshold_luma": 90,
+    "brightness_threshold_formula": "luma = 0.299*R + 0.587*G + 0.114*B; luma <= threshold keeps the pixel, luma > threshold paints it white",
+    "background_mode": "original"
+  },
   "current_talc_mask_png_base64": "",
   "navigate": "stay"
 }
@@ -532,7 +559,7 @@ and update it if a new persistent default is reserved.
 - Prepared-workspace startup loads an existing manifest without reconverting.
 - Opening a sample for the first time copies `autodetected_talc_mask` to
   `current_talc_mask`.
-- Polygon, rectangle, brush, and SAM2 mask previews convert to expected
+- Fill, polygon, rectangle, brush, and SAM2 mask previews convert to expected
   raster masks on synthetic inputs.
 - Save-review rejects wrong-size masks.
 - Artifact serving rejects paths outside the configured conversion directory.
@@ -548,6 +575,10 @@ Required checks:
   conversion status before opening the queue.
 - Canvas renders a nonblank source image.
 - Layer toggles update without a Python rerun.
+- Brightness-threshold slider `0..255` updates the photo background without
+  changing mask pixels: `255` shows the original image, `90` keeps dark
+  talc-candidate pixels visible while whitening brighter matrix/sulfides, and
+  `0` paints the background white.
 - Toolbar zoom and mouse-wheel zoom work and do not change mask geometry.
 - Polygon points can be added, closed by clicking the first point, edited, and
   flattened on save.
@@ -556,6 +587,8 @@ Required checks:
 - Selected completed polygon/rectangle regions can be removed with
   Delete/Backspace without affecting focused text fields.
 - Brush left/right mouse strokes modify only the talc mask.
+- Fill adds a bounded region without crossing blue strokes, sulfide pixels,
+  current talc mask regions, or image edges.
 - Undo restores prior mask state.
 - Completing or editing a shape updates/autosaves `current_talc_mask`.
 - With sulfide protection enabled, brush/polygon/rectangle/SAM2 additions over
@@ -612,11 +645,17 @@ Required checks:
 - The app can review all `42` talc samples after creating or reusing the
   conversion workspace.
 - The app edits the current talc mask, not blue annotation strokes.
-- Toolbar controls are ordered Brush, Rectangle, Polygon, SAM2, Undo, Zoom In,
-  Zoom Out, Fit, with active-tool parameters at the end.
+- Toolbar controls are ordered Brush, Fill, Rectangle, Polygon, SAM2, Undo,
+  Zoom In, Zoom Out, Fit, with active-tool parameters at the end.
 - Mouse wheel zooms over the canvas without changing mask geometry.
+- Brightness threshold preview is available and does not change mask geometry
+  or saved mask pixels.
 - Brush left mouse draws talc; Brush right mouse erases.
-- Polygon, rectangle, and SAM2 are direct filled-area tools for drawing talc.
+- `B` selects Brush and `F` selects Fill without hijacking focused text inputs.
+- Fill, polygon, rectangle, and SAM2 are direct filled-area tools for drawing
+  talc.
+- Fill can add a bounded region without crossing blue strokes, sulfide pixels,
+  current talc mask regions, or image edges.
 - Selected completed polygon and rectangle regions can be deleted with
   Delete/Backspace.
 - Sulfide protection is enabled by default; additive tools cannot add new talc

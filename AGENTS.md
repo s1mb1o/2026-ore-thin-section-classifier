@@ -8,5 +8,6 @@
 - Do not port the old broad OM/SEM/XRD/product UI unless the user explicitly promotes that scope.
 - The dataset is a symlink to `../2026_Nornikel_Hackaton/dataset`; do not duplicate the full dataset in this repository unless explicitly requested.
 - Core implementation plans are `docs/plans/25_standalone-ore-classifier-project.md` and `docs/plans/26_weak-supervision-sulfide-binary-model.md`.
+- Keep all v2 UI-specific docs under `docs/ui/v2/`, including UI specs, UI plans, UI notes, and the v2 UI candidate backlog. Do not add new v2 UI docs under root `docs/specs/`, `docs/plans/`, or `docs/notes/`.
 - Update `docs/session-sync.md` and `ChangeLog.md` after meaningful changes to implementation state, benchmark results, task priorities, or known blockers.
 - Important research findings must not live only in conversation. Save them under `docs/notes/`, `docs/plans/`, or `docs/decisions/`, and link them from the handoff if they affect next work.

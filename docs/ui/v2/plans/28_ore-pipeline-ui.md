@@ -53,25 +53,43 @@ Decision: use approach 2.
    - `коррекция контраста`
    - `масштабирование для панорамных снимков`
    - Store preset metadata and the preprocessed analysis image.
+   - Runtime augmentation is implemented for this v2 UI as `[ ] Augmentation [Edit]`
+     in the input/left panel; grouped settings persist between browser runs and
+     enabled augmentation is applied before preprocessing.
 
-4. Add run creation and progress.
+4. Add metadata editing.
+   - `Edit Metadata...` opens a modal for the selected image.
+   - Domain metadata is editable; raw image/header/EXIF metadata is read-only.
+   - Session defaults live in browser localStorage for repeated operator fields.
+   - Saved metadata is sent as `curated_metadata` to `POST /api/runs/start`.
+   - Runs write `metadata/curated_metadata.json` and edit-derived runs inherit
+     parent metadata.
+   - Detailed contract: `docs/ui/v2/specs/ore-pipeline-metadata-editor-v0.1.md`.
+   - Hardening plan: `docs/ui/v2/plans/30_ore-pipeline-metadata-editor.md`.
+
+5. Add run creation and progress.
    - `Start` creates a new immutable run directory under `outputs/ore_pipeline_ui/runs/`.
    - Run metadata records original input, preprocess preset, preprocessed artifact, backend, stage, progress, and ETA.
    - Default local backend is heuristic for smoke/demo reliability; optional `--backend ml --checkpoint ...` calls the existing ML pipeline.
 
-5. Add result visualization.
+6. Add result visualization.
    - Switch views: original, preprocessed, sulfide/non-sulfide, final, side-by-side.
    - Side-by-side uses a draggable splitter.
    - Final layer has class visibility toggles: background, ordinary intergrowth, fine intergrowth, talc.
    - Viewer supports pan and zoom.
 
-6. Add metrics and exports.
+7. Add metrics and exports.
    - Metrics table includes total sulfide fraction, ordinary/fine intergrowth fractions, talc fraction, component count, and analyzed area.
-   - `Save to CSV` exports run metrics.
+   - Scale-aware extension: `docs/ui/v2/specs/ore-pipeline-scale-metrics-v0.1.md`
+     and `docs/ui/v2/plans/33_ore-pipeline-scale-metrics.md` define pixel areas,
+     calibrated physical areas, and `microns_per_pixel` / `pixel_size_um`
+     handling for the result table and `metrics.csv`.
+   - `Save to CSV` exports run metrics, pixel areas, and calibrated physical
+     areas when scale is available.
    - `Save PDF Report` generates a compact local PDF report.
    - Text output follows the requested Russian conclusion style.
 
-7. Add edit-and-recalculate.
+8. Add edit-and-recalculate.
    - `Fix me` opens a mask editor with brush painting.
    - Editable layers: sulfide/non-sulfide and final segmentation.
    - Changes require a comment and create a new run.
@@ -79,12 +97,55 @@ Decision: use approach 2.
    - Final edits copy prerequisites and sulfide mask, replace final masks, and recalculate metrics/report only.
    - Parent run remains immutable.
 
-8. Add History page.
+9. Add History page.
    - List all runs from the workspace.
    - Show parent/edit lineage and open past runs.
+
+## Implemented V2 Runtime Augmentation
+
+This augmentation work targets this v2 ore pipeline UI directly:
+
+```text
+apps/ore_pipeline_web.py
+src/ore_classifier/augmentation.py
+```
+
+Required UI placement:
+
+```text
+Input image
+#########
+#########
+
+[ ] Augmentation [Edit]
+```
+
+Required pipeline order:
+
+```text
+original upload -> augmentation -> preprocessing -> run artifact -> sulfide/final inference
+```
+
+When the checkbox is enabled for a run, preprocessing consumes the augmented
+image. The run metadata records the exact augmentation settings and the stored
+augmented artifact.
+
+Required viewer order:
+
+```text
+original -> augmented -> preprocessed -> sulfide -> final
+```
+
+The `augmented` image type appears only for runs that actually created an
+augmented artifact, and it sits between `original` and `preprocessed` for
+pipeline debugging. The grouped settings popup uses the same
+`ore-pipeline-augmentation-v0.1` schema exposed by `src/ore_classifier/augmentation.py`
+so runtime debugging and model-training augmentation can stay reproducible.
+The implemented groups cover color/tone, acquisition noise, and domain-specific
+grinding/polishing artifacts: scratches, polishing haze, and pits/dust specks.
 
 ## Done Criteria
 
 - New UI app starts with `python3 apps/ore_pipeline_web.py --host 127.0.0.1 --port 0`.
-- Focused tests cover upload, preprocessing, complete run, CSV/PDF exports, sulfide edit rerun, final edit recalculation, history, and required UI controls.
+- Focused tests cover upload, runtime augmentation before preprocessing, preprocessing, complete run, CSV/PDF exports, sulfide edit rerun, final edit recalculation, history, and required UI controls.
 - `COMMANDS.md`, `SMOKE_TESTS.md`, `apps/README.md`, `ChangeLog.md`, and `docs/session-sync.md` mention the new UI.
