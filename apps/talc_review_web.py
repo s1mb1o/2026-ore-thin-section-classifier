@@ -10,6 +10,7 @@ import mimetypes
 import shutil
 import sys
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -78,6 +79,24 @@ def resolve_path(path: Path | str) -> Path:
     if not candidate.is_absolute():
         candidate = ROOT / candidate
     return candidate.resolve()
+
+
+def sanitize_view_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = payload.get("view_settings")
+    if not isinstance(settings, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    threshold = settings.get("brightness_threshold_luma")
+    if threshold is not None:
+        try:
+            sanitized["brightness_threshold_luma"] = max(0, min(255, int(threshold)))
+        except (TypeError, ValueError):
+            pass
+    for key in ("brightness_threshold_formula", "background_mode"):
+        value = settings.get(key)
+        if isinstance(value, str) and value:
+            sanitized[key] = value[:500]
+    return sanitized
 
 
 def is_relative_to(path: Path, parent: Path) -> bool:
@@ -243,27 +262,54 @@ class TalcReviewStore:
         return sample.sample_dir / "working_state.json"
 
     def ensure_current_mask(self, sample: ReviewSample) -> Path:
-        current_path = self.current_mask_path(sample)
-        if current_path.exists():
+        with self.lock:
+            current_path = self.current_mask_path(sample)
+            expected_shape = (int(sample.summary["height"]), int(sample.summary["width"]))
+            if current_path.exists():
+                try:
+                    current_mask = read_mask(current_path)
+                    if current_mask.shape[:2] == expected_shape:
+                        return current_path
+                    recovery_reason = f"wrong_size_{current_mask.shape[1]}x{current_mask.shape[0]}"
+                except Exception as exc:
+                    recovery_reason = f"unreadable_{type(exc).__name__}"
+            else:
+                recovery_reason = "created"
+
+            if recovery_reason != "created":
+                recovered_path = sample.sample_dir / f"current_talc_mask.recovered.{int(time.time())}.png"
+                try:
+                    shutil.move(current_path, recovered_path)
+                except OSError:
+                    recovered_path = None
+            else:
+                recovered_path = None
+
+            reviewed_path = sample.sample_dir / "reviewed/reviewed_talc_mask.png"
+            final_path = resolve_path(sample.summary["paths"]["final_talc_mask"])
+            source_path = reviewed_path if reviewed_path.exists() else final_path
+            source_label = "reviewed" if source_path == reviewed_path else "autodetected"
+            current_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, current_path)
+            current_mask = read_mask(current_path)
+            if current_mask.shape[:2] != expected_shape:
+                current_mask = read_mask(current_path, expected_shape)
+                write_mask(current_path, current_mask)
+            state = {
+                "schema_version": "talc-current-mask-state-v0.1",
+                "sample_id": sample.sample_id,
+                "created_at": utc_now_iso(),
+                "updated_at": utc_now_iso(),
+                "source": source_label if recovery_reason == "created" else f"{source_label}_recovered",
+                "recovery_reason": None if recovery_reason == "created" else recovery_reason,
+                "recovered_path": str(recovered_path) if recovered_path else None,
+                "current_talc_mask": str(current_path),
+                "current_talc_pixels": mask_pixels(current_mask),
+                "edits": [],
+            }
+            self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            self.refresh_samples()
             return current_path
-        reviewed_path = sample.sample_dir / "reviewed/reviewed_talc_mask.png"
-        final_path = resolve_path(sample.summary["paths"]["final_talc_mask"])
-        source_path = reviewed_path if reviewed_path.exists() else final_path
-        current_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, current_path)
-        state = {
-            "schema_version": "talc-current-mask-state-v0.1",
-            "sample_id": sample.sample_id,
-            "created_at": utc_now_iso(),
-            "updated_at": utc_now_iso(),
-            "source": "reviewed" if source_path == reviewed_path else "autodetected",
-            "current_talc_mask": str(current_path),
-            "current_talc_pixels": mask_pixels(read_mask(current_path)),
-            "edits": [],
-        }
-        self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        self.refresh_samples()
-        return current_path
 
     def reset_current_mask(self, sample_id: str) -> dict[str, Any]:
         sample = self.get_sample(sample_id)
@@ -374,6 +420,7 @@ class TalcReviewStore:
         edits = payload.get("edits")
         if not isinstance(edits, list):
             edits = []
+        view_settings = sanitize_view_settings(payload)
         state = {
             "schema_version": "talc-current-mask-state-v0.1",
             "sample_id": sample.sample_id,
@@ -383,6 +430,7 @@ class TalcReviewStore:
             "current_talc_mask": str(current_path),
             "current_talc_pixels": mask_pixels(mask),
             "edits": edits,
+            "view_settings": view_settings,
         }
         self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         result = {
@@ -445,6 +493,7 @@ class TalcReviewStore:
             "saved_at": saved_at,
             "reviewer": payload.get("reviewer") or None,
             "notes": payload.get("notes") or None,
+            "view_settings": sanitize_view_settings(payload),
             "base_conversion_summary": str(sample.sample_dir / "conversion_summary.json"),
             "annotated_image_path": str(sample.annotated_path),
             "original_image_path": str(sample.original_path) if sample.original_path else None,
@@ -644,8 +693,10 @@ def render_html_page() -> str:
 <div id="app" class="app-shell">
   <aside class="queue-pane">
     <div class="pane-title">Talc samples</div>
-    <input id="searchBox" class="text-input" placeholder="Search filename">
-    <select id="filterSelect" class="select-input">
+    <label class="visually-hidden" for="searchBox">Search filename</label>
+    <input id="searchBox" class="text-input" placeholder="Search filename" aria-label="Search filename">
+    <label class="visually-hidden" for="filterSelect">Sample filter</label>
+    <select id="filterSelect" class="select-input" aria-label="Sample filter">
       <option value="all">All samples</option>
       <option value="needs">Needs review</option>
       <option value="overlap">Sulfide overlap</option>
@@ -664,35 +715,39 @@ def render_html_page() -> str:
       </div>
       <div class="topbar-controls">
         <div class="toolbar">
-          <button data-tool="brush" class="tool-button active">Brush</button>
-          <button data-tool="rectangle" class="tool-button">Rectangle</button>
-          <button data-tool="polygon" class="tool-button">Polygon</button>
-          <button data-tool="sam2" class="tool-button">SAM2</button>
+          <button type="button" data-tool="brush" class="tool-button active" aria-pressed="true" aria-keyshortcuts="B" title="Brush (B): left mouse draws talc, right mouse erases">Brush</button>
+          <button type="button" data-tool="fill" class="tool-button" aria-pressed="false" aria-keyshortcuts="F" title="Fill (F): click an area bounded by blue lines, sulfides, existing talc regions, or image edges">Fill</button>
+          <button type="button" data-tool="rectangle" class="tool-button" aria-pressed="false" title="Rectangle: drag or click two corners, then edit handles">Rectangle</button>
+          <button type="button" data-tool="polygon" class="tool-button" aria-pressed="false" title="Polygon: place points, close on the first point, right-click a point to remove">Polygon</button>
+          <button type="button" data-tool="sam2" class="tool-button" aria-pressed="false" title="SAM2: draw a box or hold still over a point for preview">SAM2</button>
           <span class="toolbar-separator" aria-hidden="true"></span>
-          <button id="undoBtn" class="icon-button" title="Undo">Undo</button>
+          <button type="button" id="undoBtn" class="icon-button" title="Undo last mask edit">Undo</button>
           <span class="toolbar-separator" aria-hidden="true"></span>
-          <button id="zoomInBtn" class="small-button">Zoom In</button>
-          <button id="zoomOutBtn" class="small-button">Zoom Out</button>
-          <button id="fitBtn" class="small-button">Fit</button>
+          <button type="button" id="zoomInBtn" class="small-button" title="Zoom in">Zoom In</button>
+          <button type="button" id="zoomOutBtn" class="small-button" title="Zoom out">Zoom Out</button>
+          <button type="button" id="fitBtn" class="small-button" title="Fit image to viewer">Fit</button>
+          <span id="zoomValue" class="zoom-value" aria-live="polite">100%</span>
           <span class="toolbar-separator" aria-hidden="true"></span>
           <div class="tool-params" aria-label="Tool parameters">
             <div id="brushParams" class="tool-param-group">
-              <label>Brush <input id="brushSize" type="range" min="2" max="120" value="28"></label>
+              <label for="brushSize">Brush</label>
+              <input id="brushSize" type="range" min="2" max="120" value="28" aria-label="Brush size">
               <span id="brushSizeValue">28 px</span>
             </div>
             <div id="sam2Params" class="tool-param-group hidden">
-              <select id="sam2PromptMode" class="select-input compact">
+              <label class="visually-hidden" for="sam2PromptMode">SAM2 prompt mode</label>
+              <select id="sam2PromptMode" class="select-input compact" aria-label="SAM2 prompt mode">
                 <option value="rectangle_xyxy">SAM2 box</option>
                 <option value="point_xy">SAM2 point</option>
               </select>
-              <button id="sam2ApplyBtn" class="small-button" disabled>Apply SAM2</button>
-              <button id="sam2StatusBtn" class="small-button">Check SAM2</button>
+              <button type="button" id="sam2ApplyBtn" class="small-button" disabled>Apply SAM2</button>
+              <button type="button" id="sam2StatusBtn" class="small-button" title="Load/check optional SAM2 assist">Load SAM2</button>
             </div>
           </div>
         </div>
         <div class="review-actions" aria-label="Review actions">
-          <button id="saveBtn" class="primary-button">Save</button>
-          <button id="saveNextBtn" class="primary-button">Save &amp; Next</button>
+          <button type="button" id="saveBtn" class="primary-button">Save</button>
+          <button type="button" id="saveNextBtn" class="primary-button">Save &amp; Next</button>
         </div>
       </div>
     </div>
@@ -704,22 +759,35 @@ def render_html_page() -> str:
   </main>
   <aside class="details-pane">
     <div class="pane-title">Talc mask</div>
-    <label class="field-label">Theme</label>
-    <select id="themeSelect" class="select-input">
+    <label class="field-label" for="themeSelect">Theme</label>
+    <select id="themeSelect" class="select-input" aria-label="Theme">
       <option value="system">System</option>
       <option value="light">Light</option>
       <option value="dark">Dark</option>
     </select>
-    <label class="field-label">Base image</label>
-    <select id="baseMode" class="select-input">
+    <label class="field-label" for="baseMode">Background</label>
+    <select id="baseMode" class="select-input" aria-label="Background image">
       <option value="original">Original photo</option>
       <option value="annotated">MS Paint annotation</option>
       <option value="qa">Converter QA overlay</option>
       <option value="sulfide">Sulfide mask (sulfide/non-sulfide mask segmentation)</option>
-      <option value="mask">Current mask view</option>
+      <option value="mask">Mask-only background</option>
     </select>
+    <div class="brightness-filter">
+      <div class="range-header">
+        <label class="field-label inline" for="brightnessThreshold">Dark pixel preview threshold</label>
+        <span id="brightnessThresholdValue" class="range-value">255 (off)</span>
+      </div>
+      <input id="brightnessThreshold" type="range" min="0" max="255" value="255" aria-label="Dark pixel preview brightness threshold">
+      <div class="range-actions">
+        <button type="button" id="brightnessThreshold90Btn" class="small-button">90</button>
+        <button type="button" id="brightnessThresholdOffBtn" class="small-button">Off</button>
+      </div>
+      <div class="filter-hint">Luma = 0.299 R + 0.587 G + 0.114 B. Pixels brighter than the threshold are painted white; darker pixels stay visible.</div>
+    </div>
+    <div id="assetWarnings" class="asset-warnings hidden" role="status" aria-live="polite"></div>
     <div class="layers">
-      <label><input type="checkbox" id="layerCurrent" checked> Current talc mask</label>
+      <label><input type="checkbox" id="layerCurrent" checked> Editable talc mask overlay</label>
       <label><input type="checkbox" id="layerAuto"> Autodetected mask</label>
       <label><input type="checkbox" id="layerLines"> Original blue lines</label>
       <label><input type="checkbox" id="layerOverlap" checked> Sulfide overlap</label>
@@ -727,17 +795,25 @@ def render_html_page() -> str:
     </div>
     <div class="guard-controls">
       <label><input type="checkbox" id="protectSulfides" checked> Protect sulfides while drawing</label>
-      <button id="subtractSulfidesBtn" class="small-button full-width">Subtract sulfides from mask</button>
+      <button type="button" id="subtractSulfidesBtn" class="small-button full-width">Subtract sulfides from mask</button>
     </div>
     <div id="metricsBox" class="metrics"></div>
-    <label class="field-label">Reviewer</label>
+    <label class="field-label" for="reviewerInput">Reviewer</label>
     <input id="reviewerInput" class="text-input" placeholder="optional">
-    <label class="field-label">Notes</label>
+    <label class="field-label" for="notesInput">Notes</label>
     <textarea id="notesInput" class="notes-input" rows="4" placeholder="optional"></textarea>
-    <button id="resetBtn" class="danger-button">Reset to autodetected</button>
+    <button type="button" id="resetBtn" class="danger-button">Reset to autodetected</button>
     <details class="advanced-box">
       <summary>Interaction help</summary>
-      <p>Brush: left mouse adds talc, right mouse erases. Polygon: click to place points, click the first point to close, drag points/edges to edit, right-click a polygon point to remove it, and right-click elsewhere to cancel the current polygon. Rectangle: drag a box or click one corner then click the opposite corner; right-click cancels the current rectangle. Completed rectangles can be resized by corners or edges. Press Delete to remove the selected completed polygon or rectangle. Shapes stay editable until another image is opened or the sample is saved. SAM2 point: hover without moving to preview, then press Apply SAM2. SAM2 box applies after drawing the box.</p>
+      <ul>
+        <li>Brush: left mouse adds talc, right mouse erases.</li>
+        <li>Fill: click an empty area bounded by blue lines, sulfides, existing talc regions, or the image edge.</li>
+        <li>Polygon: click to place points, click the first point to close, drag points/edges to edit, right-click a polygon point to remove it, and right-click elsewhere to cancel the current polygon.</li>
+        <li>Rectangle: drag a box or click one corner then click the opposite corner; right-click cancels the current rectangle. Completed rectangles can be resized by corners or edges.</li>
+        <li>Press Delete to remove the selected completed polygon or rectangle.</li>
+        <li>Shapes stay editable until another image is opened or the sample is saved.</li>
+        <li>SAM2 point: hover without moving to preview, then press Apply SAM2. SAM2 box applies after drawing the box.</li>
+      </ul>
     </details>
   </aside>
 </div>
@@ -838,7 +914,8 @@ CSS = r"""
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); }
 button, input, select, textarea { font: inherit; }
-.app-shell { display: grid; grid-template-columns: 280px minmax(520px, 1fr) 300px; height: 100vh; overflow: hidden; }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.app-shell { display: grid; grid-template-columns: 280px minmax(0, 1fr) 300px; height: 100vh; overflow: hidden; }
 .queue-pane, .details-pane { background: var(--panel); border-right: 1px solid var(--line); padding: 14px; overflow: auto; }
 .details-pane { border-right: 0; border-left: 1px solid var(--line); }
 .pane-title { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
@@ -857,16 +934,17 @@ button, input, select, textarea { font: inherit; }
 .tag.ok { background: var(--tag-ok-bg); color: var(--tag-ok-text); }
 .tag.reviewed { background: var(--tag-reviewed-bg); color: var(--tag-reviewed-text); }
 .work-pane { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-.topbar { position: relative; min-height: 56px; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 220px 10px 12px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.topbar-title { flex: 0 1 240px; min-width: 170px; }
+.topbar { min-height: 56px; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 12px; display: grid; grid-template-columns: minmax(170px, 250px) minmax(260px, 1fr) auto; align-items: start; gap: 12px; }
+.topbar-title { min-width: 0; }
 .sample-title { font-size: 17px; font-weight: 750; }
 .sample-subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.topbar-controls { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 1 1 auto; min-width: 0; flex-wrap: wrap; }
-.toolbar { display: flex; align-items: center; gap: 6px; flex: 1 1 420px; flex-wrap: wrap; justify-content: flex-end; min-width: 320px; }
-.review-actions { position: absolute; top: 10px; right: 12px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
+.topbar-controls { display: contents; }
+.toolbar { grid-column: 2; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-start; min-width: 0; }
+.review-actions { grid-column: 3; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: max-content; }
 .tool-button, .small-button, .icon-button, .primary-button, .danger-button { border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--text); padding: 7px 10px; cursor: pointer; }
 .tool-button:disabled, .small-button:disabled, .icon-button:disabled, .primary-button:disabled, .danger-button:disabled { opacity: 0.48; cursor: not-allowed; }
 .tool-button.active { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+.tool-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .icon-button { min-width: 54px; }
 .primary-button, .danger-button { font-weight: 700; }
 .details-pane .primary-button, .details-pane .danger-button { width: 100%; margin-top: 8px; }
@@ -879,24 +957,52 @@ button, input, select, textarea { font: inherit; }
 .tool-param-group.hidden { display: none; }
 .tool-param-group label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .tool-param-group input[type="range"] { max-width: 130px; }
+.zoom-value { min-width: 48px; color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; align-self: center; }
 .viewer-wrap { position: relative; flex: 1; overflow: auto; padding: 14px; background: var(--viewer-bg); }
 #viewerCanvas { display: block; background: var(--canvas-bg); image-rendering: auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.22); }
 .empty-state { position: absolute; inset: 14px; display: grid; place-items: center; background: var(--empty-bg); color: var(--muted); font-weight: 650; }
 .empty-state.hidden { display: none; }
 .status-line { min-height: 32px; padding: 8px 12px; font-size: 13px; color: var(--muted); background: var(--panel); border-top: 1px solid var(--line); }
 .field-label { display: block; color: var(--muted); font-size: 12px; font-weight: 700; margin: 12px 0 4px; }
+.field-label.inline { margin: 0; }
+.brightness-filter { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; }
+.brightness-filter input[type="range"] { width: 100%; }
+.range-header, .range-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.range-actions { justify-content: flex-start; }
+.range-value { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.filter-hint { color: var(--muted); font-size: 12px; line-height: 1.35; }
 .layers { display: grid; gap: 7px; margin-top: 10px; font-size: 13px; }
 .guard-controls { border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 8px; margin-top: 12px; padding: 10px; font-size: 13px; }
 .guard-controls label { display: flex; align-items: center; gap: 7px; }
 .small-button.full-width { width: 100%; }
+.asset-warnings { border: 1px solid var(--tag-warn-bg); background: var(--tag-warn-bg); color: var(--tag-warn-text); border-radius: 8px; padding: 8px 10px; margin-top: 10px; font-size: 12px; line-height: 1.35; }
+.asset-warnings.hidden { display: none; }
+.asset-warnings ul { padding-left: 18px; margin: 6px 0 0; }
 .metrics { border: 1px solid var(--line); border-radius: 8px; margin-top: 12px; overflow: hidden; }
 .metric-row { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .metric-row:last-child { border-bottom: 0; }
 .metric-row span:first-child { color: var(--muted); }
 .advanced-box { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.advanced-box ul { margin: 8px 0 0; padding-left: 18px; }
+@media (max-width: 1320px) {
+  .topbar { grid-template-columns: minmax(170px, 220px) minmax(240px, 1fr); }
+  .review-actions { grid-column: 2; justify-self: end; }
+}
 @media (max-width: 1100px) {
-  .app-shell { grid-template-columns: 240px minmax(420px, 1fr); }
+  .app-shell { grid-template-columns: 240px minmax(0, 1fr); }
   .details-pane { grid-column: 1 / -1; height: 260px; border-left: 0; border-top: 1px solid var(--line); }
+  .topbar { grid-template-columns: minmax(160px, 1fr); }
+  .topbar-title, .toolbar, .review-actions { grid-column: 1; }
+  .review-actions { justify-self: start; }
+}
+@media (max-width: 760px) {
+  .app-shell { grid-template-columns: 1fr; grid-template-rows: minmax(150px, 26vh) minmax(420px, 1fr) minmax(220px, 30vh); overflow: auto; }
+  .queue-pane { border-right: 0; border-bottom: 1px solid var(--line); }
+  .details-pane { grid-column: 1; height: auto; min-height: 220px; }
+  .work-pane { min-height: 420px; }
+  .viewer-wrap { min-height: 300px; }
+  .toolbar { gap: 5px; }
+  .tool-button, .small-button, .icon-button, .primary-button, .danger-button { padding: 6px 8px; }
 }
 """
 
@@ -907,6 +1013,8 @@ const MIN_ZOOM = 0.10;
 const MAX_ZOOM = 4.00;
 const ZOOM_STEP = 1.15;
 const SAM2_POINT_HOVER_PREVIEW_DELAY_MS = 2000;
+const BRIGHTNESS_THRESHOLD_STORAGE_KEY = 'talcBrightnessThreshold';
+const BRIGHTNESS_THRESHOLD_FORMULA = 'luma = 0.299*R + 0.587*G + 0.114*B; luma <= threshold keeps the pixel, luma > threshold paints it white';
 
 const state = {
   manifest: null,
@@ -917,7 +1025,18 @@ const state = {
   imageW: 1,
   imageH: 1,
   zoom: 1,
+  viewPan: {
+    active: false,
+    pointerId: null,
+    startClientX: 0,
+    startClientY: 0,
+    scrollLeft: 0,
+    scrollTop: 0
+  },
   dirty: false,
+  saveState: 'saved',
+  lastSavedAt: null,
+  assetErrors: [],
   images: {},
   staticTints: {},
   sulfideGuardLoaded: false,
@@ -937,6 +1056,11 @@ const state = {
   activeEditBaseline: null,
   activeBaseEditBaseline: null,
   samBox: null,
+  brightnessPreview: {
+    source: null,
+    threshold: null
+  },
+  fillBoundaryLoaded: false,
   sam2Preview: {
     timer: null,
     requestId: 0,
@@ -961,6 +1085,12 @@ const sulfideGuardCanvas = document.createElement('canvas');
 const sulfideGuardCtx = sulfideGuardCanvas.getContext('2d', { willReadFrequently: true });
 const currentTintCanvas = document.createElement('canvas');
 const currentTintCtx = currentTintCanvas.getContext('2d', { willReadFrequently: true });
+const brightnessSourceCanvas = document.createElement('canvas');
+const brightnessSourceCtx = brightnessSourceCanvas.getContext('2d', { willReadFrequently: true });
+const brightnessPreviewCanvas = document.createElement('canvas');
+const brightnessPreviewCtx = brightnessPreviewCanvas.getContext('2d', { willReadFrequently: true });
+const fillBoundaryCanvas = document.createElement('canvas');
+const fillBoundaryCtx = fillBoundaryCanvas.getContext('2d', { willReadFrequently: true });
 const emptyState = document.getElementById('emptyState');
 
 const els = {
@@ -978,8 +1108,14 @@ const els = {
   zoomInBtn: document.getElementById('zoomInBtn'),
   zoomOutBtn: document.getElementById('zoomOutBtn'),
   fitBtn: document.getElementById('fitBtn'),
+  zoomValue: document.getElementById('zoomValue'),
   themeSelect: document.getElementById('themeSelect'),
   baseMode: document.getElementById('baseMode'),
+  brightnessThreshold: document.getElementById('brightnessThreshold'),
+  brightnessThresholdValue: document.getElementById('brightnessThresholdValue'),
+  brightnessThreshold90Btn: document.getElementById('brightnessThreshold90Btn'),
+  brightnessThresholdOffBtn: document.getElementById('brightnessThresholdOffBtn'),
+  assetWarnings: document.getElementById('assetWarnings'),
   metricsBox: document.getElementById('metricsBox'),
   reviewerInput: document.getElementById('reviewerInput'),
   notesInput: document.getElementById('notesInput'),
@@ -1003,6 +1139,28 @@ const els = {
 
 const THEME_STORAGE_KEY = 'talcReviewTheme';
 
+const STATUS_LABELS = {
+  candidate_ok: 'Candidate OK',
+  needs_manual_review: 'Needs manual review',
+  sulfide_overlap_review_required: 'Sulfide overlap',
+  missing_original: 'Missing original',
+  unknown: 'Unknown status'
+};
+
+const REVIEW_STATE_LABELS = {
+  reviewed: 'Reviewed',
+  working: 'Working draft',
+  not_opened: 'Not opened'
+};
+
+const SAVE_STATE_LABELS = {
+  saved: 'Working mask saved',
+  saving: 'Saving working mask...',
+  unsaved: 'Unsaved local changes',
+  error: 'Autosave failed',
+  reviewed: 'Reviewed mask saved'
+};
+
 function cssVar(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
@@ -1023,6 +1181,33 @@ function setStatus(message, isError = false) {
   els.statusLine.style.color = isError ? 'var(--status-error)' : 'var(--muted)';
 }
 
+function statusLabel(status) {
+  return STATUS_LABELS[status] || humanizeEnum(status);
+}
+
+function reviewStateLabel(reviewState) {
+  return REVIEW_STATE_LABELS[reviewState] || humanizeEnum(reviewState);
+}
+
+function humanizeEnum(value) {
+  return String(value || 'unknown')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function sampleStatusKind(sample) {
+  if (sample.status === 'missing_original' || sample.status === 'needs_manual_review' || sample.status === 'sulfide_overlap_review_required') return 'warn';
+  return 'ok';
+}
+
+function reviewStateKind(reviewState) {
+  if (reviewState === 'reviewed') return 'reviewed';
+  if (reviewState === 'working') return 'ok';
+  return '';
+}
+
 async function apiGet(url) {
   const response = await fetch(url, { cache: 'no-store' });
   const data = await response.json();
@@ -1041,7 +1226,7 @@ async function apiPost(url, payload) {
   return data;
 }
 
-function loadImage(url) {
+function loadImage(url, label = null) {
   return new Promise((resolve) => {
     if (!url) {
       resolve(null);
@@ -1049,7 +1234,10 @@ function loadImage(url) {
     }
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
+    img.onerror = () => {
+      if (label) state.assetErrors.push(`${label} could not be loaded`);
+      resolve(null);
+    };
     img.src = url;
   });
 }
@@ -1067,6 +1255,7 @@ function imagePointFromEvent(event) {
 function applyZoom() {
   viewer.style.width = `${Math.max(120, Math.round(state.imageW * state.zoom))}px`;
   viewer.style.height = `${Math.max(120, Math.round(state.imageH * state.zoom))}px`;
+  if (els.zoomValue) els.zoomValue.textContent = `${Math.round(state.zoom * 100)}%`;
 }
 
 function clampZoom(value) {
@@ -1075,14 +1264,81 @@ function clampZoom(value) {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, numeric));
 }
 
-function setZoom(value) {
+function setZoom(value, anchor = null) {
+  const wrap = document.getElementById('viewerWrap');
+  let anchorImagePoint = null;
+  let anchorOffset = null;
+  if (anchor && viewer.clientWidth > 0 && viewer.clientHeight > 0) {
+    const rect = viewer.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    anchorImagePoint = {
+      x: (anchor.clientX - rect.left) * (viewer.width / rect.width),
+      y: (anchor.clientY - rect.top) * (viewer.height / rect.height)
+    };
+    anchorOffset = {
+      x: anchor.clientX - wrapRect.left,
+      y: anchor.clientY - wrapRect.top
+    };
+  }
   state.zoom = clampZoom(value);
   applyZoom();
+  if (anchorImagePoint && anchorOffset) {
+    wrap.scrollLeft = Math.max(0, anchorImagePoint.x * state.zoom - anchorOffset.x);
+    wrap.scrollTop = Math.max(0, anchorImagePoint.y * state.zoom - anchorOffset.y);
+  }
   draw();
 }
 
-function zoomBy(factor) {
-  setZoom(state.zoom * factor);
+function zoomBy(factor, anchor = null) {
+  setZoom(state.zoom * factor, anchor);
+}
+
+function startViewPan(event) {
+  const wrap = document.getElementById('viewerWrap');
+  event.preventDefault();
+  clearSam2Preview({ redraw: false });
+  state.viewPan = {
+    active: true,
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    scrollLeft: wrap.scrollLeft,
+    scrollTop: wrap.scrollTop
+  };
+  viewer.setPointerCapture(event.pointerId);
+  viewer.style.cursor = 'grabbing';
+  setStatus('Pan view: drag while holding the mouse wheel.');
+}
+
+function updateViewPan(event) {
+  if (!state.viewPan.active || state.viewPan.pointerId !== event.pointerId) return false;
+  event.preventDefault();
+  const wrap = document.getElementById('viewerWrap');
+  const dx = event.clientX - state.viewPan.startClientX;
+  const dy = event.clientY - state.viewPan.startClientY;
+  wrap.scrollLeft = state.viewPan.scrollLeft - dx;
+  wrap.scrollTop = state.viewPan.scrollTop - dy;
+  return true;
+}
+
+function finishViewPan(event = null) {
+  if (!state.viewPan.active) return false;
+  if (event && state.viewPan.pointerId !== event.pointerId) return false;
+  try {
+    if (event && viewer.hasPointerCapture(event.pointerId)) viewer.releasePointerCapture(event.pointerId);
+  } catch (err) {
+    // Pointer capture can already be released by the browser on cancel.
+  }
+  state.viewPan = {
+    active: false,
+    pointerId: null,
+    startClientX: 0,
+    startClientY: 0,
+    scrollLeft: 0,
+    scrollTop: 0
+  };
+  updateViewerCursor(state.hoverPoint);
+  return true;
 }
 
 function fitToViewer() {
@@ -1096,6 +1352,28 @@ function updateToolParams() {
   els.brushParams.classList.toggle('hidden', state.tool !== 'brush');
   els.sam2Params.classList.toggle('hidden', state.tool !== 'sam2');
   updateSam2ApplyButton();
+}
+
+function selectTool(tool, options = {}) {
+  const button = Array.from(document.querySelectorAll('.tool-button')).find((candidate) => candidate.dataset.tool === tool);
+  if (!button) return false;
+  document.querySelectorAll('.tool-button').forEach((other) => {
+    other.classList.remove('active');
+    other.setAttribute('aria-pressed', 'false');
+  });
+  button.classList.add('active');
+  button.setAttribute('aria-pressed', 'true');
+  state.tool = tool;
+  if (state.tool !== 'brush' && state.tool !== 'sam2') state.hoverPoint = null;
+  clearSam2Preview({ redraw: false });
+  updateToolParams();
+  updateViewerCursor();
+  draw();
+  if (options.status !== false) {
+    const suffix = options.shortcut ? ` (${options.shortcut})` : '';
+    setStatus(`Tool: ${button.textContent}${suffix}.`);
+  }
+  return true;
 }
 
 function sam2PointModeActive() {
@@ -1181,9 +1459,37 @@ function filteredSamples() {
   });
 }
 
+function nextVisibleSampleId(currentId) {
+  const visible = filteredSamples();
+  if (visible.length === 0) return null;
+  const index = visible.findIndex((sample) => sample.sample_id === currentId);
+  if (index < 0) return visible[0].sample_id;
+  if (visible.length === 1) return null;
+  return visible[(index + 1) % visible.length].sample_id;
+}
+
+function hasDraftGeometry() {
+  return state.polygon.points.length > 0 || state.rect.active || state.drawing || Boolean(state.shapeDrag);
+}
+
+function canLeaveCurrentSample(targetSampleId) {
+  if (!state.sampleId || targetSampleId === state.sampleId) return true;
+  if (state.saveState === 'saving') {
+    setStatus('Please wait: the working mask is still autosaving.', true);
+    return false;
+  }
+  if (!state.dirty && !hasDraftGeometry()) return true;
+  const reason = state.dirty
+    ? 'The current mask has local changes that were not autosaved.'
+    : 'The current image has an unfinished polygon/rectangle draft.';
+  return window.confirm(`${reason}\n\nSwitch to another sample and discard only the unfinished local state?`);
+}
+
 function renderQueue() {
   const visible = filteredSamples();
-  els.queueStats.textContent = `${visible.length} shown / ${state.samples.length} total`;
+  const needsCount = state.samples.filter((sample) => sample.status === 'needs_manual_review' || sample.status === 'sulfide_overlap_review_required').length;
+  const reviewedCount = state.samples.filter((sample) => sample.review_state === 'reviewed').length;
+  els.queueStats.textContent = `${visible.length} shown / ${state.samples.length} total · ${needsCount} need review · ${reviewedCount} reviewed`;
   els.sampleList.innerHTML = '';
   for (const sample of visible) {
     const button = document.createElement('button');
@@ -1191,9 +1497,9 @@ function renderQueue() {
     button.innerHTML = `
       <div class="sample-name">${escapeHtml(sample.image_name)}</div>
       <div class="sample-tags">
-        ${tagHtml(sample.status, sample.status.includes('review') || sample.status === 'missing_original' ? 'warn' : 'ok')}
-        ${tagHtml(sample.review_state, sample.review_state === 'reviewed' ? 'reviewed' : '')}
-        ${sample.overlap_pixels > 0 ? tagHtml('overlap', 'warn') : ''}
+        ${tagHtml(statusLabel(sample.status), sampleStatusKind(sample))}
+        ${tagHtml(reviewStateLabel(sample.review_state), reviewStateKind(sample.review_state))}
+        ${sample.overlap_pixels > 0 ? tagHtml('Has sulfide overlap', 'warn') : ''}
       </div>`;
     button.addEventListener('click', () => loadSample(sample.sample_id));
     els.sampleList.appendChild(button);
@@ -1206,6 +1512,33 @@ function tagHtml(text, kind) {
 
 function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+}
+
+function formatPct(value, denominator = state.imageW * state.imageH) {
+  if (!Number.isFinite(value) || !Number.isFinite(denominator) || denominator <= 0) return '0.00%';
+  return `${((value / denominator) * 100).toFixed(2)}%`;
+}
+
+function pxWithPct(value, denominator = state.imageW * state.imageH) {
+  return `${formatInt(value)} (${formatPct(value, denominator)})`;
+}
+
+function renderAssetWarnings() {
+  if (!els.assetWarnings) return;
+  if (!state.assetErrors.length) {
+    els.assetWarnings.classList.add('hidden');
+    els.assetWarnings.innerHTML = '';
+    return;
+  }
+  const rows = [...new Set(state.assetErrors)].map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+  els.assetWarnings.classList.remove('hidden');
+  els.assetWarnings.innerHTML = `<strong>Layer warning</strong><ul>${rows}</ul>`;
+}
+
+function markLocalDirty() {
+  state.dirty = true;
+  state.saveState = 'unsaved';
+  updateMetrics();
 }
 
 function makeMaskCanvasFromImage(img) {
@@ -1403,13 +1736,101 @@ function updateMetrics() {
   const metrics = state.sample.metrics;
   const currentPixels = countCurrentMaskPixels();
   const currentSulfidePixels = countCurrentSulfideOverlapPixels();
+  const totalPixels = state.imageW * state.imageH;
+  const saveLabel = SAVE_STATE_LABELS[state.saveState] || SAVE_STATE_LABELS.saved;
+  const reviewLabel = reviewStateLabel(state.sample.sample.review_state);
   els.metricsBox.innerHTML = `
-    <div class="metric-row"><span>Current talc px</span><strong>${formatInt(currentPixels)}</strong></div>
-    <div class="metric-row"><span>Autodetected px</span><strong>${formatInt(metrics.autodetected_talc_pixels)}</strong></div>
-    <div class="metric-row"><span>Candidate px</span><strong>${formatInt(metrics.candidate_talc_pixels)}</strong></div>
-    <div class="metric-row"><span>Sulfide overlap px</span><strong>${formatInt(metrics.overlap_pixels)}</strong></div>
-    <div class="metric-row"><span>Current on sulfide px</span><strong>${formatInt(currentSulfidePixels)}</strong></div>
-    <div class="metric-row"><span>Unsaved edits</span><strong>${state.dirty ? 'yes' : 'no'}</strong></div>`;
+    <div class="metric-row"><span>Current talc area</span><strong>${pxWithPct(currentPixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Autodetected talc</span><strong>${pxWithPct(metrics.autodetected_talc_pixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Blue-line candidate</span><strong>${pxWithPct(metrics.candidate_talc_pixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Original candidate on sulfide</span><strong>${pxWithPct(metrics.overlap_pixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Current talc on sulfide</span><strong>${pxWithPct(currentSulfidePixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Working mask</span><strong>${escapeHtml(saveLabel)}</strong></div>
+    <div class="metric-row"><span>Review state</span><strong>${escapeHtml(reviewLabel)}</strong></div>`;
+}
+
+function clampByte(value, fallback = 255) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(255, Math.round(numeric)));
+}
+
+function currentBrightnessThreshold() {
+  return clampByte(els.brightnessThreshold ? els.brightnessThreshold.value : 255, 255);
+}
+
+function brightnessThresholdLabel(value) {
+  return value >= 255 ? '255 (off)' : `${value}`;
+}
+
+function resetBrightnessPreviewCache() {
+  state.brightnessPreview.source = null;
+  state.brightnessPreview.threshold = null;
+}
+
+function updateBrightnessThresholdUi(persist = true) {
+  const threshold = currentBrightnessThreshold();
+  if (els.brightnessThreshold) els.brightnessThreshold.value = String(threshold);
+  if (els.brightnessThresholdValue) els.brightnessThresholdValue.textContent = brightnessThresholdLabel(threshold);
+  if (persist) localStorage.setItem(BRIGHTNESS_THRESHOLD_STORAGE_KEY, String(threshold));
+}
+
+function setBrightnessThreshold(value, persist = true) {
+  if (!els.brightnessThreshold) return;
+  els.brightnessThreshold.value = String(clampByte(value, 255));
+  resetBrightnessPreviewCache();
+  updateBrightnessThresholdUi(persist);
+  drawWithAvailabilityStatus();
+}
+
+function viewSettingsPayload() {
+  return {
+    brightness_threshold_luma: currentBrightnessThreshold(),
+    brightness_threshold_formula: BRIGHTNESS_THRESHOLD_FORMULA,
+    background_mode: els.baseMode ? els.baseMode.value : null
+  };
+}
+
+function brightnessFilteredBackground(base) {
+  const threshold = currentBrightnessThreshold();
+  if (!base || threshold >= 255) return base;
+  if (
+    state.brightnessPreview.source === base
+    && state.brightnessPreview.threshold === threshold
+    && brightnessPreviewCanvas.width === state.imageW
+    && brightnessPreviewCanvas.height === state.imageH
+  ) {
+    return brightnessPreviewCanvas;
+  }
+
+  brightnessSourceCanvas.width = state.imageW;
+  brightnessSourceCanvas.height = state.imageH;
+  brightnessPreviewCanvas.width = state.imageW;
+  brightnessPreviewCanvas.height = state.imageH;
+
+  if (threshold <= 0) {
+    brightnessPreviewCtx.fillStyle = '#ffffff';
+    brightnessPreviewCtx.fillRect(0, 0, state.imageW, state.imageH);
+  } else {
+    brightnessSourceCtx.clearRect(0, 0, state.imageW, state.imageH);
+    brightnessSourceCtx.drawImage(base, 0, 0, state.imageW, state.imageH);
+    const imageData = brightnessSourceCtx.getImageData(0, 0, state.imageW, state.imageH);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      if (luma > threshold) {
+        data[i] = 255;
+        data[i + 1] = 255;
+        data[i + 2] = 255;
+        data[i + 3] = 255;
+      }
+    }
+    brightnessPreviewCtx.putImageData(imageData, 0, 0);
+  }
+
+  state.brightnessPreview.source = base;
+  state.brightnessPreview.threshold = threshold;
+  return brightnessPreviewCanvas;
 }
 
 function draw() {
@@ -1427,7 +1848,7 @@ function draw() {
     ctx.fillRect(0, 0, state.imageW, state.imageH);
     if (state.images.sulfideMask) ctx.drawImage(state.images.sulfideMask, 0, 0, state.imageW, state.imageH);
   } else if (base) {
-    ctx.drawImage(base, 0, 0, state.imageW, state.imageH);
+    ctx.drawImage(brightnessFilteredBackground(base), 0, 0, state.imageW, state.imageH);
   }
   if (els.layers.auto.checked && state.staticTints.auto) ctx.drawImage(state.staticTints.auto, 0, 0);
   if (els.layers.lines.checked && state.staticTints.lines) ctx.drawImage(state.staticTints.lines, 0, 0);
@@ -1441,6 +1862,34 @@ function draw() {
   drawSamBoxDraft();
   drawSam2PromptPreview();
   drawBrushCursor();
+}
+
+function describeUnavailableBackground() {
+  if (!state.sample) return null;
+  const baseMode = els.baseMode.value;
+  if (baseMode === 'original' && !state.images.original) return 'Original photo is not available for this sample.';
+  if (baseMode === 'annotated' && !state.images.annotated) return 'MS Paint annotation image is not available for this sample.';
+  if (baseMode === 'qa' && !state.images.qa) return 'Converter QA overlay is not available for this sample.';
+  if (baseMode === 'sulfide' && !state.images.sulfideMask) return 'Sulfide mask is not available for this sample.';
+  return null;
+}
+
+function selectedUnavailableLayerMessages() {
+  if (!state.sample) return [];
+  const messages = [];
+  if (els.layers.auto.checked && !state.staticTints.auto) messages.push('Autodetected mask layer is not available.');
+  if (els.layers.lines.checked && !state.staticTints.lines) messages.push('Original blue lines layer is not available.');
+  if (els.layers.overlap.checked && !state.staticTints.overlap) messages.push('Sulfide overlap layer is not available.');
+  if (els.layers.ignore.checked && !state.staticTints.ignore) messages.push('Ignore/uncertain layer is not available.');
+  if (els.layers.current.checked && !currentTintCanvas.width) messages.push('Editable talc mask layer is not available.');
+  return messages;
+}
+
+function drawWithAvailabilityStatus() {
+  draw();
+  const missing = describeUnavailableBackground();
+  const layerMissing = selectedUnavailableLayerMessages();
+  if (missing || layerMissing.length) setStatus(missing || layerMissing[0], true);
 }
 
 function drawShapeGuides() {
@@ -1616,6 +2065,44 @@ function drawBrushCursor() {
   ctx.restore();
 }
 
+function cursorForRectHandle(handle) {
+  if (handle === 'move') return 'move';
+  if (handle === 'n' || handle === 's') return 'ns-resize';
+  if (handle === 'e' || handle === 'w') return 'ew-resize';
+  if (handle === 'nw' || handle === 'se') return 'nwse-resize';
+  if (handle === 'ne' || handle === 'sw') return 'nesw-resize';
+  return 'crosshair';
+}
+
+function canvasCursorForPoint(point = null) {
+  if (!state.sample || !state.sample.editable) return 'default';
+  if (state.viewPan.active) return 'grabbing';
+  if (state.drawing || state.shapeDrag) return 'grabbing';
+  if (state.tool === 'brush') return 'crosshair';
+  if (state.tool === 'fill') return 'cell';
+  if (state.tool === 'sam2') return 'crosshair';
+  if (state.tool === 'rectangle') {
+    if (state.rect.active) {
+      const draftHandle = point ? hitRectHandle(point) : null;
+      return cursorForRectHandle(draftHandle || 'crosshair');
+    }
+    const hit = point ? hitRectangleShape(point) : null;
+    return hit ? cursorForRectHandle(hit.handle) : 'crosshair';
+  }
+  if (state.tool === 'polygon') {
+    if (point && state.polygon.points.length > 0 && nearestPolygonPoint(point) !== null) return 'pointer';
+    if (point && hitPolygonShapePoint(point)) return 'grab';
+    if (point && hitPolygonShapeSegment(point)) return 'copy';
+    if (point && hitPolygonShapeBody(point)) return 'move';
+    return 'crosshair';
+  }
+  return 'default';
+}
+
+function updateViewerCursor(point = null) {
+  viewer.style.cursor = canvasCursorForPoint(point || state.hoverPoint);
+}
+
 function pushUndo() {
   try {
     state.undoStack.push({
@@ -1638,7 +2125,7 @@ async function undo() {
     setStatus('Nothing to undo.');
     return;
   }
-  state.dirty = true;
+  markLocalDirty();
   const img = await loadImage(snapshot.base || snapshot);
   if (!img) return;
   baseMaskCtx.clearRect(0, 0, state.imageW, state.imageH);
@@ -1670,6 +2157,113 @@ async function undo() {
   await autosave('undo');
 }
 
+function isMaskDataActive(data, pixelIndex, threshold = 16) {
+  const i = pixelIndex * 4;
+  return data[i] > threshold || data[i + 1] > threshold || data[i + 2] > threshold;
+}
+
+function prepareFillBoundaries(rawLines, closedLines) {
+  fillBoundaryCanvas.width = state.imageW;
+  fillBoundaryCanvas.height = state.imageH;
+  fillBoundaryCtx.clearRect(0, 0, state.imageW, state.imageH);
+  state.fillBoundaryLoaded = Boolean(rawLines || closedLines);
+  if (rawLines) fillBoundaryCtx.drawImage(rawLines, 0, 0, state.imageW, state.imageH);
+  if (closedLines) fillBoundaryCtx.drawImage(closedLines, 0, 0, state.imageW, state.imageH);
+}
+
+async function fillAtPoint(point) {
+  if (!state.sampleId || !state.sample || !state.sample.editable) return;
+  const x = Math.max(0, Math.min(state.imageW - 1, Math.floor(point.x)));
+  const y = Math.max(0, Math.min(state.imageH - 1, Math.floor(point.y)));
+  const width = state.imageW;
+  const height = state.imageH;
+  const total = width * height;
+  const start = y * width + x;
+  const currentData = maskCtx.getImageData(0, 0, width, height).data;
+  const boundaryData = state.fillBoundaryLoaded ? fillBoundaryCtx.getImageData(0, 0, width, height).data : null;
+  const sulfideBoundaryData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
+  const boundaryLabels = [];
+  if (state.fillBoundaryLoaded) boundaryLabels.push('blue_lines');
+  boundaryLabels.push('current_talc_regions');
+  if (sulfideBoundaryData) boundaryLabels.push('sulfide_pixels');
+  boundaryLabels.push('screen_edges');
+  const blocked = (pixel) => (
+    isMaskDataActive(currentData, pixel, 0)
+    || (boundaryData && isMaskDataActive(boundaryData, pixel, 16))
+    || (sulfideBoundaryData && isMaskDataActive(sulfideBoundaryData, pixel, 0))
+  );
+  if (blocked(start)) {
+    setStatus('Fill point is on a blue line, sulfide pixel, or existing talc region; click inside an empty bounded area.', true);
+    return;
+  }
+
+  const baselineData = captureBaseMaskData();
+  const baseData = baseMaskCtx.getImageData(0, 0, width, height);
+  const base = baseData.data;
+  const visited = new Uint8Array(total);
+  const queue = new Int32Array(total);
+  let head = 0;
+  let tail = 0;
+  let filled = 0;
+  visited[start] = 1;
+  queue[tail] = start;
+  tail += 1;
+
+  while (head < tail) {
+    const pixel = queue[head];
+    head += 1;
+    if (blocked(pixel)) continue;
+    const offset = pixel * 4;
+    base[offset] = 255;
+    base[offset + 1] = 255;
+    base[offset + 2] = 255;
+    base[offset + 3] = 255;
+    filled += 1;
+    const px = pixel % width;
+    const py = Math.floor(pixel / width);
+    const neighbors = [
+      px > 0 ? pixel - 1 : -1,
+      px < width - 1 ? pixel + 1 : -1,
+      py > 0 ? pixel - width : -1,
+      py < height - 1 ? pixel + width : -1
+    ];
+    for (const next of neighbors) {
+      if (next < 0 || visited[next]) continue;
+      if (blocked(next)) continue;
+      visited[next] = 1;
+      queue[tail] = next;
+      tail += 1;
+    }
+  }
+
+  if (filled === 0) {
+    setStatus('Nothing to fill at this point.', true);
+    return;
+  }
+
+  pushUndo();
+  baseMaskCtx.putImageData(baseData, 0, 0);
+  let protectedPixels = 0;
+  if (els.protectSulfides.checked) {
+    protectedPixels = removeSulfidePixelsFromCanvas(baseMaskCtx, baselineData);
+  }
+  state.edits.push({
+    type: 'fill',
+    x,
+    y,
+    filled_pixels: filled,
+    protected_pixels: protectedPixels,
+    boundaries: boundaryLabels,
+    at: new Date().toISOString()
+  });
+  markLocalDirty();
+  rebuildMaskFromBase({ recordProtection: false, reason: 'fill' });
+  const message = protectedPixels > 0
+    ? `Autosaved fill; added ${formatInt(filled)} px and protected ${formatInt(protectedPixels)} sulfide px.`
+    : `Autosaved fill; added ${formatInt(filled)} px.`;
+  await autosave('fill', message);
+}
+
 function drawMaskLine(from, to, mode, targetCtx = maskCtx) {
   targetCtx.save();
   targetCtx.globalCompositeOperation = 'source-over';
@@ -1697,7 +2291,7 @@ function strokeModeForPointer(event) {
 
 function commitShapeChange(kind, edit) {
   if (edit) state.edits.push(edit);
-  state.dirty = true;
+  markLocalDirty();
   const protectedPixels = rebuildMaskFromBase({ recordProtection: true, reason: kind });
   const message = protectedPixels > 0
     ? `Autosaved ${kind}; protected ${formatInt(protectedPixels)} sulfide px.`
@@ -1756,7 +2350,7 @@ function addRectangleShape(rect) {
 
 function afterMaskEdit(kind, baselineData = null, options = {}) {
   let protectedPixels = 0;
-  state.dirty = true;
+  markLocalDirty();
   if (options.baseBaselineData) {
     if (els.protectSulfides.checked) {
       protectedPixels = removeSulfidePixelsFromCanvas(baseMaskCtx, options.baseBaselineData);
@@ -1779,12 +2373,26 @@ function afterMaskEdit(kind, baselineData = null, options = {}) {
 
 async function autosave(reason, message) {
   if (!state.sampleId) return;
-  await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/autosave`, {
-    mask_png: maskCanvas.toDataURL('image/png'),
-    edits: state.edits,
-    reason
-  });
-  setStatus(message || `Autosaved ${reason}.`);
+  state.saveState = 'saving';
+  updateMetrics();
+  try {
+    await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/autosave`, {
+      mask_png: maskCanvas.toDataURL('image/png'),
+      edits: state.edits,
+      reason,
+      view_settings: viewSettingsPayload()
+    });
+    state.dirty = false;
+    state.saveState = 'saved';
+    state.lastSavedAt = new Date();
+    updateMetrics();
+    setStatus(message || `Autosaved ${reason}.`);
+  } catch (err) {
+    state.dirty = true;
+    state.saveState = 'error';
+    updateMetrics();
+    throw err;
+  }
 }
 
 async function subtractSulfidesFromMask() {
@@ -1812,30 +2420,42 @@ async function subtractSulfidesFromMask() {
   }
   if (flattened) state.edits.push({ type: 'flatten_shapes', reason: 'subtract_sulfides', at: new Date().toISOString() });
   state.edits.push({ type: 'subtract_sulfides', removed_pixels: removed, at: new Date().toISOString() });
-  state.dirty = true;
+  markLocalDirty();
   rebuildMaskFromBase({ recordProtection: false, reason: 'subtract_sulfides' });
   await autosave('subtract sulfides', `Autosaved sulfide subtraction; removed ${formatInt(removed)} px.`);
 }
 
 async function saveReview(moveNext) {
   if (!state.sampleId) return;
+  const currentSampleId = state.sampleId;
+  const nextInVisibleQueue = moveNext ? nextVisibleSampleId(currentSampleId) : null;
   setStatus('Saving reviewed mask...');
   flattenShapesToBase(true);
   const result = await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/save`, {
     mask_png: maskCanvas.toDataURL('image/png'),
     edits: state.edits,
     reviewer: els.reviewerInput.value.trim(),
-    notes: els.notesInput.value.trim()
+    notes: els.notesInput.value.trim(),
+    view_settings: viewSettingsPayload()
   });
   state.dirty = false;
+  state.saveState = 'reviewed';
+  state.lastSavedAt = new Date();
+  updateMetrics();
   setStatus(`Saved ${result.sample_id}.`);
   await loadManifest(false);
   if (moveNext) {
-    const index = state.samples.findIndex((sample) => sample.sample_id === state.sampleId);
-    const next = state.samples[index + 1] || state.samples[0];
-    if (next) await loadSample(next.sample_id);
+    const nextVisibleAfterSave = filteredSamples()[0]?.sample_id || null;
+    const nextId = nextInVisibleQueue && state.samples.some((sample) => sample.sample_id === nextInVisibleQueue)
+      ? nextInVisibleQueue
+      : nextVisibleAfterSave;
+    if (nextId) {
+      await loadSample(nextId, { force: true });
+    } else {
+      setStatus('Saved. No next sample is visible in the current filter.');
+    }
   } else {
-    await loadSample(state.sampleId);
+    await loadSample(state.sampleId, { force: true });
   }
 }
 
@@ -2275,18 +2895,28 @@ function mergePositiveMaskImage(img, targetCtx = maskCtx) {
 }
 
 viewer.addEventListener('contextmenu', (event) => {
-  if (state.tool === 'polygon' || state.tool === 'brush' || state.tool === 'rectangle') event.preventDefault();
+  if (state.tool === 'polygon' || state.tool === 'brush' || state.tool === 'fill' || state.tool === 'rectangle' || state.tool === 'sam2') event.preventDefault();
+});
+
+viewer.addEventListener('auxclick', (event) => {
+  if (event.button === 1) event.preventDefault();
 });
 
 viewer.addEventListener('wheel', (event) => {
   if (!state.sample) return;
   event.preventDefault();
-  zoomBy(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP);
+  zoomBy(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, event);
 }, { passive: false });
 
 viewer.addEventListener('pointerdown', async (event) => {
-  if (!state.sample || !state.sample.editable) return;
+  if (!state.sample) return;
+  if (event.button === 1) {
+    startViewPan(event);
+    return;
+  }
+  if (!state.sample.editable) return;
   const point = imagePointFromEvent(event);
+  updateViewerCursor(point);
   if (state.tool === 'brush' || state.tool === 'sam2') state.hoverPoint = point;
   if (state.tool === 'polygon' && event.button === 2) {
     event.preventDefault();
@@ -2316,6 +2946,7 @@ viewer.addEventListener('pointerdown', async (event) => {
   if (strokeMode) {
     event.preventDefault();
     viewer.setPointerCapture(event.pointerId);
+    updateViewerCursor(point);
     state.activeEditBaseline = captureMaskData();
     state.activeBaseEditBaseline = captureBaseMaskData();
     pushUndo();
@@ -2328,6 +2959,11 @@ viewer.addEventListener('pointerdown', async (event) => {
     return;
   }
   if (event.button !== 0) return;
+  if (state.tool === 'fill') {
+    event.preventDefault();
+    fillAtPoint(point).catch((err) => setStatus(`Fill failed: ${err.message}`, true));
+    return;
+  }
   viewer.setPointerCapture(event.pointerId);
   if (state.tool === 'polygon') {
     const index = nearestPolygonPoint(point);
@@ -2430,8 +3066,13 @@ viewer.addEventListener('pointerdown', async (event) => {
 });
 
 viewer.addEventListener('pointermove', (event) => {
+  if (state.viewPan.active) {
+    updateViewPan(event);
+    return;
+  }
   if (!state.sample || !state.sample.editable) return;
   const point = imagePointFromEvent(event);
+  updateViewerCursor(point);
   if (state.tool === 'brush' || state.tool === 'sam2') {
     state.hoverPoint = point;
     if (sam2PointModeActive()) scheduleSam2PointHoverPreview(point);
@@ -2477,17 +3118,23 @@ viewer.addEventListener('pointermove', (event) => {
 });
 
 viewer.addEventListener('pointerleave', () => {
+  if (state.viewPan.active) return;
   clearSam2Preview({ redraw: false });
   if (!state.hoverPoint) {
     updateSam2ApplyButton();
     return;
   }
   state.hoverPoint = null;
+  updateViewerCursor(null);
   updateSam2ApplyButton();
   draw();
 });
 
 viewer.addEventListener('pointerup', (event) => {
+  if (state.viewPan.active) {
+    finishViewPan(event);
+    return;
+  }
   if (state.shapeDrag) {
     finishShapeDrag();
   }
@@ -2531,18 +3178,16 @@ viewer.addEventListener('pointerup', (event) => {
       draw();
     }
   }
+  updateViewerCursor(state.hoverPoint);
+});
+
+viewer.addEventListener('pointercancel', (event) => {
+  finishViewPan(event);
 });
 
 document.querySelectorAll('.tool-button').forEach((button) => {
   button.addEventListener('click', () => {
-    document.querySelectorAll('.tool-button').forEach((other) => other.classList.remove('active'));
-    button.classList.add('active');
-    state.tool = button.dataset.tool;
-    if (state.tool !== 'brush' && state.tool !== 'sam2') state.hoverPoint = null;
-    clearSam2Preview({ redraw: false });
-    updateToolParams();
-    draw();
-    setStatus(`Tool: ${button.textContent}.`);
+    selectTool(button.dataset.tool);
   });
 });
 
@@ -2552,6 +3197,13 @@ els.brushSize.addEventListener('input', () => {
   els.brushSizeValue.textContent = `${els.brushSize.value} px`;
   if (state.hoverPoint) draw();
 });
+els.brightnessThreshold.addEventListener('input', () => {
+  resetBrightnessPreviewCache();
+  updateBrightnessThresholdUi(true);
+  drawWithAvailabilityStatus();
+});
+els.brightnessThreshold90Btn.addEventListener('click', () => setBrightnessThreshold(90));
+els.brightnessThresholdOffBtn.addEventListener('click', () => setBrightnessThreshold(255));
 els.sam2PromptMode.addEventListener('change', () => {
   clearSam2Preview({ redraw: false });
   updateSam2ApplyButton();
@@ -2579,8 +3231,8 @@ els.sam2StatusBtn.addEventListener('click', async () => {
     setStatus(`SAM2 status failed: ${err.message}`, true);
   }
 });
-els.baseMode.addEventListener('change', draw);
-Object.values(els.layers).forEach((layer) => layer.addEventListener('change', draw));
+els.baseMode.addEventListener('change', drawWithAvailabilityStatus);
+Object.values(els.layers).forEach((layer) => layer.addEventListener('change', drawWithAvailabilityStatus));
 if (window.matchMedia) {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (els.themeSelect.value === 'system') draw();
@@ -2593,6 +3245,15 @@ function isTextEditingTarget(target) {
 }
 
 window.addEventListener('keydown', (event) => {
+  const key = event.key.toLowerCase();
+  const shortcutAllowed = !isTextEditingTarget(event.target) && !event.metaKey && !event.ctrlKey && !event.altKey;
+  if (shortcutAllowed && (key === 'b' || key === 'f')) {
+    const tool = key === 'b' ? 'brush' : 'fill';
+    if (selectTool(tool, { shortcut: key.toUpperCase() })) {
+      event.preventDefault();
+      return;
+    }
+  }
   if ((event.key === 'Delete' || event.key === 'Backspace') && !isTextEditingTarget(event.target)) {
     if (deleteSelectedShape()) {
       event.preventDefault();
@@ -2612,9 +3273,12 @@ async function loadManifest(loadFirst) {
   if (loadFirst && state.samples.length > 0) await loadSample(state.samples[0].sample_id);
 }
 
-async function loadSample(sampleId) {
+async function loadSample(sampleId, options = {}) {
+  if (!options.force && !canLeaveCurrentSample(sampleId)) return;
   setStatus('Loading sample...');
   emptyState.classList.remove('hidden');
+  state.assetErrors = [];
+  renderAssetWarnings();
   state.sample = await apiGet(`/api/samples/${encodeURIComponent(sampleId)}`);
   state.sampleId = sampleId;
   state.imageW = Number(state.sample.image.width);
@@ -2630,19 +3294,28 @@ async function loadSample(sampleId) {
 
   const urls = state.sample.urls;
   const [
-    original, annotated, qa, currentMask, autoMask, rawLines, overlapMask, ignoreMask, sulfideMask
+    original, annotated, qa, currentMask, autoMask, rawLines, closedLines, overlapMask, ignoreMask, sulfideMask
   ] = await Promise.all([
-    loadImage(urls.original),
-    loadImage(urls.annotated || urls.source_copy),
-    loadImage(urls.qa_overlay),
-    loadImage(urls.current_mask),
-    loadImage(urls.autodetected_mask),
-    loadImage(urls.raw_blue_stroke),
-    loadImage(urls.sulfide_overlap),
-    loadImage(urls.ignore_mask),
-    loadImage(urls.sulfide_mask)
+    loadImage(urls.original, urls.original ? 'Original photo' : null),
+    loadImage(urls.annotated || urls.source_copy, (urls.annotated || urls.source_copy) ? 'MS Paint annotation' : null),
+    loadImage(urls.qa_overlay, urls.qa_overlay ? 'Converter QA overlay' : null),
+    loadImage(urls.current_mask, urls.current_mask ? 'Current working mask' : null),
+    loadImage(urls.autodetected_mask, urls.autodetected_mask ? 'Autodetected mask' : null),
+    loadImage(urls.raw_blue_stroke, urls.raw_blue_stroke ? 'Original blue lines' : null),
+    loadImage(urls.closed_blue_stroke, urls.closed_blue_stroke ? 'Closed blue line boundary' : null),
+    loadImage(urls.sulfide_overlap, urls.sulfide_overlap ? 'Sulfide overlap mask' : null),
+    loadImage(urls.ignore_mask, urls.ignore_mask ? 'Ignore/uncertain mask' : null),
+    loadImage(urls.sulfide_mask, urls.sulfide_mask ? 'Sulfide mask' : null)
   ]);
+  if (!currentMask) {
+    state.assetErrors.push('Current working mask is unavailable; edits are disabled until it loads');
+    state.sample.editable = false;
+  }
+  if (!original && !annotated) state.assetErrors.push('No display image is available for this sample');
+  renderAssetWarnings();
   state.images = { original, annotated, qa, sulfideMask };
+  prepareFillBoundaries(rawLines, closedLines);
+  resetBrightnessPreviewCache();
   baseMaskCtx.clearRect(0, 0, state.imageW, state.imageH);
   maskCtx.clearRect(0, 0, state.imageW, state.imageH);
   if (currentMask) {
@@ -2668,6 +3341,8 @@ async function loadSample(sampleId) {
   state.activeShapeId = null;
   state.shapeDrag = null;
   state.dirty = false;
+  state.saveState = state.sample.sample.review_state === 'reviewed' ? 'reviewed' : 'saved';
+  state.lastSavedAt = null;
   state.polygon.points = [];
   state.polygon.dragIndex = null;
   state.rect.active = false;
@@ -2686,16 +3361,18 @@ async function loadSample(sampleId) {
   clearSam2Preview({ redraw: false });
 
   els.sampleTitle.textContent = state.sample.image.name;
-  els.sampleSubtitle.textContent = `${state.sample.sample.status} / ${state.sample.sample.review_state} / ${state.imageW} x ${state.imageH}`;
+  els.sampleSubtitle.textContent = `${statusLabel(state.sample.sample.status)} · ${reviewStateLabel(state.sample.sample.review_state)} · ${state.imageW} x ${state.imageH}`;
   emptyState.classList.add('hidden');
   fitToViewer();
   updateMetrics();
   draw();
   renderQueue();
+  updateViewerCursor();
   setStatus(state.sample.editable ? 'Editing current talc mask.' : 'Original image is missing; editing disabled for this sample.', !state.sample.editable);
 }
 
 applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || 'system', false);
+setBrightnessThreshold(localStorage.getItem(BRIGHTNESS_THRESHOLD_STORAGE_KEY) || 255, false);
 updateToolParams();
 
 loadManifest(true).catch((err) => {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import io
 import json
 import shutil
@@ -77,6 +78,48 @@ class TalcReviewWebTest(unittest.TestCase):
         np.testing.assert_array_equal(read_mask(current_path), read_mask(final_path))
         self.assertEqual(payload["metrics"]["current_talc_pixels"], int(np.count_nonzero(read_mask(final_path))))
 
+    def test_sample_open_recovers_unreadable_current_mask(self) -> None:
+        sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
+        payload = self.store.sample_payload(sample_id)
+        sample_dir = Path(payload["image"]["sample_dir"])
+        current_path = sample_dir / "current_talc_mask.png"
+        final_path = Path(payload["summary"]["paths"]["final_talc_mask"])
+        current_path.write_bytes(b"not a png")
+
+        recovered_payload = self.store.sample_payload(sample_id)
+
+        np.testing.assert_array_equal(read_mask(current_path), read_mask(final_path))
+        state = json.loads((sample_dir / "working_state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["source"], "autodetected_recovered")
+        self.assertTrue(state["recovery_reason"].startswith("unreadable_"))
+        self.assertTrue(list(sample_dir.glob("current_talc_mask.recovered.*.png")))
+        self.assertEqual(
+            recovered_payload["metrics"]["current_talc_pixels"],
+            int(np.count_nonzero(read_mask(final_path))),
+        )
+
+    def test_concurrent_first_open_creates_one_valid_current_mask(self) -> None:
+        sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
+        payload = self.store.sample_payload(sample_id)
+        sample_dir = Path(payload["image"]["sample_dir"])
+        current_path = sample_dir / "current_talc_mask.png"
+        final_path = Path(payload["summary"]["paths"]["final_talc_mask"])
+        current_path.unlink()
+        state_path = sample_dir / "working_state.json"
+        state_path.unlink(missing_ok=True)
+        self.store.refresh_samples()
+
+        def open_sample() -> int:
+            opened = self.store.sample_payload(sample_id)
+            return int(opened["metrics"]["current_talc_pixels"])
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            counts = list(pool.map(lambda _: open_sample(), range(8)))
+
+        expected = int(np.count_nonzero(read_mask(final_path)))
+        self.assertEqual(counts, [expected] * 8)
+        np.testing.assert_array_equal(read_mask(current_path), read_mask(final_path))
+
     def test_save_review_writes_current_reviewed_overlay_patch_and_summary(self) -> None:
         sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
         payload = self.store.sample_payload(sample_id)
@@ -90,6 +133,11 @@ class TalcReviewWebTest(unittest.TestCase):
                 "edits": [{"type": "test_rectangle", "x1": 12, "y1": 10, "x2": 42, "y2": 30}],
                 "reviewer": "unit-test",
                 "notes": "synthetic",
+                "view_settings": {
+                    "brightness_threshold_luma": 90,
+                    "brightness_threshold_formula": "luma = 0.299*R + 0.587*G + 0.114*B",
+                    "background_mode": "original",
+                },
             },
             reviewed=True,
         )
@@ -103,6 +151,8 @@ class TalcReviewWebTest(unittest.TestCase):
         patch = json.loads(Path(reviewed["review_patch"]).read_text(encoding="utf-8"))
         self.assertEqual(patch["reviewer"], "unit-test")
         self.assertEqual(patch["original_image_path"], str((self.original_dir / self.image_name).resolve()))
+        self.assertEqual(patch["view_settings"]["brightness_threshold_luma"], 90)
+        self.assertEqual(patch["view_settings"]["background_mode"], "original")
         refreshed = self.store.manifest_payload()["samples"][0]
         self.assertEqual(refreshed["review_state"], "reviewed")
 
@@ -142,13 +192,20 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn(':root[data-theme="dark"]', markup)
         self.assertIn("talcReviewTheme", markup)
         self.assertIn("Brush: left mouse adds talc, right mouse erases.", markup)
-        self.assertLess(markup.index('data-tool="brush"'), markup.index('data-tool="rectangle"'))
+        self.assertIn("Brush (B): left mouse draws talc, right mouse erases", markup)
+        self.assertIn("Fill (F): click an area bounded by blue lines, sulfides, existing talc regions, or image edges", markup)
+        self.assertIn("Fill: click an empty area bounded by blue lines, sulfides, existing talc regions, or the image edge.", markup)
+        self.assertIn('aria-keyshortcuts="B"', markup)
+        self.assertIn('aria-keyshortcuts="F"', markup)
+        self.assertLess(markup.index('data-tool="brush"'), markup.index('data-tool="fill"'))
+        self.assertLess(markup.index('data-tool="fill"'), markup.index('data-tool="rectangle"'))
         self.assertLess(markup.index('data-tool="rectangle"'), markup.index('data-tool="polygon"'))
         self.assertLess(markup.index('data-tool="polygon"'), markup.index('data-tool="sam2"'))
         self.assertIn('class="toolbar-separator"', markup)
         self.assertIn('id="zoomInBtn"', markup)
         self.assertIn('id="zoomOutBtn"', markup)
         self.assertIn('id="fitBtn"', markup)
+        self.assertIn('id="zoomValue"', markup)
         self.assertIn('class="review-actions"', markup)
         self.assertIn('id="saveBtn"', markup)
         self.assertIn('Save &amp; Next', markup)
@@ -159,21 +216,60 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertNotIn("Save and next", markup)
         self.assertIn('value="sulfide"', markup)
         self.assertIn("Sulfide mask (sulfide/non-sulfide mask segmentation)", markup)
+        self.assertIn("Mask-only background", markup)
+        self.assertIn("Editable talc mask overlay", markup)
+        self.assertIn('id="brightnessThreshold"', markup)
+        self.assertIn('id="brightnessThresholdValue"', markup)
+        self.assertIn('id="brightnessThreshold90Btn"', markup)
+        self.assertIn('id="brightnessThresholdOffBtn"', markup)
+        self.assertIn("Dark pixel preview threshold", markup)
+        self.assertIn("Luma = 0.299 R + 0.587 G + 0.114 B", markup)
+        self.assertIn("BRIGHTNESS_THRESHOLD_STORAGE_KEY", markup)
+        self.assertIn("BRIGHTNESS_THRESHOLD_FORMULA", markup)
+        self.assertIn("function brightnessFilteredBackground(base)", markup)
+        self.assertIn("const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]", markup)
+        self.assertIn("if (threshold <= 0)", markup)
+        self.assertIn("if (luma > threshold)", markup)
+        self.assertIn("view_settings: viewSettingsPayload()", markup)
+        self.assertIn('id="assetWarnings"', markup)
         self.assertIn("baseMode === 'sulfide'", markup)
         self.assertIn("state.images.sulfideMask", markup)
         self.assertIn("state.images = { original, annotated, qa, sulfideMask }", markup)
+        self.assertIn("function prepareFillBoundaries(rawLines, closedLines)", markup)
+        self.assertIn("function fillAtPoint(point)", markup)
+        self.assertIn("state.fillBoundaryLoaded", markup)
+        self.assertIn("const sulfideBoundaryData = hasSulfideGuard()", markup)
+        self.assertIn("boundaryLabels.push('sulfide_pixels')", markup)
+        self.assertIn("isMaskDataActive(sulfideBoundaryData, pixel, 0)", markup)
+        self.assertIn("fillAtPoint(point).catch", markup)
+        self.assertIn("closed_blue_stroke", markup)
+        self.assertIn("boundaries: boundaryLabels", markup)
         self.assertIn('id="brushParams"', markup)
         self.assertIn('id="sam2Params"', markup)
         self.assertIn('id="sam2ApplyBtn"', markup)
+        self.assertIn("Load SAM2", markup)
         self.assertIn('aria-label="Tool parameters"', markup)
+        self.assertIn('aria-pressed="true"', markup)
+        self.assertIn("function selectTool(tool, options = {})", markup)
+        self.assertIn("other.setAttribute('aria-pressed', 'false')", markup)
         self.assertIn("function updateToolParams()", markup)
         self.assertIn("viewer.addEventListener('wheel'", markup)
-        self.assertIn("event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP", markup)
+        self.assertIn("zoomBy(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, event)", markup)
+        self.assertIn("viewPan:", markup)
+        self.assertIn("function startViewPan(event)", markup)
+        self.assertIn("function updateViewPan(event)", markup)
+        self.assertIn("function finishViewPan(event = null)", markup)
+        self.assertIn("if (event.button === 1)", markup)
+        self.assertIn("wrap.scrollLeft = state.viewPan.scrollLeft - dx", markup)
+        self.assertIn("viewer.addEventListener('auxclick'", markup)
+        self.assertIn("viewer.addEventListener('pointercancel'", markup)
         self.assertNotIn('id="zoomSlider"', markup)
         self.assertNotIn('class="canvas-controls"', markup)
         self.assertIn("hoverPoint", markup)
         self.assertIn("function drawBrushCursor()", markup)
         self.assertIn("drawBrushCursor();", markup)
+        self.assertIn("function updateViewerCursor(point = null)", markup)
+        self.assertIn("function canvasCursorForPoint(point = null)", markup)
         self.assertIn("viewer.addEventListener('pointerleave'", markup)
         self.assertIn("function strokeModeForPointer(event)", markup)
         self.assertIn("if (event.button === 2) return 'eraser';", markup)
@@ -199,6 +295,10 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn("function removePolygonShapePoint(hit)", markup)
         self.assertIn("function deleteSelectedShape()", markup)
         self.assertIn("function isTextEditingTarget(target)", markup)
+        self.assertIn("const shortcutAllowed = !isTextEditingTarget(event.target) && !event.metaKey && !event.ctrlKey && !event.altKey", markup)
+        self.assertIn("key === 'b' || key === 'f'", markup)
+        self.assertIn("const tool = key === 'b' ? 'brush' : 'fill'", markup)
+        self.assertIn("selectTool(tool, { shortcut: key.toUpperCase() })", markup)
         self.assertIn("polygon_point_remove", markup)
         self.assertIn("polygon_shape_delete", markup)
         self.assertIn("rectangle_shape_delete", markup)
@@ -245,7 +345,15 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn("removeSulfidePixelsFromMask", markup)
         self.assertIn("protect_sulfides", markup)
         self.assertIn("subtract_sulfides", markup)
-        self.assertIn("Current on sulfide px", markup)
+        self.assertIn("Current talc on sulfide", markup)
+        self.assertIn("Working mask saved", markup)
+        self.assertIn("Autosave failed", markup)
+        self.assertIn("function nextVisibleSampleId(currentId)", markup)
+        self.assertIn("function canLeaveCurrentSample(targetSampleId)", markup)
+        self.assertIn("nextInVisibleQueue", markup)
+        self.assertIn("statusLabel(sample.status)", markup)
+        self.assertIn("reviewStateLabel(sample.review_state)", markup)
+        self.assertNotIn("sample.status.includes('review')", markup)
         self.assertNotIn("enforceSulfideProtection('undo')", markup)
 
 
