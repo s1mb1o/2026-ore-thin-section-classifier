@@ -19,6 +19,44 @@ print("dataset manifest ok")
 PY
 ```
 
+## Ore Pipeline UI Smoke
+
+Run from the v2 root:
+
+```bash
+python3 -m py_compile apps/ore_pipeline_web.py
+python3 -m unittest discover -s tests -p 'test_ore_pipeline_web.py' -v
+```
+
+```bash
+python3 apps/ore_pipeline_web.py \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+Expected:
+
+- Focused tests pass for upload, preprocessing, complete run artifacts, metrics CSV, PDF report, sulfide edit rerun, final segmentation edit recalculation, history, and required UI controls.
+- The app prints a local URL such as `http://127.0.0.1:<port>/`.
+- `/` redirects to `/workspace`; `/workspace` and `/history` can be opened directly, tab clicks update the URL, and browser back/forward restores the matching page.
+- The `Theme` selector supports `System`, `Light`, and `Dark`; explicit dark/light choices update panels, controls, toolbar, modal, history rows, and viewer backgrounds and persist across reloads.
+- The `Language` selector defaults to `Русский`; the Russian UI labels are visible on first load, and switching to English updates controls, preprocessing labels, result/history summaries, metrics, and editor labels without clearing the current run/history state.
+- The drop zone accepts click-to-upload and drag/drop for PNG, JPEG, TIFF, and RAW-extension files.
+- Dropping or selecting an unsupported file extension shows an inline warning in the upload panel and does not start an upload; supported extensions remain PNG, JPEG, TIFF, and RAW-camera variants.
+- Large uploads show progress in the input panel: byte-transfer progress during upload, then a preview-preparation phase while the server decodes and scales display pyramids; manual preprocessing preview updates also show preparation progress.
+- After image selection, the drop zone shows a thumbnail, filename, dimensions, and an `×` clear button; clearing resets upload/run/result/progress/view state and returns to `Waiting for image`.
+- Preview supports primary `original`, `preprocessed`, `sulfide`, and `final` layers with pan/zoom. `preprocessed`, `sulfide`, and `final` stay greyed/disabled until the corresponding artifacts are ready.
+- The `show tiling` checkbox is available when the current upload/run has a tile manifest and overlays the tile grid used for scaled/large-image analysis on top of original, preprocessed, sulfide, final, and side-by-side views.
+- Side-by-side is a separate `none/preprocessed/sulfide/final` selector; choosing a ready comparison layer shows it on the right side with a draggable left/right splitter.
+- Preprocessing controls include `нормализация освещения`, `шумоподавление`, `коррекция контраста`, and `масштабирование для панорамных снимков`; all four are enabled by default and the user's chosen preset persists across reloads and upload clears.
+- `Start` creates an immutable run under `outputs/ore_pipeline_ui/runs/` with original input, preprocess preset, preprocessed image, masks, metrics, and report artifacts.
+- While a run is queued/running, the `Start` control is replaced by a red `Stop` button. Pressing `Stop` disables that button, shows stopping status, cancels the active run through `/api/runs/{run_id}/cancel`, and leaves the run in terminal `canceled` state without enabling result editing.
+- Result view shows class toggles for background, ordinary intergrowth, fine intergrowth, and talc.
+- `Fix me` opens the editor; sulfide/non-sulfide and final segmentation are selected with tabs, the top toolbar contains Brush/Pan, Undo/Redo, Zoom in/out, Fit view, and Brush size, Brush left-draws and right-erases, and the right panel shows live pixel/% statistics for sulfide, non-sulfide, ordinary intergrowth, fine intergrowth, and talc.
+- The edit dialog refreshes the selected run before loading masks so image and segmentation layers appear even after a server restart or stale browser state; missing prerequisites show a localized editor error rather than a blank canvas.
+- `Fix and Restart` creates a new derived run instead of mutating the parent.
+- The History page shows a table with thumbnail, filename, date, ore classification, sulfides, non-sulfides, ordinary intergrowth, fine intergrowth, talc, and Actions; clicking a thumbnail opens a preview popup, `Load` restores the original upload/preprocessing preset for tuning, and `Remove` deletes the selected completed/failed run artifact from history.
+
 ## Talc Blue-Line Converter Smoke
 
 Run from the v2 root:
@@ -57,7 +95,7 @@ Expected:
 - Current status counts are `31` `candidate_ok`, `9` `needs_manual_review`, and `2` `sulfide_overlap_review_required`.
 - Each sample directory contains source image copy, blue stroke masks, talc candidates, sulfide/overlap/ignore masks, optional-silicate derived masks, final talc mask, QA overlay, and `conversion_summary.json`.
 - The talc converter accepts `--silicate-mask-dir` and writes `silicate_support_mask.png`, `silicate_supported_talc_mask.png`, `silicate_unsupported_talc_mask.png`, `talc_positive_core_mask.png`, and `silicate_hard_negative_mask.png`; synthetic unit tests verify supported talc, unsupported uncertain talc, and silicate hard negatives.
-- Preferred browser review shows original blue annotation lines explicitly, edits the current talc mask directly, supports brush, eraser, filled polygon, filled rectangle, optional SAM2 prompts, undo, autosave, default-on sulfide protection, manual sulfide subtraction, `Save`, and `Save and next`, and saves reviewed outputs under each sample's `reviewed/` directory. The legacy Streamlit review remains available only as a fallback.
+- Preferred browser review shows original blue annotation lines explicitly, edits the current talc mask directly, supports brush left-draw/right-erase, direct editable polygon/rectangle regions, optional SAM2 prompts, undo, autosave, default-on sulfide protection, manual sulfide subtraction, top-right `Save` and `Save & Next`, and saves reviewed outputs under each sample's `reviewed/` directory. Polygon/rectangle regions stay editable while the current image is open and are flattened on save. The legacy Streamlit review remains available only as a fallback.
 - The `SAM2 assist` canvas tool shows model/device controls, `Load/check SAM2`, draggable point/box prompts, and `Run SAM2`; without local `torch` and `sam2`, it should report missing optional dependencies rather than blocking the rest of the app.
 
 ## Talc Browser Review App Smoke
@@ -83,11 +121,22 @@ Expected:
 - `/api/manifest` reports `42` samples for the full conversion workspace.
 - The `Theme` selector supports `System`, `Light`, and `Dark`; explicit dark/light choices update the UI immediately and persist across reloads.
 - Opening a sample auto-creates or reuses `current_talc_mask.png`.
-- The canvas edits the talc mask itself with brush, eraser, polygon, rectangle, and optional SAM2 prompt tools.
+- The top toolbar is ordered `Brush`, `Rectangle`, `Polygon`, `SAM2`, `Undo`, `Zoom In`, `Zoom Out`, `Fit`, followed by active-tool parameters, with `Save` and `Save & Next` pinned at the top right; Brush shows brush size, SAM2 shows prompt mode and `Check SAM2`.
+- Mouse wheel over the canvas zooms in/out without changing mask geometry.
+- The canvas edits the talc mask itself with brush left-draw/right-erase, polygon, rectangle, and optional SAM2 prompt tools.
+- `Base image` includes `Sulfide mask (sulfide/non-sulfide mask segmentation)` and selecting it shows the binary sulfide mask as the canvas background while talc overlays remain editable.
 - In Brush mode, left mouse draws talc and right mouse erases without opening the browser context menu.
-- Polygon draft editing supports click-to-add, edge-click-to-insert, point drag, right-click-point-to-delete, and status-line confirmation for add/insert/remove.
+- In Brush mode, hovering over the image shows a circle matching the current brush draw/erase area; changing brush size updates the circle.
+- Polygon drawing supports click-to-add points and closes by clicking the first point; right-click on a polygon point removes it, while right-click elsewhere cancels the current draft without opening the browser context menu.
+- Completed polygon regions fill immediately, stay editable while the current image is open, and support point drag, edge-click-to-insert, whole-shape move, and live mask updates.
+- Rectangle drawing fills on drag or on the second corner click; right-click cancels the current draft, and completed rectangle regions stay editable while the current image is open with corner/edge drag, whole-shape move, and live mask updates.
+- Pressing Delete/Backspace removes the selected completed polygon or rectangle, while text fields keep normal delete behavior.
+- No `Apply Polygon`, `Cancel Polygon`, `Apply Rectangle`, or `Cancel Rectangle` controls are shown; `Save` flattens live polygon/rectangle regions into the reviewed mask.
 - `Protect sulfides while drawing` is enabled by default; add tools cannot add new talc pixels on the sulfide mask, `Current on sulfide px` is shown for existing overlap, and `Subtract sulfides from mask` removes overlap and autosaves.
 - `Save` writes `reviewed/reviewed_talc_mask.png`, `reviewed/reviewed_ignore_mask.png`, `reviewed/reviewed_overlay.png`, `reviewed/review_patch.json`, and `reviewed/review_summary.json`.
+- `SAM2 box` is the default SAM2 canvas prompt; point mode remains available. SAM2 box/polygon prompt results are clipped to the prompt bounds, and SAM2 masks covering more than half the image are rejected with a clear status message instead of filling the whole canvas.
+- In SAM2 mode, hovering over the image shows a dashed orange preview of the proposed box/point area; dragging a SAM2 box keeps the dashed preview visible.
+- In `SAM2 point` mode, keeping the cursor still over the image for about two seconds requests a SAM2 mask as an orange preview overlay without changing the talc mask; `Apply SAM2` applies that preview, or runs and applies the current hover point if no preview is ready yet.
 - If SAM2 dependencies are missing, `Check SAM2` and the SAM2 canvas tool report the missing optional dependency without blocking manual editing.
 
 ## Heuristic Segmentation Smoke

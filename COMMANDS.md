@@ -40,6 +40,28 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+## Ore Pipeline UI
+
+Default local demo/smoke mode uses the heuristic backend, creates immutable run
+artifacts under `outputs/ore_pipeline_ui/`, and prints the selected local URL:
+
+```bash
+python3 apps/ore_pipeline_web.py \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+Use the ML sulfide checkpoint instead of the heuristic backend when the full ML
+environment is active:
+
+```bash
+python3 apps/ore_pipeline_web.py \
+  --backend ml \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --host 127.0.0.1 \
+  --port 0
+```
+
 ## Talc Review UI (Preferred Browser/Canvas App)
 
 Directly from the official annotated folder:

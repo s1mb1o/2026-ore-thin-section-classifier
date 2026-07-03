@@ -26,7 +26,7 @@ Build a lightweight local web app:
   stdlib server.
 - Generated HTML/CSS plus vanilla JavaScript.
 - Browser `canvas` for image display, mask overlay, polygon/rectangle editing,
-  brush/eraser editing, pan/zoom, and SAM2 prompts.
+  brush left-draw/right-erase editing, pan/zoom, and SAM2 prompts.
 - File-based outputs compatible with the current converter and training
   manifests.
 
@@ -180,11 +180,11 @@ app should show a clear setup screen with the exact direct-input command.
    talc mask.
 7. Inspect the clean original, annotated MS Paint draft, autodetected mask, and
    current talc mask.
-8. Edit the current talc mask with brush, eraser, filled polygon, filled
-   rectangle, or SAM2 assist.
+8. Edit the current talc mask with brush left-draw/right-erase, direct editable
+   polygon regions, direct editable rectangle regions, or SAM2 assist.
 9. Use undo when an edit is wrong.
-10. Press `Save` to persist the current sample.
-11. Press `Save and next` to persist the current sample and move to the next
+10. Press top-right `Save` to persist the current sample.
+11. Press top-right `Save & Next` to persist the current sample and move to the next
     sample in the queue.
 
 ## UX Requirements
@@ -219,6 +219,7 @@ Base image modes:
 - Original photo.
 - MS Paint annotated photo.
 - QA overlay.
+- Sulfide mask (sulfide/non-sulfide mask segmentation).
 - Current mask view.
 
 Overlay toggles:
@@ -243,51 +244,64 @@ shows whether any overlap still exists.
 
 Required controls:
 
-- Pan and zoom by mouse/trackpad, plus reset view.
+- A single top toolbar ordered Brush, Rectangle, Polygon, SAM2, Undo, Zoom In,
+  Zoom Out, Fit, followed by active-tool parameters.
+- Top-right Save and Save & Next actions.
+- Zoom by mouse wheel/trackpad over the canvas, plus toolbar Zoom In, Zoom Out,
+  and Fit controls.
 - Brush add with left mouse.
 - Brush erase with right mouse.
-- Eraser/remove.
 - Filled polygon.
 - Filled rectangle.
 - SAM2 assist.
 - Undo.
-- Redo.
-- Clear draft geometry.
-- Save.
-- Save and next.
-- Apply draft to `Talc mask`.
-
-Brush width applies only to brush and eraser. In Brush mode, left mouse adds
-talc and right mouse erases without opening the browser context menu. Polygon,
-rectangle, and SAM2 operate on filled regions.
+Brush width appears in the toolbar only when Brush is active and applies only
+to Brush. In Brush mode, left mouse adds talc and right mouse erases without
+opening the browser context menu. While hovering over the image in Brush mode,
+the canvas shows a circle matching the current draw/erase area. Polygon,
+rectangle, and SAM2 operate on filled regions. Polygon and rectangle drafts are
+cancelled with right mouse, not with separate `Apply` or `Cancel` controls.
+SAM2 parameters appear in the same toolbar only when SAM2 is active.
 
 Edits update the current working talc mask. The app should auto-save this
 working mask after each applied edit so leaving and reopening a sample does not
 lose work. `Save` marks the current working mask as reviewed and writes the
-review patch; `Save and next` does the same and navigates to the next queue row.
+review patch; `Save & Next` does the same and navigates to the next queue row.
+Live polygon/rectangle regions stay editable only while the current image is
+open; saving flattens them into the reviewed mask PNG.
 
 ### Polygon Tool
 
 Polygon editing must support:
 
 - Add point by clicking empty canvas.
-- Insert point by clicking an existing polygon edge.
-- Drag existing points.
-- Delete point by right-clicking it.
-- Close polygon automatically when at least three points exist.
-- Preview filled region before applying.
-- Apply as add/remove/replace operation to the talc mask.
+- Close/finalize the polygon by clicking its first point after at least three
+  points exist.
+- Right-click a polygon point to remove it.
+- Right-click away from polygon points to cancel the current draft polygon.
+- Fill the talc region immediately after the polygon is closed.
+- Keep completed polygon regions editable until another image is opened or the
+  sample is saved.
+- Insert point by clicking an existing completed polygon edge.
+- Drag existing completed polygon points.
+- Move the completed polygon as a filled region.
+- Update the displayed talc mask live while the completed polygon is edited.
+- Delete/Backspace removes the selected completed polygon.
 
 ### Rectangle Tool
 
 Rectangle editing must support:
 
-- Draw by drag.
+- Draw by drag or by clicking one corner and then the opposite corner.
+- Right-click to cancel the current draft rectangle.
+- Fill the talc region immediately after the rectangle is drawn.
+- Keep completed rectangle regions editable until another image is opened or the
+  sample is saved.
 - Drag corners.
 - Drag edges.
-- Move whole rectangle.
-- Preview filled region before applying.
-- Apply as add/remove/replace operation to the talc mask.
+- Move the completed rectangle as a filled region.
+- Update the displayed talc mask live while the completed rectangle is edited.
+- Delete/Backspace removes the selected completed rectangle.
 
 ### SAM2 Tool
 
@@ -295,8 +309,8 @@ SAM2 must be a canvas tool, not a separate coordinate-only form.
 
 Prompt modes:
 
+- Rectangle, default because it bounds SAM2 proposals.
 - Positive point.
-- Rectangle.
 - Polygon/rectangle refinement if practical in v0.1; otherwise keep as v0.2.
 
 SAM2 behavior:
@@ -304,8 +318,19 @@ SAM2 behavior:
 - Show model/device/load status.
 - Load lazily only after explicit reviewer action.
 - Use default Hugging Face/model cache, not project-local model downloads.
+- Show a dashed canvas hover preview for the proposed SAM2 box/point prompt
+  area before the reviewer clicks.
+- In point mode, if the reviewer hovers without moving for about two seconds,
+  request SAM2 and show the returned mask as a non-destructive orange preview
+  overlay.
 - Display returned mask as a preview layer.
-- Reviewer must explicitly apply the SAM2 preview to the talc mask.
+- Reviewer must explicitly apply the SAM2 point preview to the talc mask with
+  the `Apply SAM2` button. If no preview is ready, the same button may run and
+  apply the current hover point.
+- Clip box/polygon SAM2 results to the reviewer-drawn prompt bounds.
+- Reject implausibly large SAM2 results, currently any returned mask covering
+  more than half the image, instead of merging a whole-screen mask into the talc
+  mask.
 - If SAM2 is unavailable, show a local dependency message and keep manual tools
   usable.
 
@@ -404,7 +429,6 @@ Operations:
 Tools:
 
 - `brush`
-- `eraser`
 - `filled_polygon`
 - `filled_rectangle`
 - `sam2_point`
@@ -457,7 +481,7 @@ serving artifact bytes.
 
 The backend validates dimensions, writes masks, writes the patch JSON, and
 returns updated metrics. `navigate` may be `stay` for `Save` or `next` for
-`Save and next`.
+`Save & Next`.
 
 ## File Layout Proposal
 
@@ -508,7 +532,7 @@ and update it if a new persistent default is reserved.
 - Prepared-workspace startup loads an existing manifest without reconverting.
 - Opening a sample for the first time copies `autodetected_talc_mask` to
   `current_talc_mask`.
-- Polygon, rectangle, brush, eraser, and SAM2 mask previews convert to expected
+- Polygon, rectangle, brush, and SAM2 mask previews convert to expected
   raster masks on synthetic inputs.
 - Save-review rejects wrong-size masks.
 - Artifact serving rejects paths outside the configured conversion directory.
@@ -524,19 +548,25 @@ Required checks:
   conversion status before opening the queue.
 - Canvas renders a nonblank source image.
 - Layer toggles update without a Python rerun.
-- Zoom/pan works and does not change mask geometry.
-- Polygon points can be added, dragged, deleted, and applied.
-- Rectangle corners/edges can be dragged and applied.
-- Brush/eraser modify only the talc mask.
+- Toolbar zoom and mouse-wheel zoom work and do not change mask geometry.
+- Polygon points can be added, closed by clicking the first point, edited, and
+  flattened on save.
+- Rectangles can be drawn by drag or two corner clicks; corners/edges can be
+  dragged after drawing and flattened on save.
+- Selected completed polygon/rectangle regions can be removed with
+  Delete/Backspace without affecting focused text fields.
+- Brush left/right mouse strokes modify only the talc mask.
 - Undo restores prior mask state.
-- Applying an edit updates/autosaves `current_talc_mask`.
+- Completing or editing a shape updates/autosaves `current_talc_mask`.
 - With sulfide protection enabled, brush/polygon/rectangle/SAM2 additions over
   sulfide pixels are clipped and the status line reports newly protected pixels
   without silently cleaning older overlap.
+- SAM2 point hover preview is non-destructive until the reviewer presses
+  `Apply SAM2`.
 - `Subtract sulfides from mask` removes existing overlap, autosaves, and leaves
   `Current on sulfide px` at zero.
 - `Save` writes reviewed masks and patch JSON.
-- `Save and next` writes reviewed masks and patch JSON, then selects the next
+- `Save & Next` writes reviewed masks and patch JSON, then selects the next
   sample in the queue.
 - SAM2 unavailable state does not block manual editing.
 
@@ -582,15 +612,21 @@ Required checks:
 - The app can review all `42` talc samples after creating or reusing the
   conversion workspace.
 - The app edits the current talc mask, not blue annotation strokes.
-- Brush left mouse draws talc; Brush right mouse erases; Eraser removes talc.
+- Toolbar controls are ordered Brush, Rectangle, Polygon, SAM2, Undo, Zoom In,
+  Zoom Out, Fit, with active-tool parameters at the end.
+- Mouse wheel zooms over the canvas without changing mask geometry.
+- Brush left mouse draws talc; Brush right mouse erases.
 - Polygon, rectangle, and SAM2 are direct filled-area tools for drawing talc.
+- Selected completed polygon and rectangle regions can be deleted with
+  Delete/Backspace.
 - Sulfide protection is enabled by default; additive tools cannot add new talc
   pixels on the sulfide mask unless the reviewer disables protection.
 - Manual sulfide subtraction is available and autosaves the current working
   mask.
 - Undo is available for editing mistakes.
-- `Save` and `Save and next` are both available.
+- Top-right `Save` and `Save & Next` are both available.
 - SAM2 is available as a canvas tool and optional dependency.
+- SAM2 point mode supports idle hover preview plus explicit `Apply SAM2`.
 - Reviewed outputs are raster masks plus a machine-readable patch JSON.
 - UI work is local and file-based, so model training and inference remain
   runnable from CLI without the app.

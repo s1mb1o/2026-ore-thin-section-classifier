@@ -27,7 +27,7 @@ docs/
   plans/      # selected implementation plans
   specs/      # official requirement mapping
   notes/      # selected source/research notes
-apps/         # Streamlit QA tools
+apps/         # local browser/canvas and Streamlit QA tools
 scripts/      # dataset and training utilities
 src/ore_classifier/
 heuristic_segmentation/  # separate non-neural segmentation baseline
@@ -50,6 +50,7 @@ The source manifest in the old repository verified `1236/1236` files and about `
 
 - `docs/plans/25_standalone-ore-classifier-project.md`
 - `docs/plans/26_weak-supervision-sulfide-binary-model.md`
+- `docs/plans/28_ore-pipeline-ui.md`
 - `docs/notes/talc-blue-line-conversion.md`
 - `docs/specs/official-tz-solution-map.ru.md`
 - `docs/official/Скажи мне кто твой шлиф.md`
@@ -59,6 +60,21 @@ The source manifest in the old repository verified `1236/1236` files and about `
 - `SMOKE_TESTS.md`
 
 ## Implemented Blocks
+
+### Ore Pipeline Browser UI
+
+The end-to-end local UI supports image upload, preprocessing previews, immutable
+runs, result visualization, edit-and-recalculate, CSV/PDF export, and history:
+
+```bash
+python3 apps/ore_pipeline_web.py \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+The default UI backend is heuristic for local smoke reliability. Use
+`--backend ml --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt`
+when the full ML environment is active.
 
 ### Talc Blue-Line Conversion And QA
 

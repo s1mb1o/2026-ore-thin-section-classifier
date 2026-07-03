@@ -1,6 +1,21 @@
 # Apps
 
-Streamlit QA and visualization tools live here.
+Local QA and visualization tools live here.
+
+Implemented ore pipeline UI:
+
+```bash
+python3 apps/ore_pipeline_web.py \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+The ore pipeline app accepts PNG, JPEG, TIFF, and RAW-extension uploads, builds
+display previews for large images, applies illumination normalization,
+denoising, contrast correction, and panorama scaling presets, creates immutable
+run artifacts, shows original/preprocessed/sulfide/final/side-by-side views,
+exports metrics CSV/PDF reports, supports `Fix me` mask edits, and creates a new
+derived run for every `Fix and Restart`.
 
 Implemented talc review app:
 
