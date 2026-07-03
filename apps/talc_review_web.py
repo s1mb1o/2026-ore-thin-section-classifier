@@ -36,7 +36,6 @@ from ore_classifier.talc_blue_line_converter import (  # noqa: E402
     TalcConversionConfig,
     convert_talc_annotation_folder,
     ensure_uint8_mask,
-    make_overlay,
     mask_pixels,
     read_image_rgb,
     read_mask,
@@ -126,6 +125,57 @@ def decode_mask_data_url(data_url: str, expected_shape_hw: tuple[int, int]) -> n
             f"{expected_shape_hw[1]}x{expected_shape_hw[0]}",
         )
     return ensure_uint8_mask(mask)
+
+
+def empty_mask(expected_shape_hw: tuple[int, int]) -> np.ndarray:
+    return np.zeros(expected_shape_hw, dtype=np.uint8)
+
+
+def union_masks(*masks: np.ndarray) -> np.ndarray:
+    if not masks:
+        raise ValueError("at least one mask is required")
+    combined = np.zeros_like(masks[0], dtype=bool)
+    for mask in masks:
+        combined |= ensure_uint8_mask(mask) > 0
+    return (combined.astype(np.uint8) * 255)
+
+
+def decode_optional_mask_data_url(data_url: Any, expected_shape_hw: tuple[int, int]) -> np.ndarray | None:
+    if not isinstance(data_url, str) or not data_url:
+        return None
+    return decode_mask_data_url(data_url, expected_shape_hw)
+
+
+def read_optional_mask(path: Path, expected_shape_hw: tuple[int, int]) -> np.ndarray | None:
+    if not path.exists():
+        return None
+    try:
+        mask = read_mask(path, expected_shape_hw)
+    except Exception:
+        return None
+    if mask.shape[:2] != expected_shape_hw:
+        return None
+    return ensure_uint8_mask(mask)
+
+
+def make_two_class_overlay(
+    image_rgb: np.ndarray,
+    *,
+    positive_bag_mask: np.ndarray,
+    talc_node_mask: np.ndarray,
+    ignore_mask: np.ndarray,
+) -> np.ndarray:
+    overlay = image_rgb.astype(np.float32).copy()
+    positive = positive_bag_mask > 0
+    talc_node = talc_node_mask > 0
+    ignore = (ignore_mask > 0) & ~(positive | talc_node)
+    for mask, color, alpha in [
+        (positive, np.array([0, 163, 216], dtype=np.float32), 0.46),
+        (talc_node, np.array([255, 196, 0], dtype=np.float32), 0.52),
+        (ignore, np.array([255, 214, 10], dtype=np.float32), 0.36),
+    ]:
+        overlay[mask] = overlay[mask] * (1.0 - alpha) + color * alpha
+    return np.clip(overlay, 0, 255).astype(np.uint8)
 
 
 class TalcReviewStore:
@@ -258,19 +308,116 @@ class TalcReviewStore:
     def current_mask_path(self, sample: ReviewSample) -> Path:
         return sample.sample_dir / "current_talc_mask.png"
 
+    def current_positive_bag_mask_path(self, sample: ReviewSample) -> Path:
+        return sample.sample_dir / "current_positive_bag_mask.png"
+
+    def current_talc_node_mask_path(self, sample: ReviewSample) -> Path:
+        return sample.sample_dir / "current_talc_node_mask.png"
+
     def working_state_path(self, sample: ReviewSample) -> Path:
         return sample.sample_dir / "working_state.json"
+
+    def write_current_class_masks(
+        self,
+        sample: ReviewSample,
+        positive_bag_mask: np.ndarray,
+        talc_node_mask: np.ndarray,
+    ) -> dict[str, Any]:
+        positive_bag_mask = ensure_uint8_mask(positive_bag_mask)
+        talc_node_mask = ensure_uint8_mask(talc_node_mask)
+        talc_mask = union_masks(positive_bag_mask, talc_node_mask)
+        current_path = self.current_mask_path(sample)
+        positive_path = self.current_positive_bag_mask_path(sample)
+        node_path = self.current_talc_node_mask_path(sample)
+        current_path.parent.mkdir(parents=True, exist_ok=True)
+        write_mask(positive_path, positive_bag_mask)
+        write_mask(node_path, talc_node_mask)
+        write_mask(current_path, talc_mask)
+        return {
+            "current_talc_mask": current_path,
+            "current_positive_bag_mask": positive_path,
+            "current_talc_node_mask": node_path,
+            "positive_bag_pixels": mask_pixels(positive_bag_mask),
+            "talc_node_pixels": mask_pixels(talc_node_mask),
+            "current_talc_pixels": mask_pixels(talc_mask),
+        }
 
     def ensure_current_mask(self, sample: ReviewSample) -> Path:
         with self.lock:
             current_path = self.current_mask_path(sample)
+            positive_path = self.current_positive_bag_mask_path(sample)
+            node_path = self.current_talc_node_mask_path(sample)
             expected_shape = (int(sample.summary["height"]), int(sample.summary["width"]))
+            positive_mask = read_optional_mask(positive_path, expected_shape)
+            node_mask = read_optional_mask(node_path, expected_shape)
+            current_mask = read_optional_mask(current_path, expected_shape)
+            if current_mask is not None:
+                if positive_mask is not None and node_mask is not None:
+                    expected_union = union_masks(positive_mask, node_mask)
+                    if np.array_equal((current_mask > 0), (expected_union > 0)):
+                        return current_path
+                    self.write_current_class_masks(sample, positive_mask, node_mask)
+                    return current_path
+                positive_mask = current_mask
+                node_mask = empty_mask(expected_shape)
+                self.write_current_class_masks(sample, positive_mask, node_mask)
+                state = {
+                    "schema_version": "talc-current-mask-state-v0.2",
+                    "sample_id": sample.sample_id,
+                    "created_at": self._existing_state_created_at(sample),
+                    "updated_at": utc_now_iso(),
+                    "source": "browser_review_class_upgrade",
+                    "current_talc_mask": str(current_path),
+                    "current_positive_bag_mask": str(positive_path),
+                    "current_talc_node_mask": str(node_path),
+                    "current_talc_pixels": mask_pixels(current_mask),
+                    "positive_bag_pixels": mask_pixels(positive_mask),
+                    "talc_node_pixels": 0,
+                    "edits": [],
+                }
+                self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                self.refresh_samples()
+                return current_path
+
+            if positive_mask is not None and node_mask is not None:
+                recovery_reason = "created"
+                recovered_path = None
+                if current_path.exists():
+                    try:
+                        damaged = read_mask(current_path)
+                        recovery_reason = f"wrong_size_{damaged.shape[1]}x{damaged.shape[0]}"
+                    except Exception as exc:
+                        recovery_reason = f"unreadable_{type(exc).__name__}"
+                    recovered_path = sample.sample_dir / f"current_talc_mask.recovered.{int(time.time())}.png"
+                    try:
+                        shutil.move(current_path, recovered_path)
+                    except OSError:
+                        recovered_path = None
+                paths = self.write_current_class_masks(sample, positive_mask, node_mask)
+                state = {
+                    "schema_version": "talc-current-mask-state-v0.2",
+                    "sample_id": sample.sample_id,
+                    "created_at": self._existing_state_created_at(sample),
+                    "updated_at": utc_now_iso(),
+                    "source": "browser_review_union_recovered",
+                    "recovery_reason": None if recovery_reason == "created" else recovery_reason,
+                    "recovered_path": str(recovered_path) if recovered_path else None,
+                    "current_talc_mask": str(paths["current_talc_mask"]),
+                    "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
+                    "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+                    "current_talc_pixels": paths["current_talc_pixels"],
+                    "positive_bag_pixels": paths["positive_bag_pixels"],
+                    "talc_node_pixels": paths["talc_node_pixels"],
+                    "edits": [],
+                }
+                self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                self.refresh_samples()
+                return current_path
+
             if current_path.exists():
                 try:
-                    current_mask = read_mask(current_path)
-                    if current_mask.shape[:2] == expected_shape:
-                        return current_path
-                    recovery_reason = f"wrong_size_{current_mask.shape[1]}x{current_mask.shape[0]}"
+                    damaged = read_mask(current_path)
+                    recovery_reason = f"wrong_size_{damaged.shape[1]}x{damaged.shape[0]}"
                 except Exception as exc:
                     recovery_reason = f"unreadable_{type(exc).__name__}"
             else:
@@ -286,17 +433,25 @@ class TalcReviewStore:
                 recovered_path = None
 
             reviewed_path = sample.sample_dir / "reviewed/reviewed_talc_mask.png"
+            reviewed_positive_bag_path = sample.sample_dir / "reviewed/reviewed_positive_bag_mask.png"
+            reviewed_talc_node_path = sample.sample_dir / "reviewed/reviewed_talc_node_mask.png"
             final_path = resolve_path(sample.summary["paths"]["final_talc_mask"])
-            source_path = reviewed_path if reviewed_path.exists() else final_path
-            source_label = "reviewed" if source_path == reviewed_path else "autodetected"
-            current_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, current_path)
-            current_mask = read_mask(current_path)
-            if current_mask.shape[:2] != expected_shape:
-                current_mask = read_mask(current_path, expected_shape)
-                write_mask(current_path, current_mask)
+            if reviewed_positive_bag_path.exists() or reviewed_talc_node_path.exists():
+                positive_mask = read_optional_mask(reviewed_positive_bag_path, expected_shape)
+                node_mask = read_optional_mask(reviewed_talc_node_path, expected_shape)
+                if positive_mask is None:
+                    positive_mask = empty_mask(expected_shape)
+                if node_mask is None:
+                    node_mask = empty_mask(expected_shape)
+                source_label = "reviewed_classes"
+            else:
+                source_path = reviewed_path if reviewed_path.exists() else final_path
+                source_label = "reviewed" if source_path == reviewed_path else "autodetected"
+                positive_mask = read_mask(source_path, expected_shape)
+                node_mask = empty_mask(expected_shape)
+            paths = self.write_current_class_masks(sample, positive_mask, node_mask)
             state = {
-                "schema_version": "talc-current-mask-state-v0.1",
+                "schema_version": "talc-current-mask-state-v0.2",
                 "sample_id": sample.sample_id,
                 "created_at": utc_now_iso(),
                 "updated_at": utc_now_iso(),
@@ -304,7 +459,11 @@ class TalcReviewStore:
                 "recovery_reason": None if recovery_reason == "created" else recovery_reason,
                 "recovered_path": str(recovered_path) if recovered_path else None,
                 "current_talc_mask": str(current_path),
-                "current_talc_pixels": mask_pixels(current_mask),
+                "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
+                "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+                "current_talc_pixels": paths["current_talc_pixels"],
+                "positive_bag_pixels": paths["positive_bag_pixels"],
+                "talc_node_pixels": paths["talc_node_pixels"],
                 "edits": [],
             }
             self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -314,16 +473,21 @@ class TalcReviewStore:
     def reset_current_mask(self, sample_id: str) -> dict[str, Any]:
         sample = self.get_sample(sample_id)
         final_path = resolve_path(sample.summary["paths"]["final_talc_mask"])
-        current_path = self.current_mask_path(sample)
-        shutil.copy2(final_path, current_path)
+        positive_mask = read_mask(final_path, (int(sample.summary["height"]), int(sample.summary["width"])))
+        node_mask = empty_mask(positive_mask.shape[:2])
+        paths = self.write_current_class_masks(sample, positive_mask, node_mask)
         state = {
-            "schema_version": "talc-current-mask-state-v0.1",
+            "schema_version": "talc-current-mask-state-v0.2",
             "sample_id": sample.sample_id,
             "created_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
             "source": "autodetected_reset",
-            "current_talc_mask": str(current_path),
-            "current_talc_pixels": mask_pixels(read_mask(current_path)),
+            "current_talc_mask": str(paths["current_talc_mask"]),
+            "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
+            "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+            "current_talc_pixels": paths["current_talc_pixels"],
+            "positive_bag_pixels": paths["positive_bag_pixels"],
+            "talc_node_pixels": paths["talc_node_pixels"],
             "edits": [],
         }
         self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -363,11 +527,15 @@ class TalcReviewStore:
     def sample_payload(self, sample_id: str) -> dict[str, Any]:
         sample = self.get_sample(sample_id)
         current_path = self.ensure_current_mask(sample)
+        positive_path = self.current_positive_bag_mask_path(sample)
+        node_path = self.current_talc_node_mask_path(sample)
         # Refresh after first-open state creation so review_state is current.
         sample = self.get_sample(sample_id)
         summary = sample.summary
         paths = summary.get("paths", {})
         current_mask = read_mask(current_path)
+        positive_mask = read_mask(positive_path, current_mask.shape[:2]) if positive_path.exists() else current_mask
+        node_mask = read_mask(node_path, current_mask.shape[:2]) if node_path.exists() else np.zeros_like(current_mask)
         final_mask = read_mask(resolve_path(paths["final_talc_mask"]), current_mask.shape[:2])
         ignore_path = resolve_path(paths["ignore_mask"]) if paths.get("ignore_mask") else None
         ignore_mask = read_mask(ignore_path, current_mask.shape[:2]) if ignore_path and ignore_path.exists() else np.zeros_like(current_mask)
@@ -377,6 +545,8 @@ class TalcReviewStore:
             "source_copy": self.artifact_url(paths.get("source_image")),
             "qa_overlay": self.artifact_url(paths.get("qa_overlay")),
             "current_mask": self.artifact_url(current_path),
+            "current_positive_bag_mask": self.artifact_url(positive_path),
+            "current_talc_node_mask": self.artifact_url(node_path),
             "autodetected_mask": self.artifact_url(paths.get("final_talc_mask")),
             "candidate_mask": self.artifact_url(paths.get("candidate_talc_mask")),
             "filled_talc_region": self.artifact_url(paths.get("filled_talc_region")),
@@ -386,6 +556,8 @@ class TalcReviewStore:
             "sulfide_overlap": self.artifact_url(paths.get("sulfide_overlap_mask")),
             "ignore_mask": self.artifact_url(paths.get("ignore_mask")),
             "reviewed_talc_mask": self.artifact_url(sample.sample_dir / "reviewed/reviewed_talc_mask.png"),
+            "reviewed_positive_bag_mask": self.artifact_url(sample.sample_dir / "reviewed/reviewed_positive_bag_mask.png"),
+            "reviewed_talc_node_mask": self.artifact_url(sample.sample_dir / "reviewed/reviewed_talc_node_mask.png"),
             "reviewed_overlay": self.artifact_url(sample.sample_dir / "reviewed/reviewed_overlay.png"),
         }
         return {
@@ -401,6 +573,8 @@ class TalcReviewStore:
             },
             "metrics": {
                 "current_talc_pixels": mask_pixels(current_mask),
+                "positive_bag_pixels": mask_pixels(positive_mask),
+                "talc_node_pixels": mask_pixels(node_mask),
                 "autodetected_talc_pixels": mask_pixels(final_mask),
                 "ignore_pixels": mask_pixels(ignore_mask),
                 "candidate_talc_pixels": int(summary.get("candidate_talc_pixels") or 0),
@@ -414,21 +588,34 @@ class TalcReviewStore:
     def save_current_mask(self, sample_id: str, payload: dict[str, Any], *, reviewed: bool) -> dict[str, Any]:
         sample = self.get_sample(sample_id)
         expected_shape = (int(sample.summary["height"]), int(sample.summary["width"]))
-        mask = decode_mask_data_url(payload.get("mask_png", ""), expected_shape)
-        current_path = self.current_mask_path(sample)
-        write_mask(current_path, mask)
+        positive_bag_mask = decode_optional_mask_data_url(payload.get("positive_bag_mask_png"), expected_shape)
+        talc_node_mask = decode_optional_mask_data_url(payload.get("talc_node_mask_png"), expected_shape)
+        legacy_mask = decode_optional_mask_data_url(payload.get("mask_png"), expected_shape)
+        if positive_bag_mask is None:
+            if legacy_mask is None:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "positive_bag_mask_png or mask_png must be a PNG data URL")
+            positive_bag_mask = legacy_mask
+        if talc_node_mask is None:
+            talc_node_mask = empty_mask(expected_shape)
+        paths = self.write_current_class_masks(sample, positive_bag_mask, talc_node_mask)
+        mask = read_mask(paths["current_talc_mask"])
+        current_path = paths["current_talc_mask"]
         edits = payload.get("edits")
         if not isinstance(edits, list):
             edits = []
         view_settings = sanitize_view_settings(payload)
         state = {
-            "schema_version": "talc-current-mask-state-v0.1",
+            "schema_version": "talc-current-mask-state-v0.2",
             "sample_id": sample.sample_id,
             "created_at": self._existing_state_created_at(sample),
             "updated_at": utc_now_iso(),
             "source": "browser_review",
             "current_talc_mask": str(current_path),
-            "current_talc_pixels": mask_pixels(mask),
+            "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
+            "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+            "current_talc_pixels": paths["current_talc_pixels"],
+            "positive_bag_pixels": paths["positive_bag_pixels"],
+            "talc_node_pixels": paths["talc_node_pixels"],
             "edits": edits,
             "view_settings": view_settings,
         }
@@ -438,12 +625,16 @@ class TalcReviewStore:
             "sample_id": sample.sample_id,
             "saved_at": state["updated_at"],
             "current_talc_mask": str(current_path),
-            "current_talc_pixels": mask_pixels(mask),
+            "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
+            "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+            "current_talc_pixels": paths["current_talc_pixels"],
+            "positive_bag_pixels": paths["positive_bag_pixels"],
+            "talc_node_pixels": paths["talc_node_pixels"],
             "reviewed": False,
         }
         if reviewed:
             result["reviewed"] = True
-            result["review_summary"] = self._write_reviewed_outputs(sample, mask, edits, payload)
+            result["review_summary"] = self._write_reviewed_outputs(sample, positive_bag_mask, talc_node_mask, mask, edits, payload)
         self.refresh_samples()
         result["sample"] = self.sample_card(self.get_sample(sample_id))
         return result
@@ -461,6 +652,8 @@ class TalcReviewStore:
     def _write_reviewed_outputs(
         self,
         sample: ReviewSample,
+        positive_bag_mask: np.ndarray,
+        talc_node_mask: np.ndarray,
         talc_mask: np.ndarray,
         edits: list[dict[str, Any]],
         payload: dict[str, Any],
@@ -478,22 +671,39 @@ class TalcReviewStore:
         reviewed_dir = sample.sample_dir / "reviewed"
         reviewed_dir.mkdir(parents=True, exist_ok=True)
         reviewed_talc_path = reviewed_dir / "reviewed_talc_mask.png"
+        reviewed_positive_bag_path = reviewed_dir / "reviewed_positive_bag_mask.png"
+        reviewed_talc_node_path = reviewed_dir / "reviewed_talc_node_mask.png"
         reviewed_ignore_path = reviewed_dir / "reviewed_ignore_mask.png"
         reviewed_overlay_path = reviewed_dir / "reviewed_overlay.png"
         patch_path = reviewed_dir / "review_patch.json"
         summary_path = reviewed_dir / "review_summary.json"
+        talc_mask = union_masks(positive_bag_mask, talc_node_mask)
         write_mask(reviewed_talc_path, talc_mask)
+        write_mask(reviewed_positive_bag_path, positive_bag_mask)
+        write_mask(reviewed_talc_node_path, talc_node_mask)
         write_mask(reviewed_ignore_path, ignore_mask)
-        write_image_rgb(reviewed_overlay_path, make_overlay(image_rgb, talc_mask=talc_mask, ignore_mask=ignore_mask))
+        write_image_rgb(
+            reviewed_overlay_path,
+            make_two_class_overlay(
+                image_rgb,
+                positive_bag_mask=positive_bag_mask,
+                talc_node_mask=talc_node_mask,
+                ignore_mask=ignore_mask,
+            ),
+        )
         saved_at = utc_now_iso()
         patch = {
-            "schema_version": "talc-review-web-patch-v0.1",
+            "schema_version": "talc-review-web-patch-v0.2",
             "sample_id": sample.sample_id,
             "image_name": sample.image_name,
             "saved_at": saved_at,
             "reviewer": payload.get("reviewer") or None,
             "notes": payload.get("notes") or None,
             "view_settings": sanitize_view_settings(payload),
+            "class_definitions": {
+                "positive_bag": "Original blue-line-derived region that can contain talc segments, plus manual brush/fill/rectangle/polygon/SAM2 edits.",
+                "talc_node": "Talc pixels added by Similar intensity matching.",
+            },
             "base_conversion_summary": str(sample.sample_dir / "conversion_summary.json"),
             "annotated_image_path": str(sample.annotated_path),
             "original_image_path": str(sample.original_path) if sample.original_path else None,
@@ -501,14 +711,18 @@ class TalcReviewStore:
         }
         patch_path.write_text(json.dumps(patch, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         review_summary = {
-            "schema_version": "talc-review-web-summary-v0.1",
+            "schema_version": "talc-review-web-summary-v0.2",
             "sample_id": sample.sample_id,
             "image_name": sample.image_name,
             "saved_at": saved_at,
             "reviewed_talc_pixels": mask_pixels(talc_mask),
+            "reviewed_positive_bag_pixels": mask_pixels(positive_bag_mask),
+            "reviewed_talc_node_pixels": mask_pixels(talc_node_mask),
             "reviewed_ignore_pixels": mask_pixels(ignore_mask),
             "paths": {
                 "reviewed_talc_mask": str(reviewed_talc_path),
+                "reviewed_positive_bag_mask": str(reviewed_positive_bag_path),
+                "reviewed_talc_node_mask": str(reviewed_talc_node_path),
                 "reviewed_ignore_mask": str(reviewed_ignore_path),
                 "reviewed_overlay": str(reviewed_overlay_path),
                 "review_patch": str(patch_path),
@@ -715,8 +929,9 @@ def render_html_page() -> str:
       </div>
       <div class="topbar-controls">
         <div class="toolbar">
-          <button type="button" data-tool="brush" class="tool-button active" aria-pressed="true" aria-keyshortcuts="B" title="Brush (B): left mouse draws talc, right mouse erases">Brush</button>
-          <button type="button" data-tool="fill" class="tool-button" aria-pressed="false" aria-keyshortcuts="F" title="Fill (F): click an area bounded by blue lines, sulfides, existing talc regions, or image edges">Fill</button>
+          <button type="button" data-tool="brush" class="tool-button active" aria-pressed="true" aria-keyshortcuts="B" title="Brush (B): left mouse draws the selected class, right mouse erases it">Brush</button>
+          <button type="button" data-tool="fill" class="tool-button" aria-pressed="false" aria-keyshortcuts="F" title="Fill (F): click an area bounded by blue lines, sulfides, existing selected-class regions, or image edges">Fill</button>
+          <button type="button" data-tool="similar" class="tool-button" aria-pressed="false" title="Similar: click a known talc grain to preview intensity-similar talc-node pixels">Similar</button>
           <button type="button" data-tool="rectangle" class="tool-button" aria-pressed="false" title="Rectangle: drag or click two corners, then edit handles">Rectangle</button>
           <button type="button" data-tool="polygon" class="tool-button" aria-pressed="false" title="Polygon: place points, close on the first point, right-click a point to remove">Polygon</button>
           <button type="button" data-tool="sam2" class="tool-button" aria-pressed="false" title="SAM2: draw a box or hold still over a point for preview">SAM2</button>
@@ -731,8 +946,15 @@ def render_html_page() -> str:
           <div class="tool-params" aria-label="Tool parameters">
             <div id="brushParams" class="tool-param-group">
               <label for="brushSize">Brush</label>
-              <input id="brushSize" type="range" min="2" max="120" value="28" aria-label="Brush size">
+              <input id="brushSize" type="range" min="2" max="240" value="28" aria-label="Brush size">
               <span id="brushSizeValue">28 px</span>
+            </div>
+            <div id="similarParams" class="tool-param-group hidden">
+              <label for="similarStrictness">Strictness</label>
+              <input id="similarStrictness" type="range" min="1" max="100" value="55" aria-label="Similar strictness">
+              <span id="similarStrictnessValue">55</span>
+              <button type="button" id="similarApplyBtn" class="small-button" disabled>Apply Similar</button>
+              <button type="button" id="similarClearBtn" class="small-button" disabled>Clear Preview</button>
             </div>
             <div id="sam2Params" class="tool-param-group hidden">
               <label class="visually-hidden" for="sam2PromptMode">SAM2 prompt mode</label>
@@ -748,10 +970,25 @@ def render_html_page() -> str:
         <div class="review-actions" aria-label="Review actions">
           <button type="button" id="saveBtn" class="primary-button">Save</button>
           <button type="button" id="saveNextBtn" class="primary-button">Save &amp; Next</button>
+          <button type="button" id="nextBtn" class="plain-button" title="Go to next visible sample without saving">Next</button>
         </div>
       </div>
     </div>
     <div class="viewer-wrap" id="viewerWrap">
+      <div class="segmentation-class-widget" aria-label="Visible segmentation classes">
+        <div class="segmentation-class-title">Segmentation classes</div>
+        <div class="segmentation-class-header"><span>Show</span><span>Class</span><span>Edit</span></div>
+        <div class="segmentation-class-row">
+          <input type="checkbox" id="layerCurrent" checked aria-label="Show Positive bag">
+          <span class="class-name"><span class="class-swatch positive-bag"></span>Positive bag</span>
+          <input type="radio" name="editTargetClass" id="editTargetPositiveBag" value="positive_bag" checked aria-label="Edit Positive bag">
+        </div>
+        <div class="segmentation-class-row">
+          <input type="checkbox" id="layerTalcNode" checked aria-label="Show Talc">
+          <span class="class-name"><span class="class-swatch talc"></span>Talc</span>
+          <input type="radio" name="editTargetClass" id="editTargetTalcNode" value="talc_node" aria-label="Edit Talc">
+        </div>
+      </div>
       <canvas id="viewerCanvas"></canvas>
       <div id="emptyState" class="empty-state">Loading sample...</div>
     </div>
@@ -787,7 +1024,6 @@ def render_html_page() -> str:
     </div>
     <div id="assetWarnings" class="asset-warnings hidden" role="status" aria-live="polite"></div>
     <div class="layers">
-      <label><input type="checkbox" id="layerCurrent" checked> Editable talc mask overlay</label>
       <label><input type="checkbox" id="layerAuto"> Autodetected mask</label>
       <label><input type="checkbox" id="layerLines"> Original blue lines</label>
       <label><input type="checkbox" id="layerOverlap" checked> Sulfide overlap</label>
@@ -806,8 +1042,10 @@ def render_html_page() -> str:
     <details class="advanced-box">
       <summary>Interaction help</summary>
       <ul>
-        <li>Brush: left mouse adds talc, right mouse erases.</li>
-        <li>Fill: click an empty area bounded by blue lines, sulfides, existing talc regions, or the image edge.</li>
+        <li>Select the Edit radio in Segmentation classes to choose whether Brush, Fill, Rectangle, and Polygon edit Positive bag or Talc.</li>
+        <li>Brush: left mouse adds the selected class, right mouse erases it.</li>
+        <li>Fill: click an empty area bounded by blue lines, sulfides, existing selected-class regions, or the image edge.</li>
+        <li>Similar: click a confirmed talc grain to preview luma/color-similar non-sulfide pixels, tune Strictness, then press Apply Similar to add talc nodes.</li>
         <li>Polygon: click to place points, click the first point to close, drag points/edges to edit, right-click a polygon point to remove it, and right-click elsewhere to cancel the current polygon.</li>
         <li>Rectangle: drag a box or click one corner then click the opposite corner; right-click cancels the current rectangle. Completed rectangles can be resized by corners or edges.</li>
         <li>Press Delete to remove the selected completed polygon or rectangle.</li>
@@ -840,6 +1078,8 @@ CSS = r"""
   --canvas-bg: #111827;
   --mask-only-bg: #0f172a;
   --empty-bg: rgba(255,255,255,0.76);
+  --floating-panel-bg: rgba(255,255,255,0.92);
+  --floating-panel-border: rgba(126, 142, 162, 0.55);
   --hover-line: #9db8d7;
   --tag-bg: #eef2f6;
   --tag-text: #334155;
@@ -870,6 +1110,8 @@ CSS = r"""
   --canvas-bg: #05080c;
   --mask-only-bg: #05080c;
   --empty-bg: rgba(17,24,32,0.82);
+  --floating-panel-bg: rgba(23,29,36,0.92);
+  --floating-panel-border: rgba(125, 143, 166, 0.45);
   --hover-line: #5f7794;
   --tag-bg: #27313d;
   --tag-text: #d4dce7;
@@ -899,6 +1141,8 @@ CSS = r"""
     --canvas-bg: #05080c;
     --mask-only-bg: #05080c;
     --empty-bg: rgba(17,24,32,0.82);
+    --floating-panel-bg: rgba(23,29,36,0.92);
+    --floating-panel-border: rgba(125, 143, 166, 0.45);
     --hover-line: #5f7794;
     --tag-bg: #27313d;
     --tag-text: #d4dce7;
@@ -941,16 +1185,18 @@ button, input, select, textarea { font: inherit; }
 .topbar-controls { display: contents; }
 .toolbar { grid-column: 2; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-start; min-width: 0; }
 .review-actions { grid-column: 3; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: max-content; }
-.tool-button, .small-button, .icon-button, .primary-button, .danger-button { border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--text); padding: 7px 10px; cursor: pointer; }
-.tool-button:disabled, .small-button:disabled, .icon-button:disabled, .primary-button:disabled, .danger-button:disabled { opacity: 0.48; cursor: not-allowed; }
+.tool-button, .small-button, .icon-button, .primary-button, .danger-button, .plain-button { border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--text); padding: 7px 10px; cursor: pointer; }
+.tool-button:disabled, .small-button:disabled, .icon-button:disabled, .primary-button:disabled, .danger-button:disabled, .plain-button:disabled { opacity: 0.48; cursor: not-allowed; }
 .tool-button.active { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .tool-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .icon-button { min-width: 54px; }
-.primary-button, .danger-button { font-weight: 700; }
+.primary-button, .danger-button, .plain-button { font-weight: 700; }
 .details-pane .primary-button, .details-pane .danger-button { width: 100%; margin-top: 8px; }
-.review-actions .primary-button { width: auto; margin-top: 0; min-width: 76px; white-space: nowrap; }
+.review-actions .primary-button, .review-actions .plain-button { width: auto; margin-top: 0; min-width: 64px; white-space: nowrap; }
 .primary-button { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .danger-button { background: var(--control-bg); border-color: var(--danger-border); color: var(--danger); }
+.plain-button { background: transparent; border-color: transparent; color: var(--accent); }
+.plain-button:hover, .plain-button:focus-visible { background: transparent; border-color: var(--line); }
 .toolbar-separator { align-self: stretch; width: 1px; min-height: 30px; background: var(--line); margin: 0 4px; }
 .tool-params { display: flex; align-items: center; gap: 8px; min-height: 34px; }
 .tool-param-group { display: flex; align-items: center; gap: 8px; }
@@ -960,6 +1206,33 @@ button, input, select, textarea { font: inherit; }
 .zoom-value { min-width: 48px; color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; align-self: center; }
 .viewer-wrap { position: relative; flex: 1; overflow: auto; padding: 14px; background: var(--viewer-bg); }
 #viewerCanvas { display: block; background: var(--canvas-bg); image-rendering: auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.22); }
+.segmentation-class-widget {
+  position: sticky;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  width: max-content;
+  max-width: min(220px, calc(100vw - 36px));
+  margin-bottom: -88px;
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--floating-panel-border);
+  border-radius: 8px;
+  background: var(--floating-panel-bg);
+  color: var(--text);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(8px);
+}
+.segmentation-class-title { font-size: 11px; font-weight: 750; color: var(--muted); text-transform: uppercase; }
+.segmentation-class-header, .segmentation-class-row { display: grid; grid-template-columns: 38px minmax(92px, 1fr) 32px; align-items: center; gap: 7px; }
+.segmentation-class-header { color: var(--muted); font-size: 10px; font-weight: 750; text-transform: uppercase; }
+.segmentation-class-row { font-size: 13px; font-weight: 650; white-space: nowrap; }
+.segmentation-class-row input { justify-self: center; }
+.class-name { display: inline-flex; align-items: center; gap: 7px; }
+.class-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(15, 23, 42, 0.25); }
+.class-swatch.positive-bag { background: #05a3d8; }
+.class-swatch.talc { background: #ffc400; }
 .empty-state { position: absolute; inset: 14px; display: grid; place-items: center; background: var(--empty-bg); color: var(--muted); font-weight: 650; }
 .empty-state.hidden { display: none; }
 .status-line { min-height: 32px; padding: 8px 12px; font-size: 13px; color: var(--muted); background: var(--panel); border-top: 1px solid var(--line); }
@@ -1002,7 +1275,7 @@ button, input, select, textarea { font: inherit; }
   .work-pane { min-height: 420px; }
   .viewer-wrap { min-height: 300px; }
   .toolbar { gap: 5px; }
-  .tool-button, .small-button, .icon-button, .primary-button, .danger-button { padding: 6px 8px; }
+  .tool-button, .small-button, .icon-button, .primary-button, .danger-button, .plain-button { padding: 6px 8px; }
 }
 """
 
@@ -1015,6 +1288,9 @@ const ZOOM_STEP = 1.15;
 const SAM2_POINT_HOVER_PREVIEW_DELAY_MS = 2000;
 const BRIGHTNESS_THRESHOLD_STORAGE_KEY = 'talcBrightnessThreshold';
 const BRIGHTNESS_THRESHOLD_FORMULA = 'luma = 0.299*R + 0.587*G + 0.114*B; luma <= threshold keeps the pixel, luma > threshold paints it white';
+const MAX_SIMILAR_TALC_REGION_FRACTION = 0.35;
+const SIMILAR_TALC_SEED_PATCH_RADIUS = 5;
+const SIMILAR_TALC_POSITIVE_BAG_RADIUS = 70;
 
 const state = {
   manifest: null,
@@ -1022,6 +1298,7 @@ const state = {
   sample: null,
   sampleId: null,
   tool: 'brush',
+  editClass: 'positive_bag',
   imageW: 1,
   imageH: 1,
   zoom: 1,
@@ -1052,6 +1329,7 @@ const state = {
   lastPoint: null,
   hoverPoint: null,
   activeStrokeMode: null,
+  activeEditTargetClass: 'positive_bag',
   activePointerButton: 0,
   activeEditBaseline: null,
   activeBaseEditBaseline: null,
@@ -1072,6 +1350,12 @@ const state = {
     tint: null,
     result: null,
     stats: null
+  },
+  similarTalcPreview: {
+    maskCanvas: null,
+    tint: null,
+    seed: null,
+    stats: null
   }
 };
 
@@ -1081,16 +1365,24 @@ const maskCanvas = document.createElement('canvas');
 const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
 const baseMaskCanvas = document.createElement('canvas');
 const baseMaskCtx = baseMaskCanvas.getContext('2d', { willReadFrequently: true });
+const talcNodeCanvas = document.createElement('canvas');
+const talcNodeCtx = talcNodeCanvas.getContext('2d', { willReadFrequently: true });
+const baseTalcNodeCanvas = document.createElement('canvas');
+const baseTalcNodeCtx = baseTalcNodeCanvas.getContext('2d', { willReadFrequently: true });
 const sulfideGuardCanvas = document.createElement('canvas');
 const sulfideGuardCtx = sulfideGuardCanvas.getContext('2d', { willReadFrequently: true });
 const currentTintCanvas = document.createElement('canvas');
 const currentTintCtx = currentTintCanvas.getContext('2d', { willReadFrequently: true });
+const talcNodeTintCanvas = document.createElement('canvas');
+const talcNodeTintCtx = talcNodeTintCanvas.getContext('2d', { willReadFrequently: true });
 const brightnessSourceCanvas = document.createElement('canvas');
 const brightnessSourceCtx = brightnessSourceCanvas.getContext('2d', { willReadFrequently: true });
 const brightnessPreviewCanvas = document.createElement('canvas');
 const brightnessPreviewCtx = brightnessPreviewCanvas.getContext('2d', { willReadFrequently: true });
 const fillBoundaryCanvas = document.createElement('canvas');
 const fillBoundaryCtx = fillBoundaryCanvas.getContext('2d', { willReadFrequently: true });
+const similarSourceCanvas = document.createElement('canvas');
+const similarSourceCtx = similarSourceCanvas.getContext('2d', { willReadFrequently: true });
 const emptyState = document.getElementById('emptyState');
 
 const els = {
@@ -1104,6 +1396,11 @@ const els = {
   brushSize: document.getElementById('brushSize'),
   brushSizeValue: document.getElementById('brushSizeValue'),
   brushParams: document.getElementById('brushParams'),
+  similarParams: document.getElementById('similarParams'),
+  similarStrictness: document.getElementById('similarStrictness'),
+  similarStrictnessValue: document.getElementById('similarStrictnessValue'),
+  similarApplyBtn: document.getElementById('similarApplyBtn'),
+  similarClearBtn: document.getElementById('similarClearBtn'),
   sam2Params: document.getElementById('sam2Params'),
   zoomInBtn: document.getElementById('zoomInBtn'),
   zoomOutBtn: document.getElementById('zoomOutBtn'),
@@ -1122,6 +1419,7 @@ const els = {
   undoBtn: document.getElementById('undoBtn'),
   saveBtn: document.getElementById('saveBtn'),
   saveNextBtn: document.getElementById('saveNextBtn'),
+  nextBtn: document.getElementById('nextBtn'),
   resetBtn: document.getElementById('resetBtn'),
   protectSulfides: document.getElementById('protectSulfides'),
   subtractSulfidesBtn: document.getElementById('subtractSulfidesBtn'),
@@ -1130,11 +1428,13 @@ const els = {
   sam2StatusBtn: document.getElementById('sam2StatusBtn'),
   layers: {
     current: document.getElementById('layerCurrent'),
+    talcNode: document.getElementById('layerTalcNode'),
     auto: document.getElementById('layerAuto'),
     lines: document.getElementById('layerLines'),
     overlap: document.getElementById('layerOverlap'),
     ignore: document.getElementById('layerIgnore')
-  }
+  },
+  editTargets: Array.from(document.querySelectorAll('input[name="editTargetClass"]'))
 };
 
 const THEME_STORAGE_KEY = 'talcReviewTheme';
@@ -1159,6 +1459,11 @@ const SAVE_STATE_LABELS = {
   unsaved: 'Unsaved local changes',
   error: 'Autosave failed',
   reviewed: 'Reviewed mask saved'
+};
+
+const EDIT_CLASS_LABELS = {
+  positive_bag: 'Positive bag',
+  talc_node: 'Talc'
 };
 
 function cssVar(name, fallback) {
@@ -1350,7 +1655,9 @@ function fitToViewer() {
 
 function updateToolParams() {
   els.brushParams.classList.toggle('hidden', state.tool !== 'brush');
+  els.similarParams.classList.toggle('hidden', state.tool !== 'similar');
   els.sam2Params.classList.toggle('hidden', state.tool !== 'sam2');
+  updateSimilarTalcApplyButton();
   updateSam2ApplyButton();
 }
 
@@ -1364,14 +1671,16 @@ function selectTool(tool, options = {}) {
   button.classList.add('active');
   button.setAttribute('aria-pressed', 'true');
   state.tool = tool;
-  if (state.tool !== 'brush' && state.tool !== 'sam2') state.hoverPoint = null;
+  if (state.tool !== 'brush' && state.tool !== 'sam2' && state.tool !== 'similar') state.hoverPoint = null;
+  if (state.tool !== 'similar') clearSimilarTalcPreview({ redraw: false });
   clearSam2Preview({ redraw: false });
   updateToolParams();
   updateViewerCursor();
   draw();
   if (options.status !== false) {
     const suffix = options.shortcut ? ` (${options.shortcut})` : '';
-    setStatus(`Tool: ${button.textContent}${suffix}.`);
+    const targetSuffix = ['brush', 'fill', 'rectangle', 'polygon'].includes(tool) ? ` Editing: ${editClassLabel()}.` : '';
+    setStatus(`Tool: ${button.textContent}${suffix}.${targetSuffix}`);
   }
   return true;
 }
@@ -1402,6 +1711,38 @@ function clearSam2Preview(options = {}) {
   state.sam2Preview.stats = null;
   updateSam2ApplyButton();
   if (redraw) draw();
+}
+
+function clearSimilarTalcPreview(options = {}) {
+  const redraw = options.redraw !== false;
+  state.similarTalcPreview.maskCanvas = null;
+  state.similarTalcPreview.tint = null;
+  state.similarTalcPreview.seed = null;
+  state.similarTalcPreview.stats = null;
+  updateSimilarTalcApplyButton();
+  if (redraw) draw();
+}
+
+function updateSimilarStrictnessUi() {
+  if (!els.similarStrictness || !els.similarStrictnessValue) return;
+  els.similarStrictnessValue.textContent = String(els.similarStrictness.value);
+}
+
+function updateSimilarTalcApplyButton() {
+  if (!els.similarApplyBtn || !els.similarClearBtn) return;
+  const hasPreview = Boolean(state.similarTalcPreview.maskCanvas);
+  els.similarApplyBtn.disabled = state.tool !== 'similar' || !hasPreview;
+  els.similarClearBtn.disabled = state.tool !== 'similar' || !hasPreview;
+  if (state.tool !== 'similar') {
+    els.similarApplyBtn.title = 'Switch to Similar and click a confirmed talc grain first.';
+    els.similarClearBtn.title = 'Switch to Similar to clear its preview.';
+  } else if (hasPreview) {
+    els.similarApplyBtn.title = 'Apply the visible Similar preview to the talc-node class.';
+    els.similarClearBtn.title = 'Discard the current Similar preview.';
+  } else {
+    els.similarApplyBtn.title = 'Click a confirmed talc grain to create a preview.';
+    els.similarClearBtn.title = 'No Similar preview is active.';
+  }
 }
 
 function updateSam2ApplyButton() {
@@ -1581,13 +1922,51 @@ function buildTintFromCanvas(sourceCanvas, rgba) {
 function refreshCurrentTint() {
   currentTintCanvas.width = state.imageW;
   currentTintCanvas.height = state.imageH;
+  talcNodeTintCanvas.width = state.imageW;
+  talcNodeTintCanvas.height = state.imageH;
   const tint = buildTintFromCanvas(maskCanvas, [0, 163, 216, 112]);
+  const nodeTint = buildTintFromCanvas(talcNodeCanvas, [255, 196, 0, 128]);
   currentTintCtx.clearRect(0, 0, state.imageW, state.imageH);
+  talcNodeTintCtx.clearRect(0, 0, state.imageW, state.imageH);
   if (tint) currentTintCtx.drawImage(tint, 0, 0);
+  if (nodeTint) talcNodeTintCtx.drawImage(nodeTint, 0, 0);
+}
+
+function countMaskPixelsFromCtx(sourceCtx) {
+  const data = sourceCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  let count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) count += 1;
+  }
+  return count;
+}
+
+function combinedMaskCanvas() {
+  const combined = document.createElement('canvas');
+  combined.width = state.imageW;
+  combined.height = state.imageH;
+  const combinedCtx = combined.getContext('2d', { willReadFrequently: true });
+  combinedCtx.clearRect(0, 0, state.imageW, state.imageH);
+  combinedCtx.drawImage(maskCanvas, 0, 0, state.imageW, state.imageH);
+  combinedCtx.drawImage(talcNodeCanvas, 0, 0, state.imageW, state.imageH);
+  return combined;
+}
+
+function captureCombinedMaskData() {
+  const combined = combinedMaskCanvas();
+  return combined.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, state.imageW, state.imageH);
+}
+
+function countPositiveBagPixels() {
+  return countMaskPixelsFromCtx(maskCtx);
+}
+
+function countTalcNodePixels() {
+  return countMaskPixelsFromCtx(talcNodeCtx);
 }
 
 function countCurrentMaskPixels() {
-  const data = maskCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  const data = captureCombinedMaskData().data;
   let count = 0;
   for (let i = 0; i < data.length; i += 4) {
     if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) count += 1;
@@ -1603,21 +1982,68 @@ function captureBaseMaskData() {
   return baseMaskCtx.getImageData(0, 0, state.imageW, state.imageH);
 }
 
+function captureTalcNodeData() {
+  return talcNodeCtx.getImageData(0, 0, state.imageW, state.imageH);
+}
+
+function captureBaseTalcNodeData() {
+  return baseTalcNodeCtx.getImageData(0, 0, state.imageW, state.imageH);
+}
+
+function normalizeEditClass(targetClass) {
+  return targetClass === 'talc_node' ? 'talc_node' : 'positive_bag';
+}
+
+function activeEditClass() {
+  return normalizeEditClass(state.editClass);
+}
+
+function editClassLabel(targetClass = activeEditClass()) {
+  return EDIT_CLASS_LABELS[normalizeEditClass(targetClass)];
+}
+
+function editClassContexts(targetClass = activeEditClass()) {
+  if (normalizeEditClass(targetClass) === 'talc_node') {
+    return { targetClass: 'talc_node', canvas: talcNodeCanvas, ctx: talcNodeCtx, baseCanvas: baseTalcNodeCanvas, baseCtx: baseTalcNodeCtx };
+  }
+  return { targetClass: 'positive_bag', canvas: maskCanvas, ctx: maskCtx, baseCanvas: baseMaskCanvas, baseCtx: baseMaskCtx };
+}
+
+function captureClassMaskData(targetClass = activeEditClass()) {
+  return editClassContexts(targetClass).ctx.getImageData(0, 0, state.imageW, state.imageH);
+}
+
+function captureClassBaseData(targetClass = activeEditClass()) {
+  return editClassContexts(targetClass).baseCtx.getImageData(0, 0, state.imageW, state.imageH);
+}
+
+function setEditClass(targetClass, options = {}) {
+  const normalized = normalizeEditClass(targetClass);
+  state.editClass = normalized;
+  els.editTargets.forEach((input) => {
+    input.checked = input.value === normalized;
+  });
+  if (normalized === 'talc_node') els.layers.talcNode.checked = true;
+  else els.layers.current.checked = true;
+  draw();
+  if (options.announce) setStatus(`Brush, Fill, Rectangle, and Polygon now edit ${editClassLabel(normalized)}.`);
+}
+
 function cloneShapes() {
   return state.shapes.map((shape) => {
     if (shape.type === 'polygon') {
-      return { id: shape.id, type: 'polygon', points: shape.points.map((p) => ({ x: p.x, y: p.y })) };
+      return { id: shape.id, type: 'polygon', targetClass: normalizeEditClass(shape.targetClass), points: shape.points.map((p) => ({ x: p.x, y: p.y })) };
     }
-    return { id: shape.id, type: 'rectangle', x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
+    return { id: shape.id, type: 'rectangle', targetClass: normalizeEditClass(shape.targetClass), x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
   });
 }
 
 function restoreShapes(shapes) {
   state.shapes = (shapes || []).map((shape) => {
     if (shape.type === 'polygon') {
-      return { id: shape.id, type: 'polygon', points: shape.points.map((p) => ({ x: p.x, y: p.y })) };
+      return { id: shape.id, type: 'polygon', targetClass: normalizeEditClass(shape.targetClass), points: shape.points.map((p) => ({ x: p.x, y: p.y })) };
     }
-    return { id: shape.id, type: 'rectangle', x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
+    return { id: shape.id, type: 'rectangle', targetClass: normalizeEditClass(shape.targetClass), x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 };
   });
   state.nextShapeId = Math.max(1, ...state.shapes.map((shape) => shape.id + 1));
 }
@@ -1632,7 +2058,7 @@ function hasSulfideGuard() {
 
 function countCurrentSulfideOverlapPixels() {
   if (!hasSulfideGuard()) return 0;
-  const mask = maskCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  const mask = captureCombinedMaskData().data;
   const guard = sulfideGuardCtx.getImageData(0, 0, state.imageW, state.imageH).data;
   let count = 0;
   for (let i = 0; i < mask.length; i += 4) {
@@ -1643,18 +2069,16 @@ function countCurrentSulfideOverlapPixels() {
   return count;
 }
 
-function removeSulfidePixelsFromCanvas(targetCtx, baselineData = null) {
-  if (!hasSulfideGuard()) return 0;
+function removeActivePixelsFromCanvas(targetCtx, blockerData, baselineData = null) {
   const maskData = targetCtx.getImageData(0, 0, state.imageW, state.imageH);
   const mask = maskData.data;
-  const guard = sulfideGuardCtx.getImageData(0, 0, state.imageW, state.imageH).data;
   const baseline = baselineData ? baselineData.data : null;
   let removed = 0;
   for (let i = 0; i < mask.length; i += 4) {
     const maskActive = mask[i] > 0 || mask[i + 1] > 0 || mask[i + 2] > 0;
-    const guardActive = guard[i] > 0 || guard[i + 1] > 0 || guard[i + 2] > 0;
+    const blockerActive = blockerData[i] > 0 || blockerData[i + 1] > 0 || blockerData[i + 2] > 0;
     const baselineActive = baseline && (baseline[i] > 0 || baseline[i + 1] > 0 || baseline[i + 2] > 0);
-    if (maskActive && guardActive && !baselineActive) {
+    if (maskActive && blockerActive && !baselineActive) {
       mask[i] = 0;
       mask[i + 1] = 0;
       mask[i + 2] = 0;
@@ -1666,6 +2090,12 @@ function removeSulfidePixelsFromCanvas(targetCtx, baselineData = null) {
   return removed;
 }
 
+function removeSulfidePixelsFromCanvas(targetCtx, baselineData = null) {
+  if (!hasSulfideGuard()) return 0;
+  const guard = sulfideGuardCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  return removeActivePixelsFromCanvas(targetCtx, guard, baselineData);
+}
+
 function removeSulfidePixelsFromMask(baselineData = null) {
   return removeSulfidePixelsFromCanvas(maskCtx, baselineData);
 }
@@ -1674,9 +2104,30 @@ function enforceSulfideProtection(kind, baselineData = null, record = true) {
   if (!els.protectSulfides.checked) return 0;
   const removed = removeSulfidePixelsFromMask(baselineData);
   if (removed > 0 && record) {
-    state.edits.push({ type: 'protect_sulfides', tool: kind, removed_pixels: removed, at: new Date().toISOString() });
+    state.edits.push({ type: 'protect_sulfides', tool: kind, target_class: 'positive_bag', removed_pixels: removed, at: new Date().toISOString() });
   }
   return removed;
+}
+
+function syncTalcNodeLayer(options = {}) {
+  const recordProtection = Boolean(options.recordProtection);
+  const reason = options.reason || 'talc_node_sync';
+  const nodeBaseline = options.nodeBaselineData || null;
+  let removedPositive = 0;
+  let protectedPixels = 0;
+  if (els.protectSulfides.checked) {
+    protectedPixels = removeSulfidePixelsFromCanvas(baseTalcNodeCtx, nodeBaseline);
+    if (protectedPixels > 0 && recordProtection) {
+      state.edits.push({ type: 'protect_sulfides', tool: reason, target_class: 'talc_node', removed_pixels: protectedPixels, at: new Date().toISOString() });
+    }
+  }
+  talcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
+  talcNodeCtx.drawImage(baseTalcNodeCanvas, 0, 0, state.imageW, state.imageH);
+  for (const shape of state.shapes) {
+    if (normalizeEditClass(shape.targetClass) === 'talc_node') rasterizeShape(talcNodeCtx, shape);
+  }
+  if (els.protectSulfides.checked) removeSulfidePixelsFromCanvas(talcNodeCtx);
+  return { removedPositive, protectedPixels };
 }
 
 function rasterizeShape(targetCtx, shape) {
@@ -1702,11 +2153,33 @@ function rasterizeShape(targetCtx, shape) {
 function rebuildMaskFromBase(options = {}) {
   const reason = options.reason || 'shape';
   const recordProtection = Boolean(options.recordProtection);
-  const baselineData = captureBaseMaskData();
+  const targetClass = normalizeEditClass(options.targetClass);
+  const positiveBaselineData = targetClass === 'positive_bag' && options.baseBaselineData
+    ? options.baseBaselineData
+    : captureBaseMaskData();
+  const talcBaselineData = targetClass === 'talc_node' && options.baseBaselineData
+    ? options.baseBaselineData
+    : captureBaseTalcNodeData();
   maskCtx.clearRect(0, 0, state.imageW, state.imageH);
   maskCtx.drawImage(baseMaskCanvas, 0, 0, state.imageW, state.imageH);
-  for (const shape of state.shapes) rasterizeShape(maskCtx, shape);
-  const protectedPixels = enforceSulfideProtection(reason, baselineData, recordProtection);
+  talcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
+  talcNodeCtx.drawImage(baseTalcNodeCanvas, 0, 0, state.imageW, state.imageH);
+  for (const shape of state.shapes) {
+    const targetCtx = normalizeEditClass(shape.targetClass) === 'talc_node' ? talcNodeCtx : maskCtx;
+    rasterizeShape(targetCtx, shape);
+  }
+  let protectedPixels = 0;
+  if (els.protectSulfides.checked) {
+    const protectedPositive = removeSulfidePixelsFromCanvas(maskCtx, positiveBaselineData);
+    const protectedTalc = removeSulfidePixelsFromCanvas(talcNodeCtx, talcBaselineData);
+    protectedPixels = protectedPositive + protectedTalc;
+    if (recordProtection && protectedPositive > 0) {
+      state.edits.push({ type: 'protect_sulfides', tool: reason, target_class: 'positive_bag', removed_pixels: protectedPositive, at: new Date().toISOString() });
+    }
+    if (recordProtection && protectedTalc > 0) {
+      state.edits.push({ type: 'protect_sulfides', tool: reason, target_class: 'talc_node', removed_pixels: protectedTalc, at: new Date().toISOString() });
+    }
+  }
   refreshCurrentTint();
   updateMetrics();
   draw();
@@ -1715,12 +2188,20 @@ function rebuildMaskFromBase(options = {}) {
 
 function flattenShapesToBase(record = false) {
   if (state.shapes.length === 0) return false;
-  const baselineData = captureBaseMaskData();
-  for (const shape of state.shapes) rasterizeShape(baseMaskCtx, shape);
+  const positiveBaselineData = captureBaseMaskData();
+  const talcBaselineData = captureBaseTalcNodeData();
+  for (const shape of state.shapes) {
+    const targetBaseCtx = normalizeEditClass(shape.targetClass) === 'talc_node' ? baseTalcNodeCtx : baseMaskCtx;
+    rasterizeShape(targetBaseCtx, shape);
+  }
   if (els.protectSulfides.checked) {
-    const protectedPixels = removeSulfidePixelsFromCanvas(baseMaskCtx, baselineData);
-    if (protectedPixels > 0 && record) {
-      state.edits.push({ type: 'protect_sulfides', tool: 'flatten_shapes', removed_pixels: protectedPixels, at: new Date().toISOString() });
+    const protectedPositive = removeSulfidePixelsFromCanvas(baseMaskCtx, positiveBaselineData);
+    const protectedTalc = removeSulfidePixelsFromCanvas(baseTalcNodeCtx, talcBaselineData);
+    if (protectedPositive > 0 && record) {
+      state.edits.push({ type: 'protect_sulfides', tool: 'flatten_shapes', target_class: 'positive_bag', removed_pixels: protectedPositive, at: new Date().toISOString() });
+    }
+    if (protectedTalc > 0 && record) {
+      state.edits.push({ type: 'protect_sulfides', tool: 'flatten_shapes', target_class: 'talc_node', removed_pixels: protectedTalc, at: new Date().toISOString() });
     }
   }
   state.shapes = [];
@@ -1735,12 +2216,16 @@ function updateMetrics() {
   if (!state.sample) return;
   const metrics = state.sample.metrics;
   const currentPixels = countCurrentMaskPixels();
+  const positiveBagPixels = countPositiveBagPixels();
+  const talcNodePixels = countTalcNodePixels();
   const currentSulfidePixels = countCurrentSulfideOverlapPixels();
   const totalPixels = state.imageW * state.imageH;
   const saveLabel = SAVE_STATE_LABELS[state.saveState] || SAVE_STATE_LABELS.saved;
   const reviewLabel = reviewStateLabel(state.sample.sample.review_state);
   els.metricsBox.innerHTML = `
-    <div class="metric-row"><span>Current talc area</span><strong>${pxWithPct(currentPixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Current talc union</span><strong>${pxWithPct(currentPixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Positive bag</span><strong>${pxWithPct(positiveBagPixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Talc node</span><strong>${pxWithPct(talcNodePixels, totalPixels)}</strong></div>
     <div class="metric-row"><span>Autodetected talc</span><strong>${pxWithPct(metrics.autodetected_talc_pixels, totalPixels)}</strong></div>
     <div class="metric-row"><span>Blue-line candidate</span><strong>${pxWithPct(metrics.candidate_talc_pixels, totalPixels)}</strong></div>
     <div class="metric-row"><span>Original candidate on sulfide</span><strong>${pxWithPct(metrics.overlap_pixels, totalPixels)}</strong></div>
@@ -1787,6 +2272,7 @@ function viewSettingsPayload() {
   return {
     brightness_threshold_luma: currentBrightnessThreshold(),
     brightness_threshold_formula: BRIGHTNESS_THRESHOLD_FORMULA,
+    similar_talc_strictness: clampSimilarStrictness(),
     background_mode: els.baseMode ? els.baseMode.value : null
   };
 }
@@ -1855,6 +2341,8 @@ function draw() {
   if (els.layers.overlap.checked && state.staticTints.overlap) ctx.drawImage(state.staticTints.overlap, 0, 0);
   if (els.layers.ignore.checked && state.staticTints.ignore) ctx.drawImage(state.staticTints.ignore, 0, 0);
   if (els.layers.current.checked) ctx.drawImage(currentTintCanvas, 0, 0);
+  if (els.layers.talcNode.checked) ctx.drawImage(talcNodeTintCanvas, 0, 0);
+  drawSimilarTalcPreview();
   drawSam2ResultPreview();
   drawShapeGuides();
   drawPolygonDraft();
@@ -1881,7 +2369,8 @@ function selectedUnavailableLayerMessages() {
   if (els.layers.lines.checked && !state.staticTints.lines) messages.push('Original blue lines layer is not available.');
   if (els.layers.overlap.checked && !state.staticTints.overlap) messages.push('Sulfide overlap layer is not available.');
   if (els.layers.ignore.checked && !state.staticTints.ignore) messages.push('Ignore/uncertain layer is not available.');
-  if (els.layers.current.checked && !currentTintCanvas.width) messages.push('Editable talc mask layer is not available.');
+  if (els.layers.current.checked && !currentTintCanvas.width) messages.push('Positive bag layer is not available.');
+  if (els.layers.talcNode.checked && !talcNodeTintCanvas.width) messages.push('Talc node layer is not available.');
   return messages;
 }
 
@@ -2006,6 +2495,30 @@ function drawSam2ResultPreview() {
   ctx.restore();
 }
 
+function drawSimilarTalcPreview() {
+  if (state.tool !== 'similar' || !state.similarTalcPreview.tint) return;
+  ctx.save();
+  ctx.drawImage(state.similarTalcPreview.tint, 0, 0);
+  const seed = state.similarTalcPreview.seed;
+  if (seed) {
+    const radius = Math.max(10, 10 / state.zoom);
+    ctx.strokeStyle = '#ffc400';
+    ctx.lineWidth = Math.max(2, 2 / state.zoom);
+    ctx.setLineDash([Math.max(5, 5 / state.zoom), Math.max(4, 4 / state.zoom)]);
+    ctx.beginPath();
+    ctx.arc(seed.x, seed.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(seed.x - radius * 0.55, seed.y);
+    ctx.lineTo(seed.x + radius * 0.55, seed.y);
+    ctx.moveTo(seed.x, seed.y - radius * 0.55);
+    ctx.lineTo(seed.x, seed.y + radius * 0.55);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawSam2PromptPreview() {
   if (state.tool !== 'sam2' || !state.hoverPoint || !state.sample || !state.sample.editable || state.samBox) return;
   ctx.save();
@@ -2051,16 +2564,17 @@ function drawBrushCursor() {
   if (state.tool !== 'brush' || !state.hoverPoint || !state.sample || !state.sample.editable) return;
   const radius = Number(els.brushSize.value) / 2;
   if (!Number.isFinite(radius) || radius <= 0) return;
+  const targetClass = activeEditClass();
   ctx.save();
   ctx.beginPath();
   ctx.arc(state.hoverPoint.x, state.hoverPoint.y, radius, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0, 163, 216, 0.10)';
+  ctx.fillStyle = targetClass === 'talc_node' ? 'rgba(255, 196, 0, 0.14)' : 'rgba(0, 163, 216, 0.10)';
   ctx.fill();
   ctx.lineWidth = Math.max(3, 3 / state.zoom);
   ctx.strokeStyle = 'rgba(15, 23, 42, 0.88)';
   ctx.stroke();
   ctx.lineWidth = Math.max(1.5, 1.5 / state.zoom);
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.96)';
+  ctx.strokeStyle = targetClass === 'talc_node' ? 'rgba(255, 196, 0, 0.96)' : 'rgba(255, 255, 255, 0.96)';
   ctx.stroke();
   ctx.restore();
 }
@@ -2080,6 +2594,7 @@ function canvasCursorForPoint(point = null) {
   if (state.drawing || state.shapeDrag) return 'grabbing';
   if (state.tool === 'brush') return 'crosshair';
   if (state.tool === 'fill') return 'cell';
+  if (state.tool === 'similar') return 'copy';
   if (state.tool === 'sam2') return 'crosshair';
   if (state.tool === 'rectangle') {
     if (state.rect.active) {
@@ -2108,6 +2623,8 @@ function pushUndo() {
     state.undoStack.push({
       mask: maskCanvas.toDataURL('image/png'),
       base: baseMaskCanvas.toDataURL('image/png'),
+      talcNode: talcNodeCanvas.toDataURL('image/png'),
+      baseTalcNode: baseTalcNodeCanvas.toDataURL('image/png'),
       shapes: cloneShapes(),
       activeShapeId: state.activeShapeId,
       polygonPoints: state.polygon.points.map((p) => ({ x: p.x, y: p.y })),
@@ -2149,6 +2666,18 @@ async function undo() {
   } else {
     maskCtx.drawImage(img, 0, 0, state.imageW, state.imageH);
   }
+  baseTalcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
+  talcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
+  if (snapshot.baseTalcNode) {
+    const baseNodeImg = await loadImage(snapshot.baseTalcNode);
+    if (baseNodeImg) baseTalcNodeCtx.drawImage(baseNodeImg, 0, 0, state.imageW, state.imageH);
+  }
+  if (snapshot.talcNode) {
+    const nodeImg = await loadImage(snapshot.talcNode);
+    if (nodeImg) talcNodeCtx.drawImage(nodeImg, 0, 0, state.imageW, state.imageH);
+  } else {
+    talcNodeCtx.drawImage(baseTalcNodeCanvas, 0, 0, state.imageW, state.imageH);
+  }
   if (snapshot.shapes) rebuildMaskFromBase({ recordProtection: false, reason: 'undo' });
   state.edits.push({ type: 'undo', at: new Date().toISOString() });
   refreshCurrentTint();
@@ -2162,6 +2691,374 @@ function isMaskDataActive(data, pixelIndex, threshold = 16) {
   return data[i] > threshold || data[i + 1] > threshold || data[i + 2] > threshold;
 }
 
+function sourceImageForSimilarTalc() {
+  return state.images.original || state.images.annotated || null;
+}
+
+function clampSimilarStrictness() {
+  const raw = Number(els.similarStrictness ? els.similarStrictness.value : 55);
+  if (!Number.isFinite(raw)) return 55;
+  return Math.max(1, Math.min(100, Math.round(raw)));
+}
+
+function similarFeatureFromData(sourceData, pixelIndex) {
+  const i = pixelIndex * 4;
+  const r = sourceData[i];
+  const g = sourceData[i + 1];
+  const b = sourceData[i + 2];
+  return { r, g, b, luma: 0.299 * r + 0.587 * g + 0.114 * b };
+}
+
+function pushSimilarFeature(samples, sourceData, pixelIndex) {
+  samples.push(similarFeatureFromData(sourceData, pixelIndex));
+}
+
+function similarFeatureDistanceToStats(item, stats) {
+  const dr = item.r - stats.r;
+  const dg = item.g - stats.g;
+  const db = item.b - stats.b;
+  const lumaDelta = item.luma - stats.luma;
+  return Math.sqrt(dr * dr + dg * dg + db * db + lumaDelta * lumaDelta * 2.5);
+}
+
+function collectSeedPatchSamples(seedX, seedY, sourceData, sulfideData) {
+  const width = state.imageW;
+  const height = state.imageH;
+  const patchRadius = SIMILAR_TALC_SEED_PATCH_RADIUS;
+  const samples = [];
+  const x1 = Math.max(0, seedX - patchRadius);
+  const x2 = Math.min(width - 1, seedX + patchRadius);
+  const y1 = Math.max(0, seedY - patchRadius);
+  const y2 = Math.min(height - 1, seedY + patchRadius);
+  for (let y = y1; y <= y2; y += 1) {
+    for (let x = x1; x <= x2; x += 1) {
+      const pixel = y * width + x;
+      if (sulfideData && isMaskDataActive(sulfideData, pixel, 0)) continue;
+      pushSimilarFeature(samples, sourceData, pixel);
+    }
+  }
+  return samples;
+}
+
+function collectSimilarSeedSamples(point, sourceData, currentData, sulfideData) {
+  const width = state.imageW;
+  const height = state.imageH;
+  const seedX = Math.max(0, Math.min(width - 1, Math.floor(point.x)));
+  const seedY = Math.max(0, Math.min(height - 1, Math.floor(point.y)));
+  const seedPixel = seedY * width + seedX;
+  const patchSamples = collectSeedPatchSamples(seedX, seedY, sourceData, sulfideData);
+  const patchStats = similarStats(patchSamples);
+  let samples = patchSamples.slice();
+  let sourceKind = 'seed patch';
+  let positiveBagCandidates = 0;
+  let positiveBagKept = 0;
+  const seedInCurrentMask = isMaskDataActive(currentData, seedPixel, 0);
+  if (seedInCurrentMask && patchStats) {
+    const bagRadius = SIMILAR_TALC_POSITIVE_BAG_RADIUS;
+    const radiusSq = bagRadius * bagRadius;
+    const x1 = Math.max(0, Math.floor(seedX - bagRadius));
+    const x2 = Math.min(width - 1, Math.ceil(seedX + bagRadius));
+    const y1 = Math.max(0, Math.floor(seedY - bagRadius));
+    const y2 = Math.min(height - 1, Math.ceil(seedY + bagRadius));
+    const bagLumaTolerance = Math.max(10, 14 + patchStats.lumaStd * 1.2);
+    const bagColorTolerance = Math.max(28, 34 + patchStats.colorStd * 0.65);
+    const bagSamples = [];
+    for (let y = y1; y <= y2; y += 1) {
+      const dy = y - seedY;
+      for (let x = x1; x <= x2; x += 1) {
+        const dx = x - seedX;
+        if (dx * dx + dy * dy > radiusSq) continue;
+        const pixel = y * width + x;
+        if (!isMaskDataActive(currentData, pixel, 0)) continue;
+        if (sulfideData && isMaskDataActive(sulfideData, pixel, 0)) continue;
+        const item = similarFeatureFromData(sourceData, pixel);
+        const lumaDelta = Math.abs(item.luma - patchStats.luma);
+        const dr = item.r - patchStats.r;
+        const dg = item.g - patchStats.g;
+        const db = item.b - patchStats.b;
+        const colorDistance = Math.sqrt(dr * dr + dg * dg + db * db);
+        positiveBagCandidates += 1;
+        if (lumaDelta > bagLumaTolerance || colorDistance > bagColorTolerance) continue;
+        bagSamples.push({ ...item, distance: similarFeatureDistanceToStats(item, patchStats) });
+      }
+    }
+    bagSamples.sort((a, b) => a.distance - b.distance);
+    positiveBagKept = Math.min(512, bagSamples.length);
+    if (positiveBagKept >= 24) {
+      samples = patchSamples.concat(
+        bagSamples.slice(0, positiveBagKept).map((item) => ({ r: item.r, g: item.g, b: item.b, luma: item.luma }))
+      );
+      sourceKind = 'seed patch + filtered positive bag';
+    }
+  }
+  return {
+    samples,
+    seed: { x: seedX, y: seedY },
+    seedInCurrentMask,
+    sourceKind,
+    patchSampleCount: patchSamples.length,
+    positiveBagCandidates,
+    positiveBagKept
+  };
+}
+
+function similarStats(samples) {
+  if (!samples.length) return null;
+  const sums = samples.reduce((acc, item) => {
+    acc.r += item.r;
+    acc.g += item.g;
+    acc.b += item.b;
+    acc.luma += item.luma;
+    return acc;
+  }, { r: 0, g: 0, b: 0, luma: 0 });
+  const count = samples.length;
+  const mean = {
+    r: sums.r / count,
+    g: sums.g / count,
+    b: sums.b / count,
+    luma: sums.luma / count
+  };
+  let lumaVariance = 0;
+  let colorVariance = 0;
+  for (const item of samples) {
+    lumaVariance += (item.luma - mean.luma) * (item.luma - mean.luma);
+    const dr = item.r - mean.r;
+    const dg = item.g - mean.g;
+    const db = item.b - mean.b;
+    colorVariance += dr * dr + dg * dg + db * db;
+  }
+  return {
+    ...mean,
+    sampleCount: count,
+    lumaStd: Math.sqrt(lumaVariance / count),
+    colorStd: Math.sqrt(colorVariance / count)
+  };
+}
+
+function cleanupSimilarTalcCandidates(candidate, width, height) {
+  const cleaned = new Uint8Array(candidate.length);
+  let kept = 0;
+  for (let y = 0; y < height; y += 1) {
+    const row = y * width;
+    for (let x = 0; x < width; x += 1) {
+      const pixel = row + x;
+      if (!candidate[pixel]) continue;
+      let neighbors = 0;
+      for (let yy = Math.max(0, y - 1); yy <= Math.min(height - 1, y + 1); yy += 1) {
+        const neighborRow = yy * width;
+        for (let xx = Math.max(0, x - 1); xx <= Math.min(width - 1, x + 1); xx += 1) {
+          if (candidate[neighborRow + xx]) neighbors += 1;
+        }
+      }
+      if (neighbors >= 3) {
+        cleaned[pixel] = 1;
+        kept += 1;
+      }
+    }
+  }
+  return { cleaned, kept };
+}
+
+function binaryMaskCanvasFromArray(binary, width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const canvasCtx = canvas.getContext('2d', { willReadFrequently: true });
+  const imageData = canvasCtx.createImageData(width, height);
+  const data = imageData.data;
+  for (let pixel = 0; pixel < binary.length; pixel += 1) {
+    const i = pixel * 4;
+    if (binary[pixel]) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+    }
+    data[i + 3] = 255;
+  }
+  canvasCtx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+function computeSimilarTalcPreview(point) {
+  if (!state.sampleId || !state.sample || !state.sample.editable) return;
+  const source = sourceImageForSimilarTalc();
+  if (!source) {
+    setStatus('Similar needs an original or annotated image for intensity matching.', true);
+    return;
+  }
+  const width = state.imageW;
+  const height = state.imageH;
+  const total = width * height;
+  similarSourceCanvas.width = width;
+  similarSourceCanvas.height = height;
+  similarSourceCtx.clearRect(0, 0, width, height);
+  similarSourceCtx.drawImage(source, 0, 0, width, height);
+  const sourceData = similarSourceCtx.getImageData(0, 0, width, height).data;
+  const currentData = maskCtx.getImageData(0, 0, width, height).data;
+  const talcNodeData = talcNodeCtx.getImageData(0, 0, width, height).data;
+  const sulfideData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
+  const {
+    samples,
+    seed,
+    seedInCurrentMask,
+    sourceKind,
+    patchSampleCount,
+    positiveBagCandidates,
+    positiveBagKept
+  } = collectSimilarSeedSamples(point, sourceData, currentData, sulfideData);
+  const stats = similarStats(samples);
+  if (!stats) {
+    clearSimilarTalcPreview({ redraw: true });
+    setStatus('Similar could not sample non-sulfide pixels at this point.', true);
+    return;
+  }
+
+  const strictness = clampSimilarStrictness();
+  const strictnessLooseness = (100 - strictness) / 99;
+  const lumaTolerance = Math.max(4, 5 + strictnessLooseness * 38 + stats.lumaStd * (0.45 + strictnessLooseness * 0.55));
+  const colorTolerance = Math.max(12, 14 + strictnessLooseness * 86 + stats.colorStd * (0.25 + strictnessLooseness * 0.35));
+  const lumaMin = Math.max(0, stats.luma - lumaTolerance * 1.35);
+  const lumaMax = Math.min(150, stats.luma + lumaTolerance);
+  const candidate = new Uint8Array(total);
+  let rawPixels = 0;
+  let excludedSulfidePixels = 0;
+  let excludedExistingTalcPixels = 0;
+  for (let pixel = 0; pixel < total; pixel += 1) {
+    if (sulfideData && isMaskDataActive(sulfideData, pixel, 0)) {
+      excludedSulfidePixels += 1;
+      continue;
+    }
+    if (isMaskDataActive(talcNodeData, pixel, 0)) {
+      excludedExistingTalcPixels += 1;
+      continue;
+    }
+    const i = pixel * 4;
+    const r = sourceData[i];
+    const g = sourceData[i + 1];
+    const b = sourceData[i + 2];
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (luma < lumaMin || luma > lumaMax) continue;
+    const dr = r - stats.r;
+    const dg = g - stats.g;
+    const db = b - stats.b;
+    const colorDistance = Math.sqrt(dr * dr + dg * dg + db * db);
+    if (colorDistance > colorTolerance) continue;
+    candidate[pixel] = 1;
+    rawPixels += 1;
+  }
+  const cleaned = cleanupSimilarTalcCandidates(candidate, width, height);
+  const fraction = total > 0 ? cleaned.kept / total : 0;
+  if (cleaned.kept === 0) {
+    clearSimilarTalcPreview({ redraw: true });
+    setStatus('Similar found no similar non-sulfide pixels. Lower Strictness or click a clearer talc grain.', true);
+    return;
+  }
+  if (fraction > MAX_SIMILAR_TALC_REGION_FRACTION) {
+    clearSimilarTalcPreview({ redraw: true });
+    setStatus(`Similar preview covers ${Math.round(fraction * 100)}% of the image; raise Strictness or click a more specific talc grain.`, true);
+    return;
+  }
+
+  const maskPreview = binaryMaskCanvasFromArray(cleaned.cleaned, width, height);
+  state.similarTalcPreview.maskCanvas = maskPreview;
+  state.similarTalcPreview.tint = buildTintFromCanvas(maskPreview, [255, 196, 0, 118]);
+  state.similarTalcPreview.seed = seed;
+  state.similarTalcPreview.stats = {
+    strictness,
+    seed,
+    seed_in_current_mask: seedInCurrentMask,
+    source_kind: sourceKind,
+    sample_count: stats.sampleCount,
+    seed_patch_samples: patchSampleCount,
+    positive_bag_candidates: positiveBagCandidates,
+    positive_bag_kept: positiveBagKept,
+    seed_luma: Number(stats.luma.toFixed(2)),
+    luma_tolerance: Number(lumaTolerance.toFixed(2)),
+    color_tolerance: Number(colorTolerance.toFixed(2)),
+    raw_pixels: rawPixels,
+    preview_pixels: cleaned.kept,
+    preview_fraction: fraction,
+    excluded_sulfide_pixels: excludedSulfidePixels,
+    excluded_existing_talc_pixels: excludedExistingTalcPixels
+  };
+  updateSimilarTalcApplyButton();
+  draw();
+  const sourceLabel = sourceKind === 'seed patch + filtered positive bag' ? 'filtered positive bag' : 'seed patch';
+  setStatus(`Similar preview: ${formatInt(cleaned.kept)} px from ${sourceLabel}; Strictness ${strictness}. Press Apply Similar or Save to add talc nodes.`);
+}
+
+async function applySimilarTalcPreview(options = {}) {
+  const preview = state.similarTalcPreview;
+  if (!state.sampleId || !preview.maskCanvas) {
+    setStatus('No Similar preview to apply.', true);
+    return false;
+  }
+  const nodeBaselineData = captureBaseTalcNodeData();
+  const previewCtx = preview.maskCanvas.getContext('2d', { willReadFrequently: true });
+  const previewData = previewCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  const currentNodeData = talcNodeCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  const baseData = baseTalcNodeCtx.getImageData(0, 0, state.imageW, state.imageH);
+  const base = baseData.data;
+  let previewPixels = 0;
+  let newPixels = 0;
+  let overlappingPositiveBagPixels = 0;
+  const positiveData = maskCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  for (let pixel = 0; pixel < state.imageW * state.imageH; pixel += 1) {
+    const i = pixel * 4;
+    if (!isPositiveMaskPixel(previewData, i)) continue;
+    previewPixels += 1;
+    if (isMaskDataActive(positiveData, pixel, 0)) overlappingPositiveBagPixels += 1;
+    if (!isMaskDataActive(currentNodeData, pixel, 0)) newPixels += 1;
+    base[i] = 255;
+    base[i + 1] = 255;
+    base[i + 2] = 255;
+    base[i + 3] = 255;
+  }
+  if (previewPixels === 0 || newPixels === 0) {
+    clearSimilarTalcPreview({ redraw: true });
+    setStatus('Similar preview adds no new talc pixels.', true);
+    return false;
+  }
+  pushUndo();
+  baseTalcNodeCtx.putImageData(baseData, 0, 0);
+  const syncResult = syncTalcNodeLayer({ reason: 'similar_talc', nodeBaselineData, recordProtection: true });
+  const protectedPixels = syncResult.protectedPixels;
+  state.edits.push({
+    type: 'similar_talc_add',
+    source_tool: 'similar_talc',
+    target_class: 'talc_node',
+    seed: preview.seed,
+    strictness: preview.stats ? preview.stats.strictness : clampSimilarStrictness(),
+    source_kind: preview.stats ? preview.stats.source_kind : null,
+    seed_luma: preview.stats ? preview.stats.seed_luma : null,
+    sample_count: preview.stats ? preview.stats.sample_count : null,
+    preview_pixels: previewPixels,
+    overlapping_positive_bag_pixels: overlappingPositiveBagPixels,
+    added_pixels: newPixels,
+    protected_pixels: protectedPixels,
+    at: new Date().toISOString()
+  });
+  clearSimilarTalcPreview({ redraw: false });
+  const message = protectedPixels > 0
+    ? `Autosaved Similar; added ${formatInt(newPixels)} px and protected ${formatInt(protectedPixels)} sulfide px.`
+    : `Autosaved Similar; added ${formatInt(newPixels)} px.`;
+  if (options.autosave === false) {
+    markLocalDirty();
+    refreshCurrentTint();
+    updateMetrics();
+    draw();
+    setStatus(`Applied Similar before save; added ${formatInt(newPixels)} talc-node px.`);
+    return true;
+  }
+  setStatus('Applying Similar preview...');
+  markLocalDirty();
+  refreshCurrentTint();
+  updateMetrics();
+  draw();
+  autosave('similar_talc', message).catch((err) => setStatus(`Autosave failed: ${err.message}`, true));
+  return true;
+}
+
 function prepareFillBoundaries(rawLines, closedLines) {
   fillBoundaryCanvas.width = state.imageW;
   fillBoundaryCanvas.height = state.imageH;
@@ -2173,32 +3070,34 @@ function prepareFillBoundaries(rawLines, closedLines) {
 
 async function fillAtPoint(point) {
   if (!state.sampleId || !state.sample || !state.sample.editable) return;
+  const targetClass = activeEditClass();
+  const target = editClassContexts(targetClass);
   const x = Math.max(0, Math.min(state.imageW - 1, Math.floor(point.x)));
   const y = Math.max(0, Math.min(state.imageH - 1, Math.floor(point.y)));
   const width = state.imageW;
   const height = state.imageH;
   const total = width * height;
   const start = y * width + x;
-  const currentData = maskCtx.getImageData(0, 0, width, height).data;
+  const targetData = captureClassMaskData(targetClass).data;
   const boundaryData = state.fillBoundaryLoaded ? fillBoundaryCtx.getImageData(0, 0, width, height).data : null;
   const sulfideBoundaryData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
   const boundaryLabels = [];
   if (state.fillBoundaryLoaded) boundaryLabels.push('blue_lines');
-  boundaryLabels.push('current_talc_regions');
+  boundaryLabels.push(targetClass === 'talc_node' ? 'current_talc_node_regions' : 'current_positive_bag_regions');
   if (sulfideBoundaryData) boundaryLabels.push('sulfide_pixels');
   boundaryLabels.push('screen_edges');
   const blocked = (pixel) => (
-    isMaskDataActive(currentData, pixel, 0)
+    isMaskDataActive(targetData, pixel, 0)
     || (boundaryData && isMaskDataActive(boundaryData, pixel, 16))
     || (sulfideBoundaryData && isMaskDataActive(sulfideBoundaryData, pixel, 0))
   );
   if (blocked(start)) {
-    setStatus('Fill point is on a blue line, sulfide pixel, or existing talc region; click inside an empty bounded area.', true);
+    setStatus(`Fill point is on a blue line, sulfide pixel, or existing ${editClassLabel(targetClass)} region; click inside an empty bounded area.`, true);
     return;
   }
 
-  const baselineData = captureBaseMaskData();
-  const baseData = baseMaskCtx.getImageData(0, 0, width, height);
+  const baselineData = captureClassBaseData(targetClass);
+  const baseData = target.baseCtx.getImageData(0, 0, width, height);
   const base = baseData.data;
   const visited = new Uint8Array(total);
   const queue = new Int32Array(total);
@@ -2242,13 +3141,14 @@ async function fillAtPoint(point) {
   }
 
   pushUndo();
-  baseMaskCtx.putImageData(baseData, 0, 0);
+  target.baseCtx.putImageData(baseData, 0, 0);
   let protectedPixels = 0;
   if (els.protectSulfides.checked) {
-    protectedPixels = removeSulfidePixelsFromCanvas(baseMaskCtx, baselineData);
+    protectedPixels = removeSulfidePixelsFromCanvas(target.baseCtx, baselineData);
   }
   state.edits.push({
     type: 'fill',
+    target_class: targetClass,
     x,
     y,
     filled_pixels: filled,
@@ -2257,10 +3157,10 @@ async function fillAtPoint(point) {
     at: new Date().toISOString()
   });
   markLocalDirty();
-  rebuildMaskFromBase({ recordProtection: false, reason: 'fill' });
+  rebuildMaskFromBase({ recordProtection: false, reason: 'fill', targetClass });
   const message = protectedPixels > 0
-    ? `Autosaved fill; added ${formatInt(filled)} px and protected ${formatInt(protectedPixels)} sulfide px.`
-    : `Autosaved fill; added ${formatInt(filled)} px.`;
+    ? `Autosaved fill to ${editClassLabel(targetClass)}; added ${formatInt(filled)} px and protected ${formatInt(protectedPixels)} sulfide px.`
+    : `Autosaved fill to ${editClassLabel(targetClass)}; added ${formatInt(filled)} px.`;
   await autosave('fill', message);
 }
 
@@ -2289,44 +3189,50 @@ function strokeModeForPointer(event) {
   return null;
 }
 
-function commitShapeChange(kind, edit) {
+function commitShapeChange(kind, edit, options = {}) {
   if (edit) state.edits.push(edit);
+  const targetClass = normalizeEditClass(options.targetClass || (edit && edit.target_class));
   markLocalDirty();
-  const protectedPixels = rebuildMaskFromBase({ recordProtection: true, reason: kind });
-  const message = protectedPixels > 0
+  const protectedPixels = rebuildMaskFromBase({ recordProtection: true, reason: kind, targetClass });
+  const message = options.message || (protectedPixels > 0
     ? `Autosaved ${kind}; protected ${formatInt(protectedPixels)} sulfide px.`
-    : undefined;
+    : undefined);
   autosave(kind, message).catch((err) => setStatus(`Autosave failed: ${err.message}`, true));
 }
 
 function addPolygonShape(points) {
   if (points.length < 3) return false;
+  const targetClass = activeEditClass();
   pushUndo();
   const shape = {
     id: state.nextShapeId++,
     type: 'polygon',
+    targetClass,
     points: points.map((p) => ({ x: p.x, y: p.y }))
   };
   state.shapes.push(shape);
   state.activeShapeId = shape.id;
   state.polygon.points = [];
   commitShapeChange('polygon', {
-    type: 'polygon_add_talc',
+    type: targetClass === 'talc_node' ? 'polygon_add_talc_node' : 'polygon_add_positive_bag',
+    target_class: targetClass,
     shape_id: shape.id,
     points: shape.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
     at: new Date().toISOString()
-  });
-  setStatus('Polygon closed and autosaved.');
+  }, { targetClass });
+  setStatus(`Polygon closed into ${editClassLabel(targetClass)} and autosaved.`);
   return true;
 }
 
 function addRectangleShape(rect) {
   const r = normalizedRect(rect);
   if (r.x2 - r.x1 < 2 || r.y2 - r.y1 < 2) return false;
+  const targetClass = activeEditClass();
   pushUndo();
   const shape = {
     id: state.nextShapeId++,
     type: 'rectangle',
+    targetClass,
     x1: r.x1,
     y1: r.y1,
     x2: r.x2,
@@ -2336,31 +3242,39 @@ function addRectangleShape(rect) {
   state.activeShapeId = shape.id;
   state.rect.active = false;
   commitShapeChange('rectangle', {
-    type: 'rectangle_add_talc',
+    type: targetClass === 'talc_node' ? 'rectangle_add_talc_node' : 'rectangle_add_positive_bag',
+    target_class: targetClass,
     shape_id: shape.id,
     x1: Math.round(r.x1),
     y1: Math.round(r.y1),
     x2: Math.round(r.x2),
     y2: Math.round(r.y2),
     at: new Date().toISOString()
-  });
-  setStatus('Rectangle drawn and autosaved.');
+  }, { targetClass });
+  setStatus(`Rectangle drawn into ${editClassLabel(targetClass)} and autosaved.`);
   return true;
 }
 
 function afterMaskEdit(kind, baselineData = null, options = {}) {
   let protectedPixels = 0;
+  const targetClass = normalizeEditClass(options.targetClass);
+  const target = editClassContexts(targetClass);
   markLocalDirty();
   if (options.baseBaselineData) {
     if (els.protectSulfides.checked) {
-      protectedPixels = removeSulfidePixelsFromCanvas(baseMaskCtx, options.baseBaselineData);
+      protectedPixels = removeSulfidePixelsFromCanvas(target.baseCtx, options.baseBaselineData);
       if (protectedPixels > 0) {
-        state.edits.push({ type: 'protect_sulfides', tool: kind, removed_pixels: protectedPixels, at: new Date().toISOString() });
+        state.edits.push({ type: 'protect_sulfides', tool: kind, target_class: targetClass, removed_pixels: protectedPixels, at: new Date().toISOString() });
       }
     }
-    rebuildMaskFromBase({ recordProtection: false, reason: kind });
+    rebuildMaskFromBase({ recordProtection: false, reason: kind, targetClass });
   } else {
-    protectedPixels = enforceSulfideProtection(kind, baselineData);
+    if (els.protectSulfides.checked) {
+      protectedPixels = removeSulfidePixelsFromCanvas(target.ctx, baselineData);
+      if (protectedPixels > 0) {
+        state.edits.push({ type: 'protect_sulfides', tool: kind, target_class: targetClass, removed_pixels: protectedPixels, at: new Date().toISOString() });
+      }
+    }
     refreshCurrentTint();
     updateMetrics();
     draw();
@@ -2375,9 +3289,12 @@ async function autosave(reason, message) {
   if (!state.sampleId) return;
   state.saveState = 'saving';
   updateMetrics();
+  const combined = combinedMaskCanvas();
   try {
     await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/autosave`, {
-      mask_png: maskCanvas.toDataURL('image/png'),
+      mask_png: combined.toDataURL('image/png'),
+      positive_bag_mask_png: maskCanvas.toDataURL('image/png'),
+      talc_node_mask_png: talcNodeCanvas.toDataURL('image/png'),
       edits: state.edits,
       reason,
       view_settings: viewSettingsPayload()
@@ -2409,7 +3326,9 @@ async function subtractSulfidesFromMask() {
   }
   pushUndo();
   const flattened = flattenShapesToBase(false);
-  const removed = removeSulfidePixelsFromCanvas(baseMaskCtx);
+  const removedPositiveBag = removeSulfidePixelsFromCanvas(baseMaskCtx);
+  const removedTalcNode = removeSulfidePixelsFromCanvas(baseTalcNodeCtx);
+  const removed = removedPositiveBag + removedTalcNode;
   if (removed === 0) {
     state.undoStack.pop();
     rebuildMaskFromBase({ recordProtection: false, reason: 'subtract_sulfides' });
@@ -2419,7 +3338,13 @@ async function subtractSulfidesFromMask() {
     return;
   }
   if (flattened) state.edits.push({ type: 'flatten_shapes', reason: 'subtract_sulfides', at: new Date().toISOString() });
-  state.edits.push({ type: 'subtract_sulfides', removed_pixels: removed, at: new Date().toISOString() });
+  state.edits.push({
+    type: 'subtract_sulfides',
+    removed_pixels: removed,
+    removed_positive_bag_pixels: removedPositiveBag,
+    removed_talc_node_pixels: removedTalcNode,
+    at: new Date().toISOString()
+  });
   markLocalDirty();
   rebuildMaskFromBase({ recordProtection: false, reason: 'subtract_sulfides' });
   await autosave('subtract sulfides', `Autosaved sulfide subtraction; removed ${formatInt(removed)} px.`);
@@ -2429,10 +3354,17 @@ async function saveReview(moveNext) {
   if (!state.sampleId) return;
   const currentSampleId = state.sampleId;
   const nextInVisibleQueue = moveNext ? nextVisibleSampleId(currentSampleId) : null;
+  if (state.similarTalcPreview.maskCanvas) {
+    setStatus('Applying Similar preview before save...');
+    await applySimilarTalcPreview({ autosave: false });
+  }
   setStatus('Saving reviewed mask...');
   flattenShapesToBase(true);
+  const combined = combinedMaskCanvas();
   const result = await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/save`, {
-    mask_png: maskCanvas.toDataURL('image/png'),
+    mask_png: combined.toDataURL('image/png'),
+    positive_bag_mask_png: maskCanvas.toDataURL('image/png'),
+    talc_node_mask_png: talcNodeCanvas.toDataURL('image/png'),
     edits: state.edits,
     reviewer: els.reviewerInput.value.trim(),
     notes: els.notesInput.value.trim(),
@@ -2457,6 +3389,16 @@ async function saveReview(moveNext) {
   } else {
     await loadSample(state.sampleId, { force: true });
   }
+}
+
+async function goToNextSample() {
+  if (!state.sampleId) return;
+  const nextId = nextVisibleSampleId(state.sampleId);
+  if (!nextId) {
+    setStatus('No next sample is visible in the current filter.');
+    return;
+  }
+  await loadSample(nextId);
 }
 
 async function resetCurrent() {
@@ -2527,13 +3469,15 @@ function removePolygonShapePoint(hit) {
   hit.shape.points.splice(hit.index, 1);
   state.activeShapeId = hit.shape.id;
   state.shapeDrag = null;
+  const targetClass = normalizeEditClass(hit.shape.targetClass);
   commitShapeChange('polygon', {
     type: 'polygon_point_remove',
+    target_class: targetClass,
     shape_id: hit.shape.id,
     point_index: hit.index,
     points: hit.shape.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
     at: new Date().toISOString()
-  });
+  }, { targetClass });
   setStatus('Polygon point removed and autosaved.');
   return true;
 }
@@ -2549,20 +3493,23 @@ function deleteSelectedShape() {
   const [removed] = state.shapes.splice(shapeIndex, 1);
   state.activeShapeId = null;
   state.shapeDrag = null;
+  const targetClass = normalizeEditClass(removed.targetClass);
   const edit = removed.type === 'polygon'
     ? {
         type: 'polygon_shape_delete',
+        target_class: targetClass,
         shape_id: removed.id,
         points: removed.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
         at: new Date().toISOString()
       }
     : {
         type: 'rectangle_shape_delete',
+        target_class: targetClass,
         shape_id: removed.id,
         ...Object.fromEntries(Object.entries(normalizedRect(removed)).map(([key, value]) => [key, Math.round(value)])),
         at: new Date().toISOString()
       };
-  commitShapeChange(removed.type, edit);
+  commitShapeChange(removed.type, edit, { targetClass });
   setStatus(`${removed.type === 'polygon' ? 'Polygon' : 'Rectangle'} deleted and autosaved.`);
   return true;
 }
@@ -2702,7 +3649,7 @@ function updateShapeDrag(point) {
     drag.lastPoint = point;
   }
   drag.changed = true;
-  rebuildMaskFromBase({ recordProtection: false, reason: 'shape_preview' });
+  rebuildMaskFromBase({ recordProtection: false, reason: 'shape_preview', targetClass: shape.targetClass });
 }
 
 function finishShapeDrag() {
@@ -2712,20 +3659,23 @@ function finishShapeDrag() {
   if (!drag.changed) return;
   const shape = shapeById(drag.shapeId);
   if (!shape) return;
+  const targetClass = normalizeEditClass(shape.targetClass);
   const edit = shape.type === 'polygon'
     ? {
         type: 'polygon_shape_edit',
+        target_class: targetClass,
         shape_id: shape.id,
         points: shape.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
         at: new Date().toISOString()
       }
     : {
         type: 'rectangle_shape_edit',
+        target_class: targetClass,
         shape_id: shape.id,
         ...Object.fromEntries(Object.entries(normalizedRect(shape)).map(([key, value]) => [key, Math.round(value)])),
         at: new Date().toISOString()
       };
-  commitShapeChange(shape.type, edit);
+  commitShapeChange(shape.type, edit, { targetClass });
 }
 
 async function fetchSam2Mask(promptGeometry, runningMessage) {
@@ -2772,6 +3722,7 @@ function applySam2MaskResult(maskResult) {
   clearSam2Preview({ redraw: false });
   state.edits.push({
     type: 'sam2_add_talc',
+    target_class: 'positive_bag',
     prompt_geometry: maskResult.promptGeometry,
     score: maskResult.result.summary.score,
     mask_pixels: mergedPixels,
@@ -2895,7 +3846,7 @@ function mergePositiveMaskImage(img, targetCtx = maskCtx) {
 }
 
 viewer.addEventListener('contextmenu', (event) => {
-  if (state.tool === 'polygon' || state.tool === 'brush' || state.tool === 'fill' || state.tool === 'rectangle' || state.tool === 'sam2') event.preventDefault();
+  if (state.tool === 'polygon' || state.tool === 'brush' || state.tool === 'fill' || state.tool === 'similar' || state.tool === 'rectangle' || state.tool === 'sam2') event.preventDefault();
 });
 
 viewer.addEventListener('auxclick', (event) => {
@@ -2917,7 +3868,20 @@ viewer.addEventListener('pointerdown', async (event) => {
   if (!state.sample.editable) return;
   const point = imagePointFromEvent(event);
   updateViewerCursor(point);
-  if (state.tool === 'brush' || state.tool === 'sam2') state.hoverPoint = point;
+  if (state.tool === 'brush' || state.tool === 'sam2' || state.tool === 'similar') state.hoverPoint = point;
+  if (state.tool === 'similar') {
+    event.preventDefault();
+    if (event.button === 2) {
+      clearSimilarTalcPreview({ redraw: true });
+      setStatus('Similar preview cleared.');
+      return;
+    }
+    if (event.button === 0) {
+      computeSimilarTalcPreview(point);
+      return;
+    }
+    return;
+  }
   if (state.tool === 'polygon' && event.button === 2) {
     event.preventDefault();
     const draftPoint = nearestPolygonPoint(point);
@@ -2945,17 +3909,20 @@ viewer.addEventListener('pointerdown', async (event) => {
   const strokeMode = strokeModeForPointer(event);
   if (strokeMode) {
     event.preventDefault();
+    const targetClass = activeEditClass();
+    const target = editClassContexts(targetClass);
     viewer.setPointerCapture(event.pointerId);
     updateViewerCursor(point);
-    state.activeEditBaseline = captureMaskData();
-    state.activeBaseEditBaseline = captureBaseMaskData();
+    state.activeEditTargetClass = targetClass;
+    state.activeEditBaseline = captureClassMaskData(targetClass);
+    state.activeBaseEditBaseline = captureClassBaseData(targetClass);
     pushUndo();
     state.drawing = true;
     state.activeStrokeMode = strokeMode;
     state.activePointerButton = event.button;
     state.lastPoint = point;
-    drawMaskLine(point, point, strokeMode, baseMaskCtx);
-    rebuildMaskFromBase({ recordProtection: false, reason: `${strokeMode}_preview` });
+    drawMaskLine(point, point, strokeMode, target.baseCtx);
+    rebuildMaskFromBase({ recordProtection: false, reason: `${strokeMode}_preview`, targetClass });
     return;
   }
   if (event.button !== 0) return;
@@ -3002,7 +3969,7 @@ viewer.addEventListener('pointerdown', async (event) => {
       shapeSegment.shape.points.splice(insertAt, 0, point);
       state.activeShapeId = shapeSegment.shape.id;
       state.shapeDrag = { shapeId: shapeSegment.shape.id, mode: 'point', index: insertAt, changed: true };
-      rebuildMaskFromBase({ recordProtection: false, reason: 'polygon_preview' });
+      rebuildMaskFromBase({ recordProtection: false, reason: 'polygon_preview', targetClass: shapeSegment.shape.targetClass });
       return;
     }
     const shapeBody = hitPolygonShapeBody(point);
@@ -3073,7 +4040,7 @@ viewer.addEventListener('pointermove', (event) => {
   if (!state.sample || !state.sample.editable) return;
   const point = imagePointFromEvent(event);
   updateViewerCursor(point);
-  if (state.tool === 'brush' || state.tool === 'sam2') {
+  if (state.tool === 'brush' || state.tool === 'sam2' || state.tool === 'similar') {
     state.hoverPoint = point;
     if (sam2PointModeActive()) scheduleSam2PointHoverPreview(point);
     else if (state.tool !== 'sam2') updateSam2ApplyButton();
@@ -3083,9 +4050,11 @@ viewer.addEventListener('pointermove', (event) => {
     return;
   }
   if (state.drawing && state.lastPoint) {
-    drawMaskLine(state.lastPoint, point, state.activeStrokeMode || state.tool, baseMaskCtx);
+    const targetClass = normalizeEditClass(state.activeEditTargetClass);
+    const target = editClassContexts(targetClass);
+    drawMaskLine(state.lastPoint, point, state.activeStrokeMode || state.tool, target.baseCtx);
     state.lastPoint = point;
-    rebuildMaskFromBase({ recordProtection: false, reason: `${state.activeStrokeMode || state.tool}_preview` });
+    rebuildMaskFromBase({ recordProtection: false, reason: `${state.activeStrokeMode || state.tool}_preview`, targetClass });
     return;
   }
   if (state.tool === 'polygon' && state.polygon.dragIndex !== null) {
@@ -3114,6 +4083,8 @@ viewer.addEventListener('pointermove', (event) => {
   } else if (state.tool === 'sam2') {
     updateSam2ApplyButton();
     draw();
+  } else if (state.tool === 'similar') {
+    draw();
   }
 });
 
@@ -3140,19 +4111,22 @@ viewer.addEventListener('pointerup', (event) => {
   }
   if (state.drawing) {
     const editType = state.activeStrokeMode || state.tool;
+    const targetClass = normalizeEditClass(state.activeEditTargetClass);
     state.drawing = false;
     state.lastPoint = null;
     state.edits.push({
       type: editType,
       source_tool: state.tool,
+      target_class: targetClass,
       mouse_button: state.activePointerButton,
       brush_size: Number(els.brushSize.value),
       at: new Date().toISOString()
     });
-    afterMaskEdit(editType, state.activeEditBaseline, { baseBaselineData: state.activeBaseEditBaseline });
+    afterMaskEdit(editType, state.activeEditBaseline, { baseBaselineData: state.activeBaseEditBaseline, targetClass });
     state.activeEditBaseline = null;
     state.activeBaseEditBaseline = null;
     state.activeStrokeMode = null;
+    state.activeEditTargetClass = activeEditClass();
     state.activePointerButton = 0;
   }
   if (state.tool === 'polygon') state.polygon.dragIndex = null;
@@ -3197,6 +4171,19 @@ els.brushSize.addEventListener('input', () => {
   els.brushSizeValue.textContent = `${els.brushSize.value} px`;
   if (state.hoverPoint) draw();
 });
+els.similarStrictness.addEventListener('input', () => {
+  updateSimilarStrictnessUi();
+  if (state.tool === 'similar' && state.similarTalcPreview.seed) {
+    computeSimilarTalcPreview(state.similarTalcPreview.seed);
+  }
+});
+els.similarApplyBtn.addEventListener('click', () => {
+  applySimilarTalcPreview().catch((err) => setStatus(`Similar apply failed: ${err.message}`, true));
+});
+els.similarClearBtn.addEventListener('click', () => {
+  clearSimilarTalcPreview({ redraw: true });
+  setStatus('Similar preview cleared.');
+});
 els.brightnessThreshold.addEventListener('input', () => {
   resetBrightnessPreviewCache();
   updateBrightnessThresholdUi(true);
@@ -3219,6 +4206,7 @@ els.fitBtn.addEventListener('click', fitToViewer);
 els.undoBtn.addEventListener('click', () => undo().catch((err) => setStatus(`Undo failed: ${err.message}`, true)));
 els.saveBtn.addEventListener('click', () => saveReview(false).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
 els.saveNextBtn.addEventListener('click', () => saveReview(true).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
+els.nextBtn.addEventListener('click', () => goToNextSample().catch((err) => setStatus(`Next failed: ${err.message}`, true)));
 els.resetBtn.addEventListener('click', () => resetCurrent().catch((err) => setStatus(`Reset failed: ${err.message}`, true)));
 els.sam2ApplyBtn.addEventListener('click', () => {
   applySam2PointPreviewOrRun().catch((err) => setStatus(`SAM2 apply failed: ${err.message}`, true));
@@ -3233,6 +4221,11 @@ els.sam2StatusBtn.addEventListener('click', async () => {
 });
 els.baseMode.addEventListener('change', drawWithAvailabilityStatus);
 Object.values(els.layers).forEach((layer) => layer.addEventListener('change', drawWithAvailabilityStatus));
+els.editTargets.forEach((input) => {
+  input.addEventListener('change', () => {
+    if (input.checked) setEditClass(input.value, { announce: true });
+  });
+});
 if (window.matchMedia) {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (els.themeSelect.value === 'system') draw();
@@ -3289,17 +4282,25 @@ async function loadSample(sampleId, options = {}) {
   maskCanvas.height = state.imageH;
   baseMaskCanvas.width = state.imageW;
   baseMaskCanvas.height = state.imageH;
+  talcNodeCanvas.width = state.imageW;
+  talcNodeCanvas.height = state.imageH;
+  baseTalcNodeCanvas.width = state.imageW;
+  baseTalcNodeCanvas.height = state.imageH;
   currentTintCanvas.width = state.imageW;
   currentTintCanvas.height = state.imageH;
+  talcNodeTintCanvas.width = state.imageW;
+  talcNodeTintCanvas.height = state.imageH;
 
   const urls = state.sample.urls;
   const [
-    original, annotated, qa, currentMask, autoMask, rawLines, closedLines, overlapMask, ignoreMask, sulfideMask
+    original, annotated, qa, currentMask, positiveBagMask, talcNodeMask, autoMask, rawLines, closedLines, overlapMask, ignoreMask, sulfideMask
   ] = await Promise.all([
     loadImage(urls.original, urls.original ? 'Original photo' : null),
     loadImage(urls.annotated || urls.source_copy, (urls.annotated || urls.source_copy) ? 'MS Paint annotation' : null),
     loadImage(urls.qa_overlay, urls.qa_overlay ? 'Converter QA overlay' : null),
     loadImage(urls.current_mask, urls.current_mask ? 'Current working mask' : null),
+    loadImage(urls.current_positive_bag_mask || urls.current_mask, (urls.current_positive_bag_mask || urls.current_mask) ? 'Positive bag mask' : null),
+    loadImage(urls.current_talc_node_mask, urls.current_talc_node_mask ? 'Talc node mask' : null),
     loadImage(urls.autodetected_mask, urls.autodetected_mask ? 'Autodetected mask' : null),
     loadImage(urls.raw_blue_stroke, urls.raw_blue_stroke ? 'Original blue lines' : null),
     loadImage(urls.closed_blue_stroke, urls.closed_blue_stroke ? 'Closed blue line boundary' : null),
@@ -3318,9 +4319,16 @@ async function loadSample(sampleId, options = {}) {
   resetBrightnessPreviewCache();
   baseMaskCtx.clearRect(0, 0, state.imageW, state.imageH);
   maskCtx.clearRect(0, 0, state.imageW, state.imageH);
-  if (currentMask) {
-    baseMaskCtx.drawImage(currentMask, 0, 0, state.imageW, state.imageH);
-    maskCtx.drawImage(currentMask, 0, 0, state.imageW, state.imageH);
+  baseTalcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
+  talcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
+  if (positiveBagMask || currentMask) {
+    const positiveSource = positiveBagMask || currentMask;
+    baseMaskCtx.drawImage(positiveSource, 0, 0, state.imageW, state.imageH);
+    maskCtx.drawImage(positiveSource, 0, 0, state.imageW, state.imageH);
+  }
+  if (talcNodeMask) {
+    baseTalcNodeCtx.drawImage(talcNodeMask, 0, 0, state.imageW, state.imageH);
+    talcNodeCtx.drawImage(talcNodeMask, 0, 0, state.imageW, state.imageH);
   }
   sulfideGuardCanvas.width = state.imageW;
   sulfideGuardCanvas.height = state.imageH;
@@ -3333,10 +4341,11 @@ async function loadSample(sampleId, options = {}) {
     overlap: buildTintFromImage(overlapMask, [255, 85, 30, 140]),
     ignore: buildTintFromImage(ignoreMask, [255, 214, 10, 110])
   };
+  state.shapes = [];
+  syncTalcNodeLayer({ reason: 'load_sample' });
   refreshCurrentTint();
   state.undoStack = [];
   state.edits = [];
-  state.shapes = [];
   state.nextShapeId = 1;
   state.activeShapeId = null;
   state.shapeDrag = null;
@@ -3354,11 +4363,13 @@ async function loadSample(sampleId, options = {}) {
   state.lastPoint = null;
   state.hoverPoint = null;
   state.activeStrokeMode = null;
+  state.activeEditTargetClass = activeEditClass();
   state.activePointerButton = 0;
   state.activeEditBaseline = null;
   state.activeBaseEditBaseline = null;
   state.samBox = null;
   clearSam2Preview({ redraw: false });
+  clearSimilarTalcPreview({ redraw: false });
 
   els.sampleTitle.textContent = state.sample.image.name;
   els.sampleSubtitle.textContent = `${statusLabel(state.sample.sample.status)} · ${reviewStateLabel(state.sample.sample.review_state)} · ${state.imageW} x ${state.imageH}`;
@@ -3368,11 +4379,12 @@ async function loadSample(sampleId, options = {}) {
   draw();
   renderQueue();
   updateViewerCursor();
-  setStatus(state.sample.editable ? 'Editing current talc mask.' : 'Original image is missing; editing disabled for this sample.', !state.sample.editable);
+  setStatus(state.sample.editable ? `Editing positive bag and talc-node masks. Active edit class: ${editClassLabel()}.` : 'Original image is missing; editing disabled for this sample.', !state.sample.editable);
 }
 
 applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || 'system', false);
 setBrightnessThreshold(localStorage.getItem(BRIGHTNESS_THRESHOLD_STORAGE_KEY) || 255, false);
+updateSimilarStrictnessUi();
 updateToolParams();
 
 loadManifest(true).catch((err) => {

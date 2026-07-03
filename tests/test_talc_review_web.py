@@ -90,7 +90,7 @@ class TalcReviewWebTest(unittest.TestCase):
 
         np.testing.assert_array_equal(read_mask(current_path), read_mask(final_path))
         state = json.loads((sample_dir / "working_state.json").read_text(encoding="utf-8"))
-        self.assertEqual(state["source"], "autodetected_recovered")
+        self.assertEqual(state["source"], "browser_review_union_recovered")
         self.assertTrue(state["recovery_reason"].startswith("unreadable_"))
         self.assertTrue(list(sample_dir.glob("current_talc_mask.recovered.*.png")))
         self.assertEqual(
@@ -144,10 +144,19 @@ class TalcReviewWebTest(unittest.TestCase):
 
         self.assertTrue(result["reviewed"])
         reviewed = result["review_summary"]["paths"]
-        for key in ["reviewed_talc_mask", "reviewed_ignore_mask", "reviewed_overlay", "review_patch"]:
+        for key in [
+            "reviewed_talc_mask",
+            "reviewed_positive_bag_mask",
+            "reviewed_talc_node_mask",
+            "reviewed_ignore_mask",
+            "reviewed_overlay",
+            "review_patch",
+        ]:
             self.assertTrue(Path(reviewed[key]).exists(), key)
         reviewed_mask = read_mask(Path(reviewed["reviewed_talc_mask"]))
         self.assertEqual(int(np.count_nonzero(reviewed_mask)), 600)
+        self.assertEqual(int(np.count_nonzero(read_mask(Path(reviewed["reviewed_positive_bag_mask"])))), 600)
+        self.assertEqual(int(np.count_nonzero(read_mask(Path(reviewed["reviewed_talc_node_mask"])))), 0)
         patch = json.loads(Path(reviewed["review_patch"]).read_text(encoding="utf-8"))
         self.assertEqual(patch["reviewer"], "unit-test")
         self.assertEqual(patch["original_image_path"], str((self.original_dir / self.image_name).resolve()))
@@ -155,6 +164,65 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertEqual(patch["view_settings"]["background_mode"], "original")
         refreshed = self.store.manifest_payload()["samples"][0]
         self.assertEqual(refreshed["review_state"], "reviewed")
+
+    def test_save_review_writes_positive_bag_and_talc_node_classes(self) -> None:
+        sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
+        payload = self.store.sample_payload(sample_id)
+        shape = (payload["image"]["height"], payload["image"]["width"])
+        positive_bag = np.zeros(shape, dtype=np.uint8)
+        talc_node = np.zeros(shape, dtype=np.uint8)
+        positive_bag[10:30, 12:42] = 255
+        talc_node[40:50, 60:80] = 255
+        union = positive_bag.copy()
+        union[talc_node > 0] = 255
+
+        result = self.store.save_current_mask(
+            sample_id,
+            {
+                "mask_png": mask_data_url(union),
+                "positive_bag_mask_png": mask_data_url(positive_bag),
+                "talc_node_mask_png": mask_data_url(talc_node),
+                "edits": [{"type": "similar_talc_add", "target_class": "talc_node"}],
+            },
+            reviewed=True,
+        )
+
+        reviewed = result["review_summary"]["paths"]
+        np.testing.assert_array_equal(read_mask(Path(reviewed["reviewed_positive_bag_mask"])), positive_bag)
+        np.testing.assert_array_equal(read_mask(Path(reviewed["reviewed_talc_node_mask"])), talc_node)
+        np.testing.assert_array_equal(read_mask(Path(reviewed["reviewed_talc_mask"])), union)
+        self.assertEqual(result["positive_bag_pixels"], 600)
+        self.assertEqual(result["talc_node_pixels"], 200)
+        self.assertEqual(result["current_talc_pixels"], 800)
+
+    def test_positive_bag_and_talc_node_masks_can_overlap(self) -> None:
+        sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
+        payload = self.store.sample_payload(sample_id)
+        shape = (payload["image"]["height"], payload["image"]["width"])
+        positive_bag = np.zeros(shape, dtype=np.uint8)
+        talc_node = np.zeros(shape, dtype=np.uint8)
+        positive_bag[10:30, 12:42] = 255
+        talc_node[14:24, 18:30] = 255
+        union = positive_bag.copy()
+
+        result = self.store.save_current_mask(
+            sample_id,
+            {
+                "mask_png": mask_data_url(union),
+                "positive_bag_mask_png": mask_data_url(positive_bag),
+                "talc_node_mask_png": mask_data_url(talc_node),
+                "edits": [{"type": "similar_talc_add", "target_class": "talc_node"}],
+            },
+            reviewed=True,
+        )
+
+        reviewed = result["review_summary"]["paths"]
+        np.testing.assert_array_equal(read_mask(Path(reviewed["reviewed_positive_bag_mask"])), positive_bag)
+        np.testing.assert_array_equal(read_mask(Path(reviewed["reviewed_talc_node_mask"])), talc_node)
+        np.testing.assert_array_equal(read_mask(Path(reviewed["reviewed_talc_mask"])), union)
+        self.assertEqual(result["positive_bag_pixels"], 600)
+        self.assertEqual(result["talc_node_pixels"], 120)
+        self.assertEqual(result["current_talc_pixels"], 600)
 
     def test_reset_restores_autodetected_mask(self) -> None:
         sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
@@ -191,14 +259,19 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn('value="system"', markup)
         self.assertIn(':root[data-theme="dark"]', markup)
         self.assertIn("talcReviewTheme", markup)
-        self.assertIn("Brush: left mouse adds talc, right mouse erases.", markup)
-        self.assertIn("Brush (B): left mouse draws talc, right mouse erases", markup)
-        self.assertIn("Fill (F): click an area bounded by blue lines, sulfides, existing talc regions, or image edges", markup)
-        self.assertIn("Fill: click an empty area bounded by blue lines, sulfides, existing talc regions, or the image edge.", markup)
+        self.assertIn("Select the Edit radio in Segmentation classes", markup)
+        self.assertIn("Brush: left mouse adds the selected class, right mouse erases it.", markup)
+        self.assertIn("Brush (B): left mouse draws the selected class, right mouse erases it", markup)
+        self.assertIn('<input id="brushSize" type="range" min="2" max="240" value="28"', markup)
+        self.assertIn("Fill (F): click an area bounded by blue lines, sulfides, existing selected-class regions, or image edges", markup)
+        self.assertIn("Similar: click a known talc grain to preview intensity-similar talc-node pixels", markup)
+        self.assertIn("Fill: click an empty area bounded by blue lines, sulfides, existing selected-class regions, or the image edge.", markup)
+        self.assertIn("Similar: click a confirmed talc grain to preview luma/color-similar non-sulfide pixels", markup)
         self.assertIn('aria-keyshortcuts="B"', markup)
         self.assertIn('aria-keyshortcuts="F"', markup)
         self.assertLess(markup.index('data-tool="brush"'), markup.index('data-tool="fill"'))
-        self.assertLess(markup.index('data-tool="fill"'), markup.index('data-tool="rectangle"'))
+        self.assertLess(markup.index('data-tool="fill"'), markup.index('data-tool="similar"'))
+        self.assertLess(markup.index('data-tool="similar"'), markup.index('data-tool="rectangle"'))
         self.assertLess(markup.index('data-tool="rectangle"'), markup.index('data-tool="polygon"'))
         self.assertLess(markup.index('data-tool="polygon"'), markup.index('data-tool="sam2"'))
         self.assertIn('class="toolbar-separator"', markup)
@@ -209,15 +282,35 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn('class="review-actions"', markup)
         self.assertIn('id="saveBtn"', markup)
         self.assertIn('Save &amp; Next', markup)
+        self.assertIn('id="nextBtn"', markup)
+        self.assertIn('class="plain-button"', markup)
+        self.assertIn("async function goToNextSample()", markup)
+        self.assertIn("els.nextBtn.addEventListener('click'", markup)
+        self.assertIn(".plain-button { background: transparent;", markup)
         self.assertLess(markup.index('class="review-actions"'), markup.index('id="viewerWrap"'))
         self.assertLess(markup.index('id="saveBtn"'), markup.index('id="viewerWrap"'))
         self.assertLess(markup.index('id="saveNextBtn"'), markup.index('id="viewerWrap"'))
+        self.assertLess(markup.index('id="saveNextBtn"'), markup.index('id="nextBtn"'))
+        self.assertLess(markup.index('id="nextBtn"'), markup.index('id="viewerWrap"'))
         self.assertLess(markup.index('id="notesInput"'), markup.index('id="resetBtn"'))
         self.assertNotIn("Save and next", markup)
         self.assertIn('value="sulfide"', markup)
         self.assertIn("Sulfide mask (sulfide/non-sulfide mask segmentation)", markup)
         self.assertIn("Mask-only background", markup)
-        self.assertIn("Editable talc mask overlay", markup)
+        self.assertIn('class="segmentation-class-widget"', markup)
+        self.assertIn('aria-label="Visible segmentation classes"', markup)
+        self.assertIn("Segmentation classes", markup)
+        self.assertIn("Show", markup)
+        self.assertIn("Edit", markup)
+        self.assertIn('name="editTargetClass"', markup)
+        self.assertIn('id="editTargetPositiveBag"', markup)
+        self.assertIn('id="editTargetTalcNode"', markup)
+        self.assertIn('value="positive_bag"', markup)
+        self.assertIn('value="talc_node"', markup)
+        self.assertIn('class="class-swatch positive-bag"', markup)
+        self.assertIn('class="class-swatch talc"', markup)
+        self.assertIn("Positive bag", markup)
+        self.assertIn("Talc", markup)
         self.assertIn('id="brightnessThreshold"', markup)
         self.assertIn('id="brightnessThresholdValue"', markup)
         self.assertIn('id="brightnessThreshold90Btn"', markup)
@@ -245,6 +338,11 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn("closed_blue_stroke", markup)
         self.assertIn("boundaries: boundaryLabels", markup)
         self.assertIn('id="brushParams"', markup)
+        self.assertIn('id="similarParams"', markup)
+        self.assertIn('id="similarStrictness"', markup)
+        self.assertIn('id="similarStrictnessValue"', markup)
+        self.assertIn('id="similarApplyBtn"', markup)
+        self.assertIn('id="similarClearBtn"', markup)
         self.assertIn('id="sam2Params"', markup)
         self.assertIn('id="sam2ApplyBtn"', markup)
         self.assertIn("Load SAM2", markup)
@@ -253,6 +351,7 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn("function selectTool(tool, options = {})", markup)
         self.assertIn("other.setAttribute('aria-pressed', 'false')", markup)
         self.assertIn("function updateToolParams()", markup)
+        self.assertIn("els.similarParams.classList.toggle('hidden', state.tool !== 'similar')", markup)
         self.assertIn("viewer.addEventListener('wheel'", markup)
         self.assertIn("zoomBy(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, event)", markup)
         self.assertIn("viewPan:", markup)
@@ -266,6 +365,59 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertNotIn('id="zoomSlider"', markup)
         self.assertNotIn('class="canvas-controls"', markup)
         self.assertIn("hoverPoint", markup)
+        self.assertIn("talcNodeCanvas", markup)
+        self.assertIn("baseTalcNodeCanvas", markup)
+        self.assertIn("talcNodeTintCanvas", markup)
+        self.assertIn("function activeEditClass()", markup)
+        self.assertIn("function editClassContexts(targetClass = activeEditClass())", markup)
+        self.assertIn("function setEditClass(targetClass, options = {})", markup)
+        self.assertIn("els.editTargets.forEach", markup)
+        self.assertIn("drawMaskLine(point, point, strokeMode, target.baseCtx)", markup)
+        self.assertIn("target_class: targetClass", markup)
+        self.assertIn("boundaryLabels.push(targetClass === 'talc_node' ? 'current_talc_node_regions' : 'current_positive_bag_regions')", markup)
+        self.assertIn("type: targetClass === 'talc_node' ? 'polygon_add_talc_node' : 'polygon_add_positive_bag'", markup)
+        self.assertIn("type: targetClass === 'talc_node' ? 'rectangle_add_talc_node' : 'rectangle_add_positive_bag'", markup)
+        self.assertIn("const targetCtx = normalizeEditClass(shape.targetClass) === 'talc_node' ? talcNodeCtx : maskCtx", markup)
+        self.assertIn("function combinedMaskCanvas()", markup)
+        self.assertIn("positive_bag_mask_png", markup)
+        self.assertIn("talc_node_mask_png", markup)
+        self.assertIn("target_class: 'positive_bag'", markup)
+        self.assertIn("target_class: 'talc_node'", markup)
+        self.assertIn('id="layerTalcNode"', markup)
+        self.assertIn("current_positive_bag_mask", markup)
+        self.assertIn("current_talc_node_mask", markup)
+        self.assertIn("similarTalcPreview", markup)
+        self.assertIn("MAX_SIMILAR_TALC_REGION_FRACTION", markup)
+        self.assertIn("function computeSimilarTalcPreview(point)", markup)
+        self.assertIn("function applySimilarTalcPreview(options = {})", markup)
+        self.assertIn("function cleanupSimilarTalcCandidates(candidate, width, height)", markup)
+        self.assertIn("function collectSeedPatchSamples(seedX, seedY, sourceData, sulfideData)", markup)
+        self.assertIn("function similarFeatureDistanceToStats(item, stats)", markup)
+        self.assertIn("function drawSimilarTalcPreview()", markup)
+        self.assertIn("drawSimilarTalcPreview();", markup)
+        self.assertIn("source_tool: 'similar_talc'", markup)
+        self.assertIn("type: 'similar_talc_add'", markup)
+        self.assertIn("overlapping_positive_bag_pixels", markup)
+        self.assertIn("excluded_existing_talc_pixels", markup)
+        self.assertIn("source_kind: sourceKind", markup)
+        self.assertIn("source_kind: preview.stats ? preview.stats.source_kind : null", markup)
+        self.assertIn("positive_bag_kept: positiveBagKept", markup)
+        self.assertIn("seed patch + filtered positive bag", markup)
+        self.assertIn("const strictnessLooseness = (100 - strictness) / 99", markup)
+        self.assertIn("const sulfideData = hasSulfideGuard()", markup)
+        self.assertIn("if (sulfideData && isMaskDataActive(sulfideData, pixel, 0))", markup)
+        self.assertIn("state.tool === 'similar'", markup)
+        self.assertIn("clearSimilarTalcPreview", markup)
+        self.assertIn("similar_talc_strictness", markup)
+        self.assertIn("Apply the visible Similar preview to the talc-node class.", markup)
+        self.assertIn("Press Apply Similar or Save to add talc nodes.", markup)
+        self.assertIn("await applySimilarTalcPreview({ autosave: false })", markup)
+        self.assertIn("Applying Similar preview before save", markup)
+        save_review_index = markup.index("async function saveReview")
+        self.assertLess(
+            markup.index("await applySimilarTalcPreview({ autosave: false })", save_review_index),
+            markup.index("mask_png: combined.toDataURL('image/png')", save_review_index),
+        )
         self.assertIn("function drawBrushCursor()", markup)
         self.assertIn("drawBrushCursor();", markup)
         self.assertIn("function updateViewerCursor(point = null)", markup)

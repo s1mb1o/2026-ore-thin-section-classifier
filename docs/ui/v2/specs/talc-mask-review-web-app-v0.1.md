@@ -25,8 +25,9 @@ Build a lightweight local web app:
 - Python backend with `http.server.ThreadingHTTPServer` or equivalent minimal
   stdlib server.
 - Generated HTML/CSS plus vanilla JavaScript.
-- Browser `canvas` for image display, mask overlay, fill, polygon/rectangle
-  editing, brush left-draw/right-erase editing, pan/zoom, and SAM2 prompts.
+- Browser `canvas` for image display, mask overlay, fill, Similar
+  intensity assist, polygon/rectangle editing, brush left-draw/right-erase
+  editing, pan/zoom, and SAM2 prompts.
 - File-based outputs compatible with the current converter and training
   manifests.
 
@@ -180,12 +181,13 @@ app should show a clear setup screen with the exact direct-input command.
    talc mask.
 7. Inspect the clean original, annotated MS Paint draft, autodetected mask, and
    current talc mask.
-8. Edit the current talc mask with brush left-draw/right-erase, fill, direct
-   editable polygon regions, direct editable rectangle regions, or SAM2 assist.
+8. Edit the current talc mask with brush left-draw/right-erase, fill, Similar
+   Talc intensity assist, direct editable polygon regions, direct editable
+   rectangle regions, or SAM2 assist.
 9. Use undo when an edit is wrong.
 10. Press top-right `Save` to persist the current sample.
 11. Press top-right `Save & Next` to persist the current sample and move to the next
-    sample in the queue.
+    sample in the queue, or press transparent `Next` to move without saving.
 
 ## UX Requirements
 
@@ -232,9 +234,20 @@ starting point for reflected-light images. The filter must not alter the talc
 mask; it is stored only as review/view metadata in working state and reviewed
 patch JSON.
 
-Overlay toggles:
+Segmentation class controls are a compact overlay widget on the image viewer.
+Each class row has a visibility checkbox and an edit-target radio button:
 
-- Talc mask.
+- Positive bag.
+- Talc.
+
+The edit-target radio controls Brush, Fill, Rectangle, and Polygon. Selecting
+`Positive bag` writes those tools into `current_positive_bag_mask`; selecting
+`Talc` writes those tools into `current_talc_node_mask`. Similar always
+writes Talc, and SAM2 remains a Positive bag assist unless explicitly changed
+later.
+
+Additional display-only layer toggles:
+
 - Autodetected talc region.
 - Sulfide overlap, display-only.
 - Raw blue strokes.
@@ -254,25 +267,28 @@ shows whether any overlap still exists.
 
 Required controls:
 
-- A single top toolbar ordered Brush, Fill, Rectangle, Polygon, SAM2, Undo,
-  Zoom In, Zoom Out, Fit, followed by active-tool parameters.
-- Top-right Save and Save & Next actions.
+- A single top toolbar ordered Brush, Fill, Similar, Rectangle, Polygon,
+  SAM2, Undo, Zoom In, Zoom Out, Fit, followed by active-tool parameters.
+- Top-right Save, Save & Next, and transparent Next actions.
 - Zoom by mouse wheel/trackpad over the canvas, plus toolbar Zoom In, Zoom Out,
   and Fit controls.
-- Brush add with left mouse.
-- Brush erase with right mouse.
+- Brush add with left mouse into the selected edit class.
+- Brush erase with right mouse from the selected edit class.
 - Fill bounded area.
+- Similar intensity assist.
 - Filled polygon.
 - Filled rectangle.
 - SAM2 assist.
 - Undo.
 - Keyboard shortcuts: `B` selects Brush, `F` selects Fill, and text inputs keep
   normal typing behavior.
-Brush width appears in the toolbar only when Brush is active and applies only
-to Brush. In Brush mode, left mouse adds talc and right mouse erases without
-opening the browser context menu. While hovering over the image in Brush mode,
-the canvas shows a circle matching the current draw/erase area. Polygon,
-Fill, rectangle, polygon, and SAM2 operate on filled regions. Polygon and
+Brush width appears in the toolbar only when Brush is active, supports `2-240 px`,
+and applies only to Brush. In Brush mode, left mouse adds the selected edit class and right mouse
+erases the selected edit class without opening the browser context menu. While
+hovering over the image in Brush mode, the canvas shows a circle matching the
+current draw/erase area and selected class color. Fill, Similar,
+rectangle, polygon, and SAM2 operate on filled regions. Similar
+parameters appear in the toolbar only when Similar is active. Polygon and
 rectangle drafts are cancelled with right mouse, not with separate `Apply` or
 `Cancel` controls. SAM2 parameters appear in the same toolbar only when SAM2 is
 active.
@@ -281,6 +297,8 @@ Edits update the current working talc mask. The app should auto-save this
 working mask after each applied edit so leaving and reopening a sample does not
 lose work. `Save` marks the current working mask as reviewed and writes the
 review patch; `Save & Next` does the same and navigates to the next queue row.
+`Next` navigates to the next visible queue row without saving and has no filled
+button background.
 Live polygon/rectangle regions stay editable only while the current image is
 open; saving flattens them into the reviewed mask PNG.
 
@@ -290,7 +308,41 @@ Fill click adds talc to the connected non-boundary region under the cursor.
 Boundaries are raw/closed blue annotation strokes, sulfide pixels, existing
 current talc-mask regions, and image edges. Fill is additive, undoable,
 autosaved, and respects the default sulfide-protection guard for newly added
+pixels. Fill writes the `positive_bag` class.
+
+### Similar Tool
+
+Similar helps turn a known dark talc flake/grain into additional
+candidates based on intensity and color, not object shape. The reviewer clicks
+a confirmed talc seed; the app samples the original photo around that seed as
+the anchor. `positive_bag` means a rough region that may contain talc segments,
+not confirmed talc pixels. If the seed is already inside the current
+`positive_bag`, nearby bag pixels may refine the calibration only after they
+pass luma/color similarity checks against the seed patch. Broad matrix-heavy
+positive bags must not be averaged wholesale, because that makes the preview
+too permissive. The app then previews luma/color-similar pixels across the image
+while excluding sulfide-mask pixels, existing talc-node pixels, and isolated
+single pixel noise. Preview and applied talc nodes may overlap positive-bag
 pixels.
+
+Behavior:
+
+- Left-click creates or refreshes a non-destructive yellow preview.
+- Right-click clears the preview.
+- `Strictness` controls how narrowly luma/color similarity must match the seed;
+  higher values produce smaller candidate masks.
+- At `Strictness=100`, matching should stay tight enough that a click inside a
+  positive bag still follows the clicked grain, not the average bag color.
+- `Apply Similar` merges the preview into the `talc_node` class, records an
+  auditable `similar_talc_add` edit with `target_class: "talc_node"`, autosaves,
+  and remains undoable.
+- `Save` and `Save & Next` must also merge an active Similar preview before
+  writing reviewed outputs, so a visible Similar result is not silently
+  lost if the reviewer saves without pressing `Apply Similar`.
+- Similar may mark pixels inside an existing `positive_bag` as talc nodes;
+  the positive bag remains as the rough containing region.
+- The preview is rejected if it would cover an implausibly large portion of the
+  image, preventing a whole-screen assist result from being merged.
 
 ### Polygon Tool
 
@@ -390,15 +442,24 @@ Optional fields:
 - `talc_positive_core_mask`
 - `silicate_hard_negative_mask`
 - `reviewed_talc_mask`
+- `reviewed_positive_bag_mask`
+- `reviewed_talc_node_mask`
 - `review_patch`
 
 ### Mask Semantics
 
 - `autodetected_talc_mask`: initial mask produced from MS Paint pen annotations.
-- `current_talc_mask`: editable working talc mask. Created automatically from
-  `autodetected_talc_mask` when a sample is first opened and updated after
-  applied edits.
-- `reviewed_talc_mask`: final saved mask for training/review export.
+- `positive_bag`: original blue-line-derived region that can contain talc
+  segments, plus manual Brush, Fill, Rectangle, Polygon, and SAM2 edits.
+- `talc_node`: talc pixels created by the Similar intensity assist.
+- `current_positive_bag_mask`: editable working `positive_bag` class mask.
+- `current_talc_node_mask`: editable working `talc_node` class mask.
+- `current_talc_mask`: compatibility union of `positive_bag | talc_node`.
+  `talc_node` may overlap `positive_bag`.
+- `reviewed_positive_bag_mask`: final saved `positive_bag` class.
+- `reviewed_talc_node_mask`: final saved `talc_node` class.
+- `reviewed_talc_mask`: final saved union mask for existing training/review
+  export code.
 - `sulfide_overlap_mask`, `silicate_support_mask`, and related masks:
   display-only evidence layers for review; they are not edited by this app.
 - `not_talc`: implicit background outside the reviewed talc mask. Any uncertainty
@@ -410,7 +471,7 @@ Every save writes both raster masks and an auditable patch.
 
 ```json
 {
-  "schema_version": "talc-mask-review-patch-v0.1",
+  "schema_version": "talc-mask-review-patch-v0.2",
   "sample_id": "DSCN3042",
   "reviewer": "",
   "review_status": "reviewed",
@@ -419,7 +480,13 @@ Every save writes both raster masks and an auditable patch.
     "annotated_image": "dataset/.../Области оталькования/DSCN3042.JPG",
     "original_image": "dataset/.../Оталькованные руды/DSCN3042.JPG",
     "autodetected_talc_mask": "final_talc_mask.png",
-    "base_working_talc_mask": "current_talc_mask.png"
+    "base_working_talc_mask": "current_talc_mask.png",
+    "working_positive_bag_mask": "current_positive_bag_mask.png",
+    "working_talc_node_mask": "current_talc_node_mask.png"
+  },
+  "class_definitions": {
+    "positive_bag": "blue-line/manual/SAM2 talc bag",
+    "talc_node": "Similar intensity-assist talc pixels"
   },
   "edits": [
     {
@@ -436,6 +503,8 @@ Every save writes both raster masks and an auditable patch.
   ],
   "outputs": {
     "reviewed_talc_mask": "reviewed/reviewed_talc_mask.png",
+    "reviewed_positive_bag_mask": "reviewed/reviewed_positive_bag_mask.png",
+    "reviewed_talc_node_mask": "reviewed/reviewed_talc_node_mask.png",
     "reviewed_overlay": "reviewed/reviewed_overlay.png",
     "review_summary": "reviewed/review_summary.json"
   }
@@ -558,9 +627,11 @@ and update it if a new persistent default is reserved.
   reports `missing_original` samples.
 - Prepared-workspace startup loads an existing manifest without reconverting.
 - Opening a sample for the first time copies `autodetected_talc_mask` to
-  `current_talc_mask`.
+  `current_positive_bag_mask`, initializes `current_talc_node_mask` empty, and
+  writes union `current_talc_mask`.
 - Fill, polygon, rectangle, brush, and SAM2 mask previews convert to expected
-  raster masks on synthetic inputs.
+  `positive_bag` rasters; Similar converts to expected `talc_node`
+  rasters on synthetic inputs.
 - Save-review rejects wrong-size masks.
 - Artifact serving rejects paths outside the configured conversion directory.
 
@@ -574,7 +645,8 @@ Required checks:
 - App launched with `--annotated-dir` shows conversion progress or a completed
   conversion status before opening the queue.
 - Canvas renders a nonblank source image.
-- Layer toggles update without a Python rerun.
+- Layer toggles and the over-image segmentation class widget update without a
+  Python rerun.
 - Brightness-threshold slider `0..255` updates the photo background without
   changing mask pixels: `255` shows the original image, `90` keeps dark
   talc-candidate pixels visible while whitening brighter matrix/sulfides, and
@@ -586,9 +658,13 @@ Required checks:
   dragged after drawing and flattened on save.
 - Selected completed polygon/rectangle regions can be removed with
   Delete/Backspace without affecting focused text fields.
-- Brush left/right mouse strokes modify only the talc mask.
+- Brush left/right mouse strokes modify only the selected edit class.
 - Fill adds a bounded region without crossing blue strokes, sulfide pixels,
-  current talc mask regions, or image edges.
+  current selected-class regions, or image edges, and writes the selected edit
+  class.
+- Similar previews intensity/color-similar non-sulfide pixels from a
+  clicked talc seed, can be tightened with Strictness, and is non-destructive
+  until `Apply Similar`, `Save`, or `Save & Next` is pressed.
 - Undo restores prior mask state.
 - Completing or editing a shape updates/autosaves `current_talc_mask`.
 - With sulfide protection enabled, brush/polygon/rectangle/SAM2 additions over
@@ -601,6 +677,7 @@ Required checks:
 - `Save` writes reviewed masks and patch JSON.
 - `Save & Next` writes reviewed masks and patch JSON, then selects the next
   sample in the queue.
+- `Next` selects the next sample in the queue without writing reviewed outputs.
 - SAM2 unavailable state does not block manual editing.
 
 ### Manual Acceptance
@@ -644,18 +721,24 @@ Required checks:
   filename.
 - The app can review all `42` talc samples after creating or reusing the
   conversion workspace.
-- The app edits the current talc mask, not blue annotation strokes.
-- Toolbar controls are ordered Brush, Fill, Rectangle, Polygon, SAM2, Undo,
-  Zoom In, Zoom Out, Fit, with active-tool parameters at the end.
+- The app edits class masks, not blue annotation strokes: Brush, Fill,
+  Rectangle, and Polygon edit whichever class is selected in the over-image
+  Segmentation classes widget; SAM2 edits `positive_bag`; Similar edits
+  `talc_node`.
+- Toolbar controls are ordered Brush, Fill, Similar, Rectangle, Polygon,
+  SAM2, Undo, Zoom In, Zoom Out, Fit, with active-tool parameters at the end.
 - Mouse wheel zooms over the canvas without changing mask geometry.
 - Brightness threshold preview is available and does not change mask geometry
   or saved mask pixels.
-- Brush left mouse draws talc; Brush right mouse erases.
+- Brush left mouse draws the selected edit class; Brush right mouse erases it.
 - `B` selects Brush and `F` selects Fill without hijacking focused text inputs.
-- Fill, polygon, rectangle, and SAM2 are direct filled-area tools for drawing
-  talc.
+- Fill, polygon, and rectangle are direct filled-area tools for drawing the
+  selected edit class; SAM2 is a direct filled-area tool for positive bag;
+  Similar is a direct filled-area tool for adding talc nodes.
 - Fill can add a bounded region without crossing blue strokes, sulfide pixels,
   current talc mask regions, or image edges.
+- Similar can preview and apply luma/color-similar non-sulfide talc-node
+  candidates from a clicked seed without changing the mask before Apply.
 - Selected completed polygon and rectangle regions can be deleted with
   Delete/Backspace.
 - Sulfide protection is enabled by default; additive tools cannot add new talc
