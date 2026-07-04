@@ -291,6 +291,22 @@ python3 scripts/run_ore_pipeline.py \
   --talc-threshold 0.50
 ```
 
+Add the parallel learned grade opinion (efficientnet_b3, ordinary↔fine) — writes a
+`grade_branch` block into `pipeline_summary.json` plus `grade_branch.json`:
+
+```bash
+python3 scripts/run_ore_pipeline.py \
+  --image "dataset/Фото руд по сортам. ч1/Рядовые руды/DSCN2176.JPG" \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/inference_demo/local_dscn2176_b2_grade \
+  --device auto --auto-talc-candidate \
+  --grade-checkpoint models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt
+```
+
+The web app also surfaces the grade branch: `apps/ore_pipeline_web.py --grade-checkpoint <ckpt>`
+(defaults to the pp-aware checkpoint when present) adds a `grade_branch` to each run
+and a line in the run's text output.
+
 Use an accepted talc mask instead of the automatic candidate when available:
 
 ```bash

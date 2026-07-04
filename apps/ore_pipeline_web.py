@@ -78,6 +78,7 @@ DEFAULT_CHECKPOINT = ROOT / "models/binary_sulfide/segformer_b2_dataset_v0_zelda
 DEFAULT_TALC_CHECKPOINT = ROOT / "outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt"
 DEFAULT_TALC_THRESHOLD = 0.5
 DEFAULT_TALC_BACKEND = "ml" if DEFAULT_TALC_CHECKPOINT.exists() else "heuristic"
+DEFAULT_GRADE_CHECKPOINT = ROOT / "models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 220 * 1024 * 1024
 LOG_ENTRY_LIMIT = 300
@@ -94,12 +95,14 @@ CLASS_COLORS = {
     3: (40, 120, 245, 165),
 }
 ARTIFACT_COLOR = (198, 60, 255, 180)
+TALC_CLUSTER_COLOR = (236, 72, 153, 165)
 CLASS_LABELS_RU = {
     "analyzed_fraction": "Доля проанализированной области",
     "sulfide_fraction": "Общая доля сульфидов",
     "ordinary_sulfide_fraction": "Доля обычных срастаний",
     "fine_sulfide_fraction": "Доля тонких срастаний",
     "talc_fraction": "Доля талька",
+    "talc_cluster_fraction": "Площадь кластеров талька",
     "other_fraction": "Остальное",
     "artifact_fraction_image": "Доля артефактов изображения",
     "component_count": "Компоненты сульфидов",
@@ -136,6 +139,7 @@ APP_SETTINGS_SCHEMA_VERSION = "ore-pipeline-app-settings-v0.1"
 BATCH_SCHEMA_VERSION = "ore-pipeline-batch-v0.1"
 BATCH_ITEM_SCHEMA_VERSION = "ore-pipeline-batch-item-v0.1"
 RUNTIME_PROVENANCE_SCHEMA_VERSION = "ore-pipeline-runtime-provenance-v0.1"
+TALC_CLUSTERIZATION_SCHEMA_VERSION = "ore-pipeline-talc-clusterization-v0.1"
 ACTIVE_RUN_STATUSES = {"queued", "running", "canceling"}
 RUN_TERMINAL_STATUSES = {"complete", "failed", "canceled"}
 BATCH_ACTIVE_STATUSES = {"queued", "running", "canceling"}
@@ -149,6 +153,12 @@ MIN_PANORAMA_MAX_SIDE_PX = 64
 MAX_PANORAMA_MAX_SIDE_PX = 12000
 MIN_PANORAMA_SCALE_FACTOR = 0.05
 MAX_PANORAMA_SCALE_FACTOR = 1.0
+DEFAULT_TALC_CLUSTERIZATION = {
+    "schema_version": TALC_CLUSTERIZATION_SCHEMA_VERSION,
+    "radius_px": 64,
+    "min_local_talc_percent": 4.0,
+    "opacity_percent": 45.0,
+}
 DEFAULT_APP_SETTINGS = {
     "schema_version": APP_SETTINGS_SCHEMA_VERSION,
     "language": "ru",
@@ -171,6 +181,7 @@ DEFAULT_APP_SETTINGS = {
         "panorama_max_side_px": DEFAULT_PANORAMA_MAX_SIDE_PX,
         "panorama_scale_factor": DEFAULT_PANORAMA_SCALE_FACTOR,
     },
+    "talc_clusterization": DEFAULT_TALC_CLUSTERIZATION,
     "metadata_defaults": {},
 }
 SETTINGS_METADATA_DEFAULT_FIELDS = {
@@ -1431,6 +1442,7 @@ class OrePipelineStore:
         talc_backend: str = "heuristic",
         talc_checkpoint: Path | None = None,
         talc_threshold: float = DEFAULT_TALC_THRESHOLD,
+        grade_checkpoint: Path | None = None,
     ) -> None:
         self.workspace_dir = resolve_path(workspace_dir)
         self.uploads_dir = self.workspace_dir / "uploads"
@@ -1443,6 +1455,8 @@ class OrePipelineStore:
         self.talc_backend = talc_backend
         self.talc_checkpoint = resolve_path(talc_checkpoint) if talc_checkpoint else None
         self.talc_threshold = float(talc_threshold)
+        self.grade_checkpoint = resolve_path(grade_checkpoint) if grade_checkpoint else None
+        self._grade_model: Any = None
         self.processing_max_side = int(processing_max_side)
         self.panorama_max_side = int(panorama_max_side)
         self.preview_max_sides = preview_max_sides
@@ -4196,6 +4210,22 @@ print(json.dumps({
         if shapefile_metadata:
             metadata["reports"]["final_classes_shapefile_zip"] = str(shapefile_zip_path)
 
+    def _maybe_predict_grade(self, run_dir: Path) -> dict[str, Any] | None:
+        # Optional parallel learned grade opinion (efficientnet_b3, ordinary vs fine).
+        # Auxiliary and best-effort: a failure here must never fail the run.
+        checkpoint = self.grade_checkpoint
+        if not checkpoint or not Path(checkpoint).exists():
+            return None
+        try:
+            if self._grade_model is None:
+                from ore_classifier.grade_classifier import load_grade_model
+                self._grade_model = load_grade_model(checkpoint, device="auto")
+            from ore_classifier.grade_classifier import predict_grade
+            with Image.open(run_dir / "input/preprocessed.png") as image:
+                return predict_grade(self._grade_model, image)
+        except Exception as exc:  # noqa: BLE001 - grade branch is auxiliary.
+            return {"error": f"grade_branch_failed: {exc}"}
+
     def _finalize_run_metadata(self, metadata: dict[str, Any], run_dir: Path) -> None:
         summary = json.loads((run_dir / "reports/ore_summary.json").read_text(encoding="utf-8"))
         display = json.loads((run_dir / "display/display.json").read_text(encoding="utf-8"))["layers"]
@@ -4209,6 +4239,15 @@ print(json.dumps({
             metadata.pop("scale", None)
         metadata["metrics"] = metric_rows(summary, scale)
         metadata["text_output"] = text_output_for_summary(summary)
+        grade_branch = self._maybe_predict_grade(run_dir)
+        if grade_branch is not None:
+            metadata["grade_branch"] = grade_branch
+            summary["grade_branch"] = grade_branch
+            if "predicted_ore_class_ru" in grade_branch:
+                metadata["text_output"] += (
+                    f" Классификатор по зерну (CNN, обычное/тонкое): {grade_branch['predicted_ore_class_ru']}"
+                    f" (уверенность {float(grade_branch.get('confidence', 0.0)) * 100:.1f}%)."
+                )
         metadata["display"] = display
         metadata["masks"] = {
             "sulfide": str(run_dir / "masks/sulfide_mask.png"),
@@ -5760,6 +5799,12 @@ def main() -> int:
     parser.add_argument("--talc-backend", choices=["heuristic", "ml"], default=DEFAULT_TALC_BACKEND)
     parser.add_argument("--talc-checkpoint", type=Path, default=DEFAULT_TALC_CHECKPOINT if DEFAULT_TALC_CHECKPOINT.exists() else None)
     parser.add_argument("--talc-threshold", type=float, default=DEFAULT_TALC_THRESHOLD)
+    parser.add_argument(
+        "--grade-checkpoint",
+        type=Path,
+        default=DEFAULT_GRADE_CHECKPOINT if DEFAULT_GRADE_CHECKPOINT.exists() else None,
+        help="Grade-classifier CNN checkpoint (efficientnet_b3). Adds a parallel learned ordinary/fine grade opinion to each run.",
+    )
     parser.add_argument("--processing-max-side", type=int, default=2600)
     parser.add_argument("--panorama-max-side", type=int, default=1800)
     parser.add_argument("--preview-max-sides", default="1024,2048,4096")
@@ -5775,6 +5820,7 @@ def main() -> int:
         talc_backend=args.talc_backend,
         talc_checkpoint=args.talc_checkpoint,
         talc_threshold=args.talc_threshold,
+        grade_checkpoint=args.grade_checkpoint,
     )
     server = OrePipelineHTTPServer((args.host, args.port), store)
     host, port = server.server_address[:2]

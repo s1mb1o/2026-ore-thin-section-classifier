@@ -51,6 +51,12 @@ def main() -> int:
     parser.add_argument("--talc-min-area-px", type=int, default=320)
     parser.add_argument("--preview-max-side", type=int, default=1800)
     parser.add_argument("--progress-json", type=Path, default=None)
+    parser.add_argument(
+        "--grade-checkpoint",
+        type=Path,
+        default=None,
+        help="Optional grade-classifier CNN checkpoint (efficientnet_b3). Adds a parallel learned ordinary/fine grade opinion to the summary.",
+    )
     args = parser.parse_args()
 
     talc_source_count = sum(1 for enabled in (args.talc_mask is not None, args.auto_talc_candidate, args.talc_checkpoint is not None) if enabled)
@@ -171,6 +177,17 @@ def main() -> int:
         analyze_cmd.extend(["--talc-mask", str(talc_mask_path)])
     run(analyze_cmd)
 
+    grade_branch: dict[str, object] | None = None
+    grade_branch_path: str | None = None
+    if args.grade_checkpoint is not None:
+        from ore_classifier.grade_classifier import load_grade_model, predict_grade  # noqa: E402
+
+        grade_model = load_grade_model(args.grade_checkpoint, device=args.device)
+        grade_branch = predict_grade(grade_model, Image.open(args.image))
+        grade_branch_path = str(args.out_dir / "grade_branch.json")
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        Path(grade_branch_path).write_text(json.dumps(grade_branch, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     summary = {
         "schema_version": "ore-pipeline-run-v0.2",
         "image": str(args.image),
@@ -179,6 +196,8 @@ def main() -> int:
         "talc_checkpoint": str(args.talc_checkpoint) if args.talc_checkpoint is not None else None,
         "talc_threshold": args.talc_threshold if args.talc_checkpoint is not None else None,
         "talc_checkpoint_meta": talc_summary.get("checkpoint_meta") if talc_summary else None,
+        "grade_checkpoint": str(args.grade_checkpoint) if args.grade_checkpoint is not None else None,
+        "grade_branch": grade_branch,
         "rule_config": rule_config,
         "paths": {
             "binary_sulfide_summary": str(inference_dir / "summary.json"),
@@ -197,6 +216,7 @@ def main() -> int:
             "component_features": str(analysis_dir / "component_features.csv"),
             "analysis_analyzed_mask": str(analysis_dir / "analyzed_mask.png"),
             "intergrowth_overlay_preview": str(analysis_dir / "intergrowth_overlay_preview.jpg"),
+            "grade_branch": grade_branch_path,
         },
     }
     args.out_dir.mkdir(parents=True, exist_ok=True)
