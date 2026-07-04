@@ -100,6 +100,7 @@
     .header-spacer { min-width: 24px; }
     .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; min-width: 0; }
     .header-actions .tabs { flex-wrap: nowrap; }
+    .app-version-badge { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--button-bg); color: var(--muted); font-size: 12px; font-weight: 800; white-space: nowrap; letter-spacing: 0; }
     .theme-control, .language-control { width: auto; min-width: 128px; }
     main { display: grid; grid-template-columns: minmax(280px, 360px) minmax(0, 1fr); min-height: calc(100vh - 57px); }
     aside { padding: 16px; border-right: 1px solid var(--line); background: var(--panel-alt); overflow: auto; }
@@ -132,6 +133,9 @@
     .zoom-widget-main { display: grid; grid-template-columns: 32px; gap: 6px; justify-content: center; }
     .zoom-widget button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border-radius: 7px; }
     .zoom-widget button:disabled { opacity: .5; }
+    .zoom-widget button[data-tooltip] { position: relative; }
+    .zoom-widget button[data-tooltip]::after { content: attr(data-tooltip); position: absolute; left: calc(100% + 8px); top: 50%; min-width: max-content; max-width: 220px; transform: translate(4px, -50%); opacity: 0; pointer-events: none; z-index: 24; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); box-shadow: var(--modal-shadow); font-size: 12px; font-weight: 700; line-height: 1.25; white-space: nowrap; transition: opacity .12s ease, transform .12s ease; }
+    .zoom-widget button[data-tooltip]:hover::after, .zoom-widget button[data-tooltip]:focus-visible::after { opacity: 1; transform: translate(0, -50%); }
     .zoom-widget svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
     .zoom-widget .zoom-level { min-width: 32px; padding: 3px 0; color: var(--text); font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; text-align: center; }
     .viewer-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px; background: var(--toolbar-bg); border: 1px solid var(--line); border-radius: 8px 8px 0 0; border-bottom: 0; flex-wrap: wrap; }
@@ -260,8 +264,12 @@
     .settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .settings-field { display: grid; gap: 5px; }
     .settings-field.full { grid-column: 1 / -1; }
+    .settings-field.is-disabled { opacity: .62; }
     .settings-field span { font-size: 13px; color: var(--muted); font-weight: 650; }
+    .checkpoint-display { min-height: 38px; border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--control-bg); color: var(--text); overflow-wrap: anywhere; }
+    .checkpoint-display.empty { color: var(--muted); }
     .settings-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .settings-runtime-actions { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
     .status-page { display: grid; gap: 14px; }
     .status-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
     .status-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -431,6 +439,7 @@
     </nav>
     <div class="header-spacer"></div>
     <div class="header-actions">
+      <span id="appVersionBadge" class="app-version-badge" aria-label="Версия приложения" data-i18n-aria-label="versionLabel">v2</span>
       <select id="languageSelect" class="language-control" aria-label="Язык" data-i18n-aria-label="languageLabel">
         <option value="ru" data-i18n="languageRussian">Русский</option>
         <option value="en" data-i18n="languageEnglish">English</option>
@@ -492,7 +501,7 @@
       <div class="panel">
         <div class="preprocess-compact">
           <div class="preprocess-row">
-            <label class="check"><input type="checkbox" id="preprocessingEnabled" checked> <strong data-i18n="preprocessing">Предобработка</strong></label>
+            <label class="check"><input type="checkbox" id="preprocessingEnabled"> <strong data-i18n="preprocessing">Предобработка</strong></label>
             <div class="preprocess-actions">
               <button id="editPreprocessBtn" type="button" data-i18n="editPreprocessing">Настроить...</button>
               <button id="applyPreprocessBtn" type="button" data-i18n="applyPreprocessing">Применить</button>
@@ -590,19 +599,19 @@
           </div>
           <div id="zoomWidget" class="zoom-widget" role="group" aria-label="Масштаб" data-i18n-aria-label="zoomControls">
             <div class="zoom-widget-row">
-              <button id="fitViewBtn" type="button" title="Вписать" aria-label="Вписать" data-i18n-title="fitView" data-i18n-aria-label="fitView">
+              <button id="fitViewBtn" type="button" title="Вписать" aria-label="Вписать" data-i18n-title="fitView" data-i18n-aria-label="fitView" data-i18n-tooltip="fitView">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4"></path><path d="M16 3h4a1 1 0 0 1 1 1v4"></path><path d="M8 21H4a1 1 0 0 1-1-1v-4"></path><path d="M16 21h4a1 1 0 0 0 1-1v-4"></path><path d="M8 8h8v8H8z"></path></svg>
               </button>
-              <button id="actualSizeBtn" type="button" title="Фактический размер" aria-label="Фактический размер" data-i18n-title="actualSize" data-i18n-aria-label="actualSize">
+              <button id="actualSizeBtn" type="button" title="Фактический размер" aria-label="Фактический размер" data-i18n-title="actualSize" data-i18n-aria-label="actualSize" data-i18n-tooltip="actualSize">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"></path><path d="M8 9h2v6"></path><path d="M9 15h2"></path><path d="M14 10h.01"></path><path d="M14 15h.01"></path><path d="M17 9h-2v6h2"></path></svg>
               </button>
             </div>
             <div class="zoom-widget-main">
-              <button id="zoomInBtn" type="button" title="Увеличить" aria-label="Увеличить" data-i18n-title="zoomIn" data-i18n-aria-label="zoomIn">
+              <button id="zoomInBtn" type="button" title="Увеличить" aria-label="Увеличить" data-i18n-title="zoomIn" data-i18n-aria-label="zoomIn" data-i18n-tooltip="zoomIn">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M10.5 8v5"></path><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
               </button>
               <output id="zoomLevel" class="zoom-level" aria-live="polite">100%</output>
-              <button id="zoomOutBtn" type="button" title="Уменьшить" aria-label="Уменьшить" data-i18n-title="zoomOut" data-i18n-aria-label="zoomOut">
+              <button id="zoomOutBtn" type="button" title="Уменьшить" aria-label="Уменьшить" data-i18n-title="zoomOut" data-i18n-aria-label="zoomOut" data-i18n-tooltip="zoomOut">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
               </button>
             </div>
@@ -734,20 +743,24 @@
             <h2 data-i18n="settingsRuntime">Runtime</h2>
             <p class="muted" data-i18n="settingsRuntimeIntro">Переключение применяется сразу для новых запусков. Уже созданные run остаются с записанным backend/checkpoint.</p>
             <div class="settings-grid">
-              <label class="settings-field"><span data-i18n="settingsBackend">Backend</span><select id="settingsBackend">
-                <option value="heuristic" data-i18n="settingsBackendHeuristic">heuristic</option>
-                <option value="ml" data-i18n="settingsBackendMl">ML</option>
+              <label class="settings-field"><span data-i18n="settingsBackend">Sulfide segmentation backend</span><select id="settingsBackend">
+                <option value="heuristic" data-i18n="settingsBackendHeuristic">Sulfide Heuristics</option>
+                <option value="ml" data-i18n="settingsBackendMl">ML Sulfide (SegFormer-B2)</option>
               </select></label>
-              <label class="settings-field full"><span data-i18n="settingsCheckpoint">Checkpoint</span><input id="settingsCheckpoint" type="text"></label>
-              <label class="settings-field"><span data-i18n="settingsTalcBackend">Talc source</span><select id="settingsTalcBackend">
-                <option value="heuristic" data-i18n="settingsTalcBackendHeuristic">heuristic</option>
+              <div class="settings-field full"><span data-i18n="settingsCheckpoint">Checkpoint</span><input id="settingsCheckpoint" type="hidden"><div id="settingsCheckpointDisplay" class="checkpoint-display"></div></div>
+              <label class="settings-field"><span data-i18n="settingsTalcBackend">Talc segmentation backend</span><select id="settingsTalcBackend">
+                <option value="heuristic" data-i18n="settingsTalcBackendHeuristic">heuristics</option>
                 <option value="ml" data-i18n="settingsTalcBackendMl">ML model</option>
               </select></label>
-              <label class="settings-field"><span data-i18n="settingsTalcThreshold">Talc threshold</span><input id="settingsTalcThreshold" type="number" min="0.01" max="0.99" step="0.01"></label>
-              <label class="settings-field full"><span data-i18n="settingsTalcCheckpoint">Talc checkpoint</span><input id="settingsTalcCheckpoint" type="text"></label>
+              <label id="settingsTalcThresholdField" class="settings-field"><span data-i18n="settingsTalcThreshold">Порог вероятности ML-талька</span><input id="settingsTalcThreshold" type="number" min="0.01" max="0.99" step="0.01"></label>
+              <div class="settings-field full"><span data-i18n="settingsTalcCheckpoint">Talc checkpoint</span><input id="settingsTalcCheckpoint" type="hidden"><div id="settingsTalcCheckpointDisplay" class="checkpoint-display"></div></div>
+              <label class="settings-field"><span data-i18n="settingsGrainBackend">Grain classification backend</span><select id="settingsGrainBackend">
+                <option value="heuristic" data-i18n="settingsGrainBackendHeuristic">Ore Grain Heuristics</option>
+                <option value="ml" data-i18n="settingsGrainBackendMl">ML Ore Grain Classification</option>
+              </select></label>
             </div>
-            <div class="settings-actions">
-              <button id="testRuntimeBtn" type="button" data-i18n="settingsRuntimeTest">Проверить</button>
+            <div class="settings-actions settings-runtime-actions">
+              <button id="testRuntimeBtn" type="button" data-i18n="settingsRuntimeTest">Проверить все</button>
               <span id="runtimeTestStatus" class="muted"></span>
             </div>
           </div>
@@ -1044,6 +1057,19 @@
       <section class="metadata-panel">
         <p class="muted" data-i18n="configurationIntro">Эти параметры сохраняются в run и используются при следующем запуске задачи.</p>
         <div class="metadata-grid">
+          <div class="metadata-section-title" data-i18n="configurationRuntime">Runtime этапов</div>
+          <label class="metadata-field"><span data-i18n="configSulfideBackend">Сегментация сульфидов</span><select id="configSulfideBackend">
+            <option value="heuristic" data-i18n="configSulfideHeuristic">Sulfide Heuristics</option>
+            <option value="ml" data-i18n="configSulfideMl">ML Sulfide (SegFormer-B2)</option>
+          </select></label>
+          <label class="metadata-field"><span data-i18n="configTalcBackend">Сегментация талька</span><select id="configTalcBackend">
+            <option value="heuristic" data-i18n="configTalcHeuristic">Talc Heuristics</option>
+            <option value="ml" data-i18n="configTalcMl">ML Talc SegFormer-B0</option>
+          </select></label>
+          <label class="metadata-field"><span data-i18n="configGrainBackend">Классификация зерен</span><select id="configGrainBackend">
+            <option value="heuristic" data-i18n="configGrainHeuristic">Ore Grain Heuristics</option>
+            <option value="ml" data-i18n="configGrainMl">ML Ore Grain Classification</option>
+          </select></label>
           <div class="metadata-section-title" data-i18n="talcClusterization">Кластеризация талька</div>
           <label class="metadata-field"><span data-i18n="talcClusterRadius">Радиус, px</span><input id="configTalcClusterRadius" type="number" min="1" max="4096" step="1" value="64"></label>
           <label class="metadata-field"><span data-i18n="talcClusterMinLocal">Мин. локальный тальк, %</span><input id="configTalcClusterMinLocal" type="number" min="0.01" max="100" step="0.1" value="4"></label>
@@ -1119,19 +1145,19 @@
         <div class="editor-view">
           <div id="editorZoomWidget" class="zoom-widget" role="group" aria-label="Масштаб" data-i18n-aria-label="zoomControls">
             <div class="zoom-widget-row">
-              <button id="fitEditViewBtn" type="button" title="Вписать" aria-label="Вписать" data-i18n-title="fitView" data-i18n-aria-label="fitView">
+              <button id="fitEditViewBtn" type="button" title="Вписать" aria-label="Вписать" data-i18n-title="fitView" data-i18n-aria-label="fitView" data-i18n-tooltip="fitView">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4"></path><path d="M16 3h4a1 1 0 0 1 1 1v4"></path><path d="M8 21H4a1 1 0 0 1-1-1v-4"></path><path d="M16 21h4a1 1 0 0 0 1-1v-4"></path><path d="M8 8h8v8H8z"></path></svg>
               </button>
-              <button id="actualSizeEditBtn" type="button" title="Фактический размер" aria-label="Фактический размер" data-i18n-title="actualSize" data-i18n-aria-label="actualSize">
+              <button id="actualSizeEditBtn" type="button" title="Фактический размер" aria-label="Фактический размер" data-i18n-title="actualSize" data-i18n-aria-label="actualSize" data-i18n-tooltip="actualSize">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"></path><path d="M8 9h2v6"></path><path d="M9 15h2"></path><path d="M14 10h.01"></path><path d="M14 15h.01"></path><path d="M17 9h-2v6h2"></path></svg>
               </button>
             </div>
             <div class="zoom-widget-main">
-              <button id="zoomInEditViewBtn" type="button" title="Увеличить" aria-label="Увеличить" data-i18n-title="zoomIn" data-i18n-aria-label="zoomIn">
+              <button id="zoomInEditViewBtn" type="button" title="Увеличить" aria-label="Увеличить" data-i18n-title="zoomIn" data-i18n-aria-label="zoomIn" data-i18n-tooltip="zoomIn">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M10.5 8v5"></path><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
               </button>
               <output id="editorZoomLevel" class="zoom-level" aria-live="polite">100%</output>
-              <button id="zoomOutEditViewBtn" type="button" title="Уменьшить" aria-label="Уменьшить" data-i18n-title="zoomOut" data-i18n-aria-label="zoomOut">
+              <button id="zoomOutEditViewBtn" type="button" title="Уменьшить" aria-label="Уменьшить" data-i18n-title="zoomOut" data-i18n-aria-label="zoomOut" data-i18n-tooltip="zoomOut">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
               </button>
             </div>
@@ -1256,7 +1282,7 @@
     const METADATA_STORAGE_KEY = 'orePipelineMetadataDefaults';
     const DEFAULT_LANGUAGE = 'ru';
     const DEFAULT_PREPROCESS_PRESET = {
-      preprocessing_enabled: true,
+      preprocessing_enabled: false,
       illumination_normalization: true,
       denoise: true,
       contrast_correction: true,
@@ -1303,11 +1329,13 @@
       theme: 'system',
       show_tiling: false,
       runtime: {
-        backend: 'heuristic',
+        backend: 'ml',
         checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt',
         talc_backend: 'ml',
         talc_checkpoint: 'outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt',
-        talc_threshold: 0.5
+        talc_threshold: 0.5,
+        grain_backend: 'heuristic',
+        grade_checkpoint: 'models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt'
       },
       preprocess: {...DEFAULT_PREPROCESS_PRESET},
       talc_clusterization: {...DEFAULT_TALC_CLUSTERIZATION},
@@ -1400,7 +1428,7 @@
         summary: 'Create or refresh augmentation/preprocessing artifacts for an uploaded image before a run starts.',
         summaryRu: 'Создает или обновляет артефакты аугментации/предобработки для загруженного изображения до старта расчета.',
         body: {
-          preprocessing_enabled: true,
+          preprocessing_enabled: false,
           illumination_normalization: true,
           denoise: true,
           contrast_correction: true,
@@ -1422,7 +1450,7 @@
         summaryRu: 'Создает неизменяемый запуск из upload_id, настроек предобработки, опциональной аугментации и опциональных curated metadata.',
         body: {
           upload_id: 'demo_upload_id',
-          preprocessing_enabled: true,
+          preprocessing_enabled: false,
           illumination_normalization: true,
           denoise: true,
           contrast_correction: true,
@@ -1671,6 +1699,7 @@
       ru: {
         appTitle: 'Классификатор рудного шлифа',
         pageTitle: 'Классификатор рудного шлифа',
+        versionLabel: 'Версия приложения',
         languageLabel: 'Язык',
         languageRussian: 'Русский',
         languageEnglish: 'English',
@@ -1743,21 +1772,37 @@
         settingsPasswordDisabled: 'Пароль не задан. Введите пароль и сохраните настройки, чтобы включить защиту.',
         settingsRuntime: 'Runtime',
         settingsRuntimeIntro: 'Переключение применяется сразу для новых запусков. Уже созданные run остаются с записанным backend/checkpoint.',
-        settingsBackend: 'Backend',
-        settingsBackendHeuristic: 'heuristic',
-        settingsBackendMl: 'ML',
+        settingsBackend: 'Бэкенд сегментации сульфидов',
+        settingsBackendHeuristic: 'Sulfide Heuristics',
+        settingsBackendMl: 'ML Sulfide (SegFormer-B2)',
         settingsCheckpoint: 'Checkpoint',
-        settingsTalcBackend: 'Источник талька',
-        settingsTalcBackendHeuristic: 'heuristic',
-        settingsTalcBackendMl: 'ML model',
+        settingsCheckpointNotConfigured: 'не задан',
+        settingsTalcBackend: 'Бэкенд сегментации талька',
+        settingsTalcBackendHeuristic: 'эвристики',
+        settingsTalcBackendMl: 'ML-модель',
         settingsTalcCheckpoint: 'Talc checkpoint',
-        settingsTalcThreshold: 'Talc threshold',
+        settingsTalcThreshold: 'Порог вероятности ML-талька',
+        settingsTalcThresholdHintMl: 'Используется только для ML-сегментации талька.',
+        settingsTalcThresholdHintHeuristic: 'Не используется в эвристическом режиме талька.',
+        settingsGrainBackend: 'Бэкенд классификации зерен',
+        settingsGrainBackendHeuristic: 'эвристики зерен руды',
+        settingsGrainBackendMl: 'ML-классификация зерен руды',
         settingsTalcClusterDefaults: 'Кластеризация талька по умолчанию',
+        configurationRuntime: 'Runtime этапов',
+        configSulfideBackend: 'Сегментация сульфидов',
+        configSulfideHeuristic: 'Sulfide Heuristics',
+        configSulfideMl: 'ML Sulfide (SegFormer-B2)',
+        configTalcBackend: 'Сегментация талька',
+        configTalcHeuristic: 'Talc Heuristics',
+        configTalcMl: 'ML Talc SegFormer-B0',
+        configGrainBackend: 'Классификация зерен',
+        configGrainHeuristic: 'Ore Grain Heuristics',
+        configGrainMl: 'ML Ore Grain Classification',
         talcClusterization: 'Кластеризация талька',
         talcClusterRadius: 'Радиус, px',
         talcClusterMinLocal: 'Мин. локальный тальк, %',
         talcClusterOpacity: 'Прозрачность, %',
-        settingsRuntimeTest: 'Проверить',
+        settingsRuntimeTest: 'Проверить все',
         settingsRuntimeTesting: 'Проверка runtime...',
         settingsRuntimeTestOkHeuristic: 'Эвристический backend доступен.',
         settingsRuntimeTestOkMl: 'ML backend загружен: {model}, {device}, {seconds} с.',
@@ -1801,6 +1846,7 @@
         statusModels: 'Модели',
         statusModelBinary: 'Сульфиды',
         statusModelTalc: 'Тальк',
+        statusModelGrain: 'Зерна',
         statusModelThreshold: 'порог {threshold}',
         statusUptime: 'Uptime',
         statusOk: 'OK',
@@ -2138,6 +2184,7 @@
         runTechBackend: 'Backend',
         runTechBinaryModel: 'Сульфиды',
         runTechTalcModel: 'Тальк',
+        runTechGrainModel: 'Зерна',
         runTechFinalModel: 'Финал',
         runTechCheckpoint: 'Checkpoint',
         runTechSource: 'Источник',
@@ -2216,6 +2263,7 @@
       en: {
         appTitle: 'Ore thin-section classifier',
         pageTitle: 'Ore Pipeline UI',
+        versionLabel: 'Application version',
         languageLabel: 'Language',
         languageRussian: 'Russian',
         languageEnglish: 'English',
@@ -2288,21 +2336,37 @@
         settingsPasswordDisabled: 'No password is set. Enter a password and save settings to enable protection.',
         settingsRuntime: 'Runtime',
         settingsRuntimeIntro: 'The switch is applied immediately for new runs. Existing runs keep their recorded backend/checkpoint.',
-        settingsBackend: 'Backend',
-        settingsBackendHeuristic: 'heuristic',
-        settingsBackendMl: 'ML',
+        settingsBackend: 'Sulfide segmentation backend',
+        settingsBackendHeuristic: 'Sulfide Heuristics',
+        settingsBackendMl: 'ML Sulfide (SegFormer-B2)',
         settingsCheckpoint: 'Checkpoint',
-        settingsTalcBackend: 'Talc source',
-        settingsTalcBackendHeuristic: 'heuristic',
+        settingsCheckpointNotConfigured: 'not configured',
+        settingsTalcBackend: 'Talc segmentation backend',
+        settingsTalcBackendHeuristic: 'heuristics',
         settingsTalcBackendMl: 'ML model',
         settingsTalcCheckpoint: 'Talc checkpoint',
-        settingsTalcThreshold: 'Talc threshold',
+        settingsTalcThreshold: 'ML talc probability threshold',
+        settingsTalcThresholdHintMl: 'Used only by ML talc segmentation.',
+        settingsTalcThresholdHintHeuristic: 'Not used in talc heuristic mode.',
+        settingsGrainBackend: 'Grain classification backend',
+        settingsGrainBackendHeuristic: 'Ore Grain Heuristics',
+        settingsGrainBackendMl: 'ML Ore Grain Classification',
         settingsTalcClusterDefaults: 'Default talc clusterization',
+        configurationRuntime: 'Stage runtime',
+        configSulfideBackend: 'Sulfide segmentation',
+        configSulfideHeuristic: 'Sulfide Heuristics',
+        configSulfideMl: 'ML Sulfide (SegFormer-B2)',
+        configTalcBackend: 'Talc segmentation',
+        configTalcHeuristic: 'Talc Heuristics',
+        configTalcMl: 'ML Talc SegFormer-B0',
+        configGrainBackend: 'Grain classification',
+        configGrainHeuristic: 'Ore Grain Heuristics',
+        configGrainMl: 'ML Ore Grain Classification',
         talcClusterization: 'Talc clusterization',
         talcClusterRadius: 'Radius, px',
         talcClusterMinLocal: 'Min local talc, %',
         talcClusterOpacity: 'Opacity, %',
-        settingsRuntimeTest: 'Test',
+        settingsRuntimeTest: 'Test All',
         settingsRuntimeTesting: 'Testing runtime...',
         settingsRuntimeTestOkHeuristic: 'Heuristic backend is available.',
         settingsRuntimeTestOkMl: 'ML backend loaded: {model}, {device}, {seconds}s.',
@@ -2346,6 +2410,7 @@
         statusModels: 'Models',
         statusModelBinary: 'Sulfides',
         statusModelTalc: 'Talc',
+        statusModelGrain: 'Grains',
         statusModelThreshold: 'threshold {threshold}',
         statusUptime: 'Uptime',
         statusOk: 'OK',
@@ -2683,6 +2748,7 @@
         runTechBackend: 'Backend',
         runTechBinaryModel: 'Sulfides',
         runTechTalcModel: 'Talc',
+        runTechGrainModel: 'Grains',
         runTechFinalModel: 'Final',
         runTechCheckpoint: 'Checkpoint',
         runTechSource: 'Source',
@@ -2934,10 +3000,15 @@
         checkpoint: app.talc_checkpoint || null,
         threshold: app.talc_threshold
       };
-      const modelsValue = `${statusModelBackend(binaryModel)} / ${statusModelBackend(talcModel)}`;
+      const grainModel = appModels.grain_classification || {
+        backend: app.grain_backend || 'heuristic',
+        checkpoint: app.grade_checkpoint || null
+      };
+      const modelsValue = `${statusModelBackend(binaryModel)} / ${statusModelBackend(talcModel)} / ${statusModelBackend(grainModel)}`;
       const modelsSubvalue = [
         statusModelDetails('statusModelBinary', binaryModel),
-        statusModelDetails('statusModelTalc', talcModel)
+        statusModelDetails('statusModelTalc', talcModel),
+        statusModelDetails('statusModelGrain', grainModel)
       ].join('\n\n');
       $('statusCards').innerHTML = [
         statusCard('statusOverall', healthPill(health.overall), t('statusActiveJobs') + ': ' + statusActiveJobsText(history)),
@@ -3367,7 +3438,34 @@
       const talcCheckpoint = typeof values.talc_checkpoint === 'string' ? values.talc_checkpoint : (fallbackValues.talc_checkpoint || '');
       const talcThresholdValue = Number(values.talc_threshold ?? fallbackValues.talc_threshold ?? 0.5);
       const talcThreshold = Number.isFinite(talcThresholdValue) ? Math.max(0.01, Math.min(0.99, talcThresholdValue)) : 0.5;
-      return {backend, checkpoint, talc_backend: talcBackend, talc_checkpoint: talcCheckpoint, talc_threshold: talcThreshold};
+      const grainBackend = ['heuristic', 'ml'].includes(values.grain_backend) ? values.grain_backend : (fallbackValues.grain_backend || 'heuristic');
+      const gradeCheckpoint = typeof values.grade_checkpoint === 'string' ? values.grade_checkpoint : (fallbackValues.grade_checkpoint || '');
+      return {backend, checkpoint, talc_backend: talcBackend, talc_checkpoint: talcCheckpoint, talc_threshold: talcThreshold, grain_backend: grainBackend, grade_checkpoint: gradeCheckpoint};
+    }
+    function shortCheckpointName(value) {
+      const checkpoint = String(value || '').trim();
+      if (!checkpoint) return '';
+      const parts = checkpoint.split(/[\\/]+/).filter(Boolean);
+      if (parts.length >= 2) return `${parts[parts.length - 1]} (${parts[parts.length - 2]})`;
+      return parts[0] || checkpoint;
+    }
+    function setCheckpointDisplay(displayId, checkpoint) {
+      const element = $(displayId);
+      if (!element) return;
+      const shortName = shortCheckpointName(checkpoint);
+      element.textContent = shortName || t('settingsCheckpointNotConfigured');
+      element.classList.toggle('empty', !shortName);
+    }
+    function updateSettingsRuntimeControls() {
+      if (!$('settingsTalcBackend') || !$('settingsTalcThreshold')) return;
+      const talcUsesMl = $('settingsTalcBackend').value === 'ml';
+      $('settingsTalcThreshold').disabled = !talcUsesMl;
+      $('settingsTalcThreshold').title = t(talcUsesMl ? 'settingsTalcThresholdHintMl' : 'settingsTalcThresholdHintHeuristic');
+      const field = $('settingsTalcThresholdField');
+      if (field) {
+        field.classList.toggle('is-disabled', !talcUsesMl);
+        field.title = $('settingsTalcThreshold').title;
+      }
     }
     function normalizedTalcClusterization(settings = {}, fallback = DEFAULT_TALC_CLUSTERIZATION) {
       const values = settings && typeof settings === 'object' ? settings : {};
@@ -3413,7 +3511,9 @@
               checkpoint: state.systemStatus.app.checkpoint || '',
               talc_backend: state.systemStatus.app.talc_backend || 'heuristic',
               talc_checkpoint: state.systemStatus.app.talc_checkpoint || '',
-              talc_threshold: state.systemStatus.app.talc_threshold ?? DEFAULT_APP_SETTINGS.runtime.talc_threshold
+              talc_threshold: state.systemStatus.app.talc_threshold ?? DEFAULT_APP_SETTINGS.runtime.talc_threshold,
+              grain_backend: state.systemStatus.app.grain_backend || 'heuristic',
+              grade_checkpoint: state.systemStatus.app.grade_checkpoint || ''
             }
           : DEFAULT_APP_SETTINGS.runtime,
         preprocess: storedPreprocessPreset(),
@@ -3669,9 +3769,13 @@
       $('settingsPasswordState').textContent = t(normalized.auth.password_enabled ? 'settingsPasswordEnabled' : 'settingsPasswordDisabled');
       $('settingsBackend').value = normalized.runtime.backend;
       $('settingsCheckpoint').value = normalized.runtime.checkpoint || '';
+      setCheckpointDisplay('settingsCheckpointDisplay', normalized.runtime.checkpoint);
       $('settingsTalcBackend').value = normalized.runtime.talc_backend;
       $('settingsTalcCheckpoint').value = normalized.runtime.talc_checkpoint || '';
+      setCheckpointDisplay('settingsTalcCheckpointDisplay', normalized.runtime.talc_checkpoint);
       $('settingsTalcThreshold').value = Number(normalized.runtime.talc_threshold || 0.5).toFixed(2);
+      $('settingsGrainBackend').value = normalized.runtime.grain_backend || 'heuristic';
+      updateSettingsRuntimeControls();
       $('settingsPreprocessingEnabled').checked = normalized.preprocess.preprocessing_enabled;
       $('settingsIllumination').checked = normalized.preprocess.illumination_normalization;
       $('settingsDenoise').checked = normalized.preprocess.denoise;
@@ -3715,7 +3819,9 @@
           checkpoint: $('settingsCheckpoint').value.trim(),
           talc_backend: $('settingsTalcBackend').value,
           talc_checkpoint: $('settingsTalcCheckpoint').value.trim(),
-          talc_threshold: $('settingsTalcThreshold').value
+          talc_threshold: $('settingsTalcThreshold').value,
+          grain_backend: $('settingsGrainBackend').value,
+          grade_checkpoint: currentAppSettings().runtime.grade_checkpoint || DEFAULT_APP_SETTINGS.runtime.grade_checkpoint || ''
         },
         preprocess: {
           preprocessing_enabled: $('settingsPreprocessingEnabled').checked,
@@ -3746,20 +3852,52 @@
       return settings;
     }
     function defaultRunConfiguration() {
-      return {talc_clusterization: normalizedTalcClusterization(currentAppSettings().talc_clusterization)};
+      const runtime = normalizedRuntimeSettings(currentAppSettings().runtime || {});
+      return {
+        runtime: {
+          backend: runtime.backend,
+          talc_backend: runtime.talc_backend,
+          grain_backend: runtime.grain_backend
+        },
+        talc_clusterization: normalizedTalcClusterization(currentAppSettings().talc_clusterization)
+      };
+    }
+    function normalizedRuntimeMode(value, fallback = 'heuristic') {
+      const text = String(value || '').toLowerCase();
+      if (text === 'ml' || text === 'model' || text === 'ml_model') return 'ml';
+      if (text === 'heuristic' || text === 'heuristics' || text === 'rule' || text === 'rules') return 'heuristic';
+      return fallback === 'ml' ? 'ml' : 'heuristic';
     }
     function normalizedRunConfiguration(config = {}, fallback = defaultRunConfiguration()) {
       const values = config && typeof config === 'object' ? config : {};
       const fallbackValues = fallback && typeof fallback === 'object' ? fallback : defaultRunConfiguration();
+      const runtimeValues = values.runtime && typeof values.runtime === 'object' ? values.runtime : values;
+      const runtimeFallback = fallbackValues.runtime && typeof fallbackValues.runtime === 'object' ? fallbackValues.runtime : defaultRunConfiguration().runtime;
       return {
+        runtime: {
+          backend: normalizedRuntimeMode(runtimeValues.backend, runtimeFallback.backend),
+          talc_backend: normalizedRuntimeMode(runtimeValues.talc_backend ?? runtimeValues.talcBackend, runtimeFallback.talc_backend),
+          grain_backend: normalizedRuntimeMode(runtimeValues.grain_backend ?? runtimeValues.grainBackend ?? runtimeValues.grade_backend, runtimeFallback.grain_backend)
+        },
         talc_clusterization: normalizedTalcClusterization(
           values.talc_clusterization || values.talcClusterization || values,
           fallbackValues.talc_clusterization || currentAppSettings().talc_clusterization
         )
       };
     }
+    function runConfigurationFromRun(run) {
+      if (!run || typeof run !== 'object') return {};
+      return {
+        runtime: (run.runtime && typeof run.runtime === 'object') ? {
+          backend: run.runtime.backend,
+          talc_backend: run.runtime.talc_backend,
+          grain_backend: run.runtime.grain_backend
+        } : {},
+        talc_clusterization: run.talc_clusterization
+      };
+    }
     function currentRunConfiguration() {
-      return normalizedRunConfiguration(state.runConfiguration || (state.run && state.run.talc_clusterization ? {talc_clusterization: state.run.talc_clusterization} : {}));
+      return normalizedRunConfiguration(state.runConfiguration || runConfigurationFromRun(state.run));
     }
     function configurationPayload() {
       return currentRunConfiguration();
@@ -3769,12 +3907,20 @@
     }
     function applyConfigurationToControls(config = currentRunConfiguration()) {
       const normalized = normalizedRunConfiguration(config);
+      $('configSulfideBackend').value = normalized.runtime.backend;
+      $('configTalcBackend').value = normalized.runtime.talc_backend;
+      $('configGrainBackend').value = normalized.runtime.grain_backend;
       $('configTalcClusterRadius').value = normalized.talc_clusterization.radius_px;
       $('configTalcClusterMinLocal').value = formatSettingNumber(normalized.talc_clusterization.min_local_talc_percent, 2);
       $('configTalcClusterOpacity').value = formatSettingNumber(normalized.talc_clusterization.opacity_percent, 1);
     }
     function collectConfigurationForm() {
       return normalizedRunConfiguration({
+        runtime: {
+          backend: $('configSulfideBackend').value,
+          talc_backend: $('configTalcBackend').value,
+          grain_backend: $('configGrainBackend').value
+        },
         talc_clusterization: {
           radius_px: $('configTalcClusterRadius').value,
           min_local_talc_percent: $('configTalcClusterMinLocal').value,
@@ -5691,7 +5837,7 @@
         }, 900);
         if (payload.run_id) {
           state.run = payload;
-          state.runConfiguration = normalizedRunConfiguration({talc_clusterization: payload.talc_clusterization});
+          state.runConfiguration = normalizedRunConfiguration(runConfigurationFromRun(payload));
           rememberPreparedSettings(payload.run_id);
           activePollRunId = null;
           state.curatedMetadata = normalizeMetadataPayload((payload.input && payload.input.curated_metadata) || state.curatedMetadata || null);
@@ -5771,7 +5917,7 @@
           const prepPayload = await prepResponse.json();
           if (!prepResponse.ok) throw new Error(prepPayload.error || 'prepare failed');
           state.run = prepPayload;
-          state.runConfiguration = normalizedRunConfiguration({talc_clusterization: prepPayload.talc_clusterization});
+          state.runConfiguration = normalizedRunConfiguration(runConfigurationFromRun(prepPayload));
           rememberPreparedSettings(prepPayload.run_id);
           preparedRun = runIsPrepared(prepPayload) ? prepPayload : null;
         }
@@ -5790,7 +5936,7 @@
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'start failed');
         state.run = payload;
-        state.runConfiguration = normalizedRunConfiguration({talc_clusterization: payload.talc_clusterization});
+        state.runConfiguration = normalizedRunConfiguration(runConfigurationFromRun(payload));
         activePollRunId = payload.run_id;
         $('fixBtn').disabled = true;
         updateRunControls(payload);
@@ -5853,7 +5999,7 @@
       const payload = await response.json();
       if (activePollRunId !== runId) return;
       state.run = payload;
-      if (payload && payload.talc_clusterization) state.runConfiguration = normalizedRunConfiguration({talc_clusterization: payload.talc_clusterization});
+      if (payload && (payload.talc_clusterization || payload.runtime)) state.runConfiguration = normalizedRunConfiguration(runConfigurationFromRun(payload));
       setProgress(payload.progress || 0);
       const eta = payload.eta_seconds == null || Number(payload.progress || 0) >= 100
         ? ''
@@ -6378,6 +6524,7 @@
           techRow('runTechBackend', runtime.backend || (run && run.backend)),
           techRow('runTechBinaryModel', formatRuntimeModel(models.binary_sulfide || {}, checkpoints.binary_sulfide)),
           techRow('runTechTalcModel', formatRuntimeModel(models.talc || {}, checkpoints.talc)),
+          techRow('runTechGrainModel', formatRuntimeModel(models.grain_classification || {}, checkpoints.grain_classification)),
           techRow('runTechFinalModel', formatRuntimeModel(models.final_segmentation || {}, checkpoints.final_segmentation))
         ]),
         techCard('runTechTilesCard', [
@@ -6735,7 +6882,7 @@
       }
       state.run = payload;
       state.upload = upload;
-      state.runConfiguration = normalizedRunConfiguration({talc_clusterization: payload.talc_clusterization});
+      state.runConfiguration = normalizedRunConfiguration(runConfigurationFromRun(payload));
       state.curatedMetadata = normalizeMetadataPayload((payload.input && payload.input.curated_metadata) || null);
       state.returnToBatchId = options.returnToBatchId || (payload.batch && payload.batch.batch_id) || null;
       activePollRunId = runIsActive(payload) ? payload.run_id : null;
@@ -6885,6 +7032,7 @@
     $('resetSettingsBtn').addEventListener('click', resetSettingsFromPage);
     $('removeAllHistoryBtn').addEventListener('click', removeAllHistoryFromSettings);
     $('testRuntimeBtn').addEventListener('click', testRuntimeFromPage);
+    $('settingsTalcBackend').addEventListener('change', updateSettingsRuntimeControls);
     ['settingsPanoramaScaling','settingsPanoramaScalingMode'].forEach(id => $(id).addEventListener('change', () => updatePanoramaScalingControls('settings')));
     window.addEventListener('popstate', event => setPage(pageFromLocation(event.state && event.state.historyMode), {push: false}));
     loadAppSettings();

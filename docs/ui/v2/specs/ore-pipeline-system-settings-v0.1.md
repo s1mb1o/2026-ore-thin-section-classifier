@@ -32,19 +32,24 @@ The first version covers settings already present in the UI:
 - runtime backend:
   - `heuristic` or `ml`;
   - checkpoint path for the ML backend;
-  - talc source: `heuristic` for the existing optical candidate or `ml` for
-    the trained talc segmentation model;
+  - Settings keeps the checkpoint path as a saved runtime value but shows only a
+    shortened checkpoint name in the Runtime panel, never the full filesystem
+    path;
+  - talc source: `ml` by default for the trained talc segmentation model, or
+    `heuristic` for the existing optical candidate fallback;
   - talc checkpoint path and probability threshold for the talc ML source;
+    the threshold input is disabled when talc source is `heuristic`, because the
+    heuristic talc path does not consume the ML probability cutoff;
   - saving applies the new runtime immediately for new runs;
   - already-created immutable runs keep their recorded backend and checkpoint;
   - changing runtime is rejected while a run or Series job is active;
-  - `Test` checks the selected, possibly unsaved runtime values; for
+  - `Test All` checks the selected, possibly unsaved runtime values; for
     `heuristic` it verifies the built-in heuristic backend is available, and
     for each `ml` source it verifies that the configured checkpoint exists and
     can be loaded through the same model loader used by runs without creating a
     run;
 - default preprocessing preset:
-  - preprocessing enabled;
+  - preprocessing disabled by default;
   - illumination normalization;
   - denoise;
   - contrast correction;
@@ -70,9 +75,10 @@ Add a direct-loadable `/settings` slug page and a `Settings` navigation tab.
 The page shows:
 
 - language and theme selectors;
-- runtime backend selector and checkpoint path input;
-- talc source selector, talc checkpoint path input, and talc threshold input;
-- runtime `Test` action with a localized success/failure status line;
+- runtime backend selector and shortened checkpoint display;
+- talc source selector, shortened talc checkpoint display, and ML talc
+  probability threshold input that is enabled only for `ML model`;
+- runtime `Test All` action with a localized success/failure status line;
 - preprocessing default checkboxes;
 - show-tiling default checkbox;
 - metadata session-default inputs;
@@ -108,7 +114,7 @@ History removal during active jobs should return `409`.
   live server runtime for the next run.
 - ML backend save validates that the binary checkpoint path exists; talc ML
   save validates that the talc checkpoint path exists.
-- The Settings page `Test` button can test unsaved runtime form values.
+- The Settings page `Test All` button can test unsaved runtime form values.
 - Heuristic runtime tests return success without creating a run.
 - ML runtime tests do not mutate saved settings, do not create a run, and
   report per-model checkpoint-loader success or failure on the same `auto`

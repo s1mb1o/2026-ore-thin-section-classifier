@@ -82,7 +82,7 @@ when the full ML environment is active.
 For the Nornickel VM GUI runtime, use the Docker/Compose wrapper:
 
 ```bash
-docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+docker compose up --build
 ```
 
 Then open `http://<vm-host>:8080/workspace`. The image defaults to the

@@ -89,6 +89,8 @@ def main() -> int:
     parser.add_argument("--talc-min-area-px", type=int, default=320)
     parser.add_argument("--preview-max-side", type=int, default=1800)
     parser.add_argument("--no-auto-talc-candidate", action="store_true")
+    parser.add_argument("--talc-checkpoint", type=Path, default=None, help="Trained talc segmentation checkpoint (e.g. SegFormer-B0) used instead of the color auto-candidate.")
+    parser.add_argument("--talc-threshold", type=float, default=0.5)
     parser.add_argument("--rule-config-json", type=Path, default=None)
     parser.add_argument("--cv-folds", type=int, default=5)
     parser.add_argument(
@@ -307,7 +309,9 @@ def run_batch(args: argparse.Namespace, *, dataset_root: Path, out_dir: Path) ->
         cmd.extend(["--per-label", str(args.per_label)])
     if args.max_total is not None:
         cmd.extend(["--max-total", str(args.max_total)])
-    if args.no_auto_talc_candidate:
+    if args.talc_checkpoint is not None:
+        cmd.extend(["--talc-checkpoint", str(args.talc_checkpoint), "--talc-threshold", str(args.talc_threshold), "--no-auto-talc-candidate"])
+    elif args.no_auto_talc_candidate:
         cmd.append("--no-auto-talc-candidate")
     if args.overwrite_batch:
         cmd.append("--overwrite")

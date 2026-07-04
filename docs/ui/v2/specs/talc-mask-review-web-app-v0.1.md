@@ -264,6 +264,11 @@ base background image while keeping the editable masks, derived overlays, and
 tool previews visible. It must not warn about a missing selected background
 while the background checkbox is off.
 
+Both top overlay widgets must stay anchored to the visible viewer viewport, not
+to the scrolled canvas content. After sample load, fit-to-view, or free-pan
+origin changes, `Segmentation classes` remains top-left and `Display layers`
+remains top-right inside the visible viewer.
+
 The top-right `Talc cluster areas` row has a visibility checkbox and percentage.
 It mirrors the right-panel cluster overlay toggle and reports highlighted
 non-sulfide cluster pixels as a percentage of image pixels. Cluster areas must
@@ -356,12 +361,15 @@ shows whether any overlap still exists.
 
 Required controls:
 
-- A single top toolbar ordered Brush, Fill, Similar, Rectangle, Polygon,
-  SAM2, Undo, Zoom In, Zoom Out, Fit, followed by active-tool parameters.
+- A single top toolbar ordered icon-only Brush, Fill, Similar, Rectangle,
+  Polygon, then SAM2, Undo, followed by active-tool parameters. The icon-only
+  tool buttons expose the tool name through hover title and accessible labels.
 - Top-right Save, Save & Next, and transparent Next actions.
-- Zoom by mouse wheel/trackpad over the canvas, plus toolbar Zoom In, Zoom Out,
-  and Fit controls, plus a bottom-left vertical viewer widget with Fit,
-  Actual size, Zoom In, current zoom percentage, and Zoom Out.
+- Toolbar controls may wrap at narrower viewer widths, but wrapped rows must
+  increase the topbar height so controls are never hidden behind the viewer.
+- Zoom by mouse wheel/trackpad over the canvas, plus a bottom-left vertical
+  viewer widget with Fit, Actual size, Zoom In, current zoom percentage, and
+  Zoom Out. The top toolbar must not duplicate these zoom controls.
 - Pan by pressing and dragging the mouse wheel / middle button over the canvas,
   without entering edit-tool drawing or native browser middle-click scrolling.
   Pan is not clamped to the image top-left: the canvas can move past the viewer
@@ -800,8 +808,8 @@ Required checks:
   changing mask pixels: `255` shows the original image, `90` keeps dark
   talc-candidate pixels visible while whitening brighter matrix/sulfides, and
   `0` paints the background white.
-- Toolbar zoom, the bottom-left zoom widget, and mouse-wheel zoom work and do
-  not change mask geometry.
+- The bottom-left zoom widget and mouse-wheel zoom work and do not change mask
+  geometry.
 - The below-viewer mouse hint row is visible without opening a help panel.
 - Polygon points can be added, closed by clicking the first point, edited, and
   flattened on save.
@@ -881,8 +889,9 @@ Required checks:
   Rectangle, and Polygon edit whichever class is selected in the over-image
   Segmentation classes widget; SAM2 edits `positive_bag`; Similar edits
   `talc_node`.
-- Toolbar controls are ordered Brush, Fill, Similar, Rectangle, Polygon,
-  SAM2, Undo, Zoom In, Zoom Out, Fit, with active-tool parameters at the end.
+- Toolbar controls are ordered icon-only Brush, Fill, Similar, Rectangle,
+  Polygon, then SAM2, Undo, with active-tool parameters at the end; toolbar
+  zoom controls are not shown.
 - Mouse wheel zooms over the canvas without changing mask geometry, and the
   bottom-left zoom widget exposes one vertical stack: Fit, Actual size,
   Zoom In, the live percent, and Zoom Out controls.

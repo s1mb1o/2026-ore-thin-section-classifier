@@ -1,13 +1,14 @@
 # Ore Pipeline Docker Deployment Runbook
 
-Date: 2026-07-03
+Date: 2026-07-04
 
-This runbook deploys the v2 ore pipeline browser UI (`apps/ore_pipeline_web.py`) as a Docker service on two verified targets:
+This runbook deploys the v2 ore pipeline browser UI (`apps/ore_pipeline_web.py`) as a Docker service on verified targets:
 
+- Alize: `root@111.88.124.80`, public URL `https://nornickel-ai-hackathon.alola.ru/workspace`, `linux/amd64`, current public production target behind Caddy.
 - Nornickel VM: `team123@111.88.145.15`, public URL `http://111.88.145.15:8080/workspace`, `linux/amd64`.
 - gx10: `ashmelev@192.168.86.14`, LAN URL `http://192.168.86.14:8210/workspace`, `linux/arm64`.
 
-The default Compose image is heuristic-first and does not bundle the official dataset, generated outputs, or model checkpoints. gx10 also has a verified ML-capable image based on `nvcr.io/nvidia/pytorch:25.11-py3` for the current SOTA checkpoints.
+The root `compose.yaml` is the primary deployment file. Its default service is heuristic-first and does not bundle the official dataset, generated outputs, or model checkpoints. The opt-in `gpu` profile targets gx10/ML deployments with a verified image based on `nvcr.io/nvidia/pytorch:25.11-py3` for the current SOTA checkpoints. `docker-compose.ore-pipeline-ui.yml` remains as a compatibility file for older scripted commands.
 
 ## Preflight
 
@@ -17,6 +18,7 @@ Run from the canonical v2 checkout on the Mac:
 cd /Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2
 git diff --check
 python3 -m unittest discover -s tests -p 'test_ore_pipeline_docker.py' -v
+docker compose config >/tmp/nornikel-ore-pipeline-ui.compose.yaml
 ```
 
 Check that the Docker context stays small:
@@ -25,11 +27,176 @@ Check that the Docker context stays small:
 docker buildx build --dry-run -f docker/ore-pipeline-ui/Dockerfile . 2>/dev/null || true
 ```
 
-If local Docker is unavailable, skip the dry-run and rely on the remote build context check. The verified remote contexts were under `5 MB` because `.dockerignore` excludes `.git`, `dataset`, `outputs`, and model checkpoints.
+If local Docker is unavailable, skip the dry-run and rely on the remote build
+context check. `.dockerignore` excludes `.git`, `dataset`, `outputs`, model
+checkpoints, and common archives. The Alize ML build context was about
+`386 MB` because the repo still contains presentation/static assets; this is
+acceptable for the current VM, but future production syncs should keep large
+media out of the remote build tree.
+
+## Alize Public Production
+
+Use this path for the reviewer-facing public endpoint
+`https://nornickel-ai-hackathon.alola.ru/`. Caddy and wildcard TLS already live
+on Alize, enforce reviewer Basic Auth, and proxy to private backend
+`127.0.0.1:8765`. The same backend is also available over plain HTTP by IP at
+`http://111.88.124.80/` for reviewers who use the host IP directly. Prefer the
+HTTPS hostname when entering credentials; Basic Auth over plain HTTP is not
+encrypted on the network.
+
+Deployment evidence is recorded in
+`docs/ui/v2/notes/2026-07-04-alize-v2-production-deploy.md`.
+
+### 1. Sync v2 Runtime Tree
+
+```bash
+REPO=/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2
+ALIZE=root@111.88.124.80
+REMOTE=/opt/nornickel-ai-hackathon-v2
+SSH_OPTS="-o UserKnownHostsFile=/tmp/alize_known_hosts -o StrictHostKeyChecking=yes"
+
+cd "$REPO"
+rsync -az --delete --delete-excluded \
+  -e "ssh $SSH_OPTS" \
+  --exclude='.git/' \
+  --exclude='.venv/' \
+  --exclude='venv/' \
+  --exclude='__pycache__/' \
+  --exclude='.pytest_cache/' \
+  --exclude='.mypy_cache/' \
+  --exclude='dataset/' \
+  --exclude='data/' \
+  --exclude='presentation/videos/' \
+  --exclude='outputs/' \
+  ./ "$ALIZE:$REMOTE/"
+
+ssh $SSH_OPTS "$ALIZE" \
+  "mkdir -p '$REMOTE/outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0'"
+
+rsync -az --delete \
+  -e "ssh $SSH_OPTS" \
+  "$REPO/outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/" \
+  "$ALIZE:$REMOTE/outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/"
+```
+
+The Docker image does not bake model checkpoints. The production run mounts:
+
+```text
+$REMOTE/models:/app/models:ro
+$REMOTE/outputs/talc_segformer_folds:/app/outputs/talc_segformer_folds:ro
+$REMOTE/runtime/outputs/ore_pipeline_ui:/data/ore_pipeline_ui
+```
+
+### 2. Build ML Image On Alize
+
+```bash
+ssh $SSH_OPTS "$ALIZE" "
+  set -e
+  cd '$REMOTE'
+  DOCKER_BUILDKIT=0 docker build \
+    -f docker/ore-pipeline-ui/Dockerfile.gx10-ml \
+    -t nornickel-ore-pipeline-ui:v2-ml .
+"
+```
+
+Verified production image:
+
+```text
+nornickel-ore-pipeline-ui:v2-ml
+linux/amd64
+sha256:f72410291546f2250f0a7608070312703cadc82b60d8a319960f714325076118
+```
+
+### 3. Run On Alize
+
+```bash
+ssh $SSH_OPTS "$ALIZE" '
+set -e
+REMOTE=/opt/nornickel-ai-hackathon-v2
+CONTAINER=nornickel-ore-pipeline-ui-v2
+BINARY=/app/models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt
+TALC=/app/outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt
+GRADE=/app/models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt
+mkdir -p "$REMOTE/runtime/outputs/ore_pipeline_ui"
+docker rm -f nornickel-qc-ui "$CONTAINER" 2>/dev/null || true
+docker run -d \
+  --name "$CONTAINER" \
+  --restart unless-stopped \
+  --gpus all \
+  --ipc=host \
+  -p 127.0.0.1:8765:8080 \
+  -e ORE_UI_HOST=0.0.0.0 \
+  -e ORE_UI_PORT=8080 \
+  -e ORE_UI_WORKSPACE=/data/ore_pipeline_ui \
+  -e ORE_UI_BACKEND=ml \
+  -e ORE_UI_CHECKPOINT="$BINARY" \
+  -e ORE_UI_TALC_BACKEND=ml \
+  -e ORE_UI_TALC_CHECKPOINT="$TALC" \
+  -e ORE_UI_TALC_THRESHOLD=0.50 \
+  -e ORE_UI_GRADE_CHECKPOINT="$GRADE" \
+  -e ORE_UI_PROCESSING_MAX_SIDE=2600 \
+  -e ORE_UI_PANORAMA_MAX_SIDE=1800 \
+  -e ORE_UI_PREVIEW_MAX_SIDES=1024,2048,4096 \
+  -v "$REMOTE/runtime/outputs/ore_pipeline_ui:/data/ore_pipeline_ui" \
+  -v "$REMOTE/models:/app/models:ro" \
+  -v "$REMOTE/outputs/talc_segformer_folds:/app/outputs/talc_segformer_folds:ro" \
+  nornickel-ore-pipeline-ui:v2-ml
+docker ps --filter name="$CONTAINER" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+'
+```
+
+### 4. Smoke Alize
+
+```bash
+BASE=https://nornickel-ai-hackathon.alola.ru
+ALIZE_REVIEWER_PASS="$(security find-generic-password -a reviewer -s nornickel-ai-hackathon-basic-auth -w)"
+curl -sS -o /dev/null -w '%{http_code}\n' "$BASE/workspace"  # 401
+curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" "$BASE/workspace" -o /tmp/alize-workspace.html
+curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" "$BASE/api/status" | jq '{overall:.health.overall, backend:.app.backend, talc_backend:.app.talc_backend, gpu:.gpu.devices[0].name}'
+curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" -H 'Content-Type: application/json' -d '{}' "$BASE/api/runtime/test" | jq '{ok,status,backend,talc_backend,device:.details.device}'
+curl -sS -o /dev/null -w '%{http_code}\n' http://111.88.124.80/  # 401
+curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" -L http://111.88.124.80/ -o /tmp/alize-ip-workspace.html
+curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" http://111.88.124.80/api/status | jq '{overall:.health.overall, backend:.app.backend, gpu:.gpu.devices[0].name}'
+```
+
+Functional smoke:
+
+```bash
+BASE=https://nornickel-ai-hackathon.alola.ru
+ALIZE_REVIEWER_PASS="$(security find-generic-password -a reviewer -s nornickel-ai-hackathon-basic-auth -w)"
+SAMPLE='dataset/Фото руд по сортам. ч2/тонкие/69 1.jpg'
+curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" -F "file=@${SAMPLE}" "$BASE/api/uploads" -o /tmp/alize-upload.json
+UPLOAD_ID="$(jq -r '.upload_id' /tmp/alize-upload.json)"
+curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" -H 'Content-Type: application/json' \
+  -d "{\"upload_id\":\"$UPLOAD_ID\",\"panorama_scaling\":false}" \
+  "$BASE/api/runs/start" -o /tmp/alize-run-start.json
+RUN_ID="$(jq -r '.run_id' /tmp/alize-run-start.json)"
+for _ in $(seq 1 180); do
+  curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" "$BASE/api/runs/$RUN_ID" -o /tmp/alize-run.json
+  STATUS="$(jq -r '.status' /tmp/alize-run.json)"
+  [ "$STATUS" = complete ] || [ "$STATUS" = failed ] || [ "$STATUS" = canceled ] && break
+  sleep 2
+done
+jq '{run_id:.run_id,status:.status,progress:.progress}' /tmp/alize-run.json
+curl -fsS -u "reviewer:$ALIZE_REVIEWER_PASS" "$BASE/api/runs/$RUN_ID/files" | jq '.files | length'
+```
+
+Expected current Alize details:
+
+- Unauthenticated hostname and IP requests return `401`.
+- Authenticated `/workspace` returns `200` with the v2 HTML app.
+- Authenticated `http://111.88.124.80/` redirects to `/workspace`, and
+  authenticated `http://111.88.124.80/workspace` returns `200`.
+- Authenticated `/api/status` returns `health.overall=ok`, backend `ml`, talc
+  backend `ml`, GPU `NVIDIA L4`, and mounted checkpoint files present.
+- Authenticated `/api/runtime/test` returns `ok=true` and loads SegFormer-B2
+  sulfide plus SegFormer-B0 talc on `cuda`.
+- Direct external `http://111.88.124.80:8765/` remains closed; only Caddy is
+  public.
 
 ## Nornickel VM
 
-Use this path for the public demo VM. Build on `docker-srv` (`root@192.168.86.16`) and stream the built image into the VM, so the VM does not need to build the image itself.
+Do not run this path while the 2026-07-04 organizer stop request is active. It is retained only for recovery or an explicit authorized redeploy. Build on `docker-srv` (`root@192.168.86.16`) and stream the built image into the VM, so the VM does not need to build the image itself.
 
 ### 1. Prepare SSH Access
 
@@ -72,7 +239,7 @@ rsync -az --delete \
   --exclude='__pycache__/' --exclude='.pytest_cache/' --exclude='*.pyc' --exclude='*.zip' \
   "$REPO/" "$BUILD_HOST:$BUILD_DIR/"
 
-ssh "$BUILD_HOST" "cd '$BUILD_DIR' && docker compose -f docker-compose.ore-pipeline-ui.yml build"
+ssh "$BUILD_HOST" "cd '$BUILD_DIR' && docker compose build ore-pipeline-ui"
 ssh "$BUILD_HOST" "docker image inspect '$IMAGE' --format 'arch={{.Architecture}} os={{.Os}} size={{.Size}} id={{.Id}}'"
 ```
 
@@ -97,25 +264,25 @@ ssh "$BUILD_HOST" "docker save '$IMAGE' | gzip -1" | "${VM_SSH[@]}" "gzip -dc | 
 ```bash
 "${VM_SSH[@]}" '
 set -e
-CONTAINER=nornikel-ore-pipeline-ui
 RUNTIME=$HOME/ore-pipeline-ui
 mkdir -p "$RUNTIME/outputs/ore_pipeline_ui" "$RUNTIME/models"
+'
+scp -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+  compose.yaml team123@111.88.145.15:ore-pipeline-ui/compose.yaml
+"${VM_SSH[@]}" '
+set -e
+CONTAINER=nornikel-ore-pipeline-ui
+RUNTIME=$HOME/ore-pipeline-ui
+cd "$RUNTIME"
 sudo docker rm -f "$CONTAINER" 2>/dev/null || true
-sudo docker run -d \
-  --name "$CONTAINER" \
-  --restart unless-stopped \
-  --pull=never \
-  -p 8080:8080 \
-  -e ORE_UI_HOST=0.0.0.0 \
-  -e ORE_UI_PORT=8080 \
-  -e ORE_UI_WORKSPACE=/data/ore_pipeline_ui \
-  -e ORE_UI_BACKEND=heuristic \
-  -e ORE_UI_PROCESSING_MAX_SIDE=2600 \
-  -e ORE_UI_PANORAMA_MAX_SIDE=1800 \
-  -e ORE_UI_PREVIEW_MAX_SIDES=1024,2048,4096 \
-  -v "$RUNTIME/outputs/ore_pipeline_ui:/data/ore_pipeline_ui" \
-  -v "$RUNTIME/models:/app/models:ro" \
-  nornikel/ore-pipeline-ui:v2
+sudo env \
+  ORE_UI_IMAGE=nornikel/ore-pipeline-ui:v2 \
+  ORE_UI_CONTAINER_NAME="$CONTAINER" \
+  ORE_UI_PUBLIC_PORT=8080 \
+  ORE_UI_BACKEND=heuristic \
+  ORE_UI_WORKSPACE_HOST="$RUNTIME/outputs/ore_pipeline_ui" \
+  ORE_UI_MODELS_HOST="$RUNTIME/models" \
+  docker compose up -d --no-build ore-pipeline-ui
 sudo docker ps --filter name="$CONTAINER" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 '
 ```
@@ -152,7 +319,7 @@ jq '{run_id:.run_id,status:.status,summary:.summary}' "$RUN_JSON"
 
 ## gx10 ARM64
 
-Use this path for the ARM64 LAN deployment on `asus_gx10`. It builds natively on gx10 and runs with `--gpus all` so `/api/status` can report `NVIDIA GB10`.
+Use this path for the ARM64 LAN deployment on `asus_gx10`. It builds natively on gx10 and runs through the Compose GPU profile so `/api/status` can report `NVIDIA GB10`.
 
 ### 1. Stage And Build On gx10
 
@@ -200,42 +367,33 @@ ssh "$GX10" '
 set -e
 CONTAINER=nornikel-ore-pipeline-ui-v2
 RUNTIME=$HOME/nornikel-ore-pipeline-ui
+BUILD_DIR=$HOME/Projects/nornikel-v2-ore-pipeline-ui-build
 REPO=$HOME/Projects/2026_Nornikel_Hackaton_v2
 BINARY=/app/models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt
 TALC=/app/outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt
 GRADE=/app/models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt
 mkdir -p "$RUNTIME/outputs/ore_pipeline_ui" "$RUNTIME/models"
 docker rm -f "$CONTAINER" 2>/dev/null || true
-docker run -d \
-  --name "$CONTAINER" \
-  --restart unless-stopped \
-  --gpus all \
-  --ipc=host \
-  --ulimit memlock=-1 \
-  --ulimit stack=67108864 \
-  --pull=never \
-  -p 8210:8080 \
-  -e ORE_UI_HOST=0.0.0.0 \
-  -e ORE_UI_PORT=8080 \
-  -e ORE_UI_WORKSPACE=/data/ore_pipeline_ui \
-  -e ORE_UI_BACKEND=ml \
-  -e ORE_UI_CHECKPOINT="$BINARY" \
-  -e ORE_UI_TALC_BACKEND=ml \
-  -e ORE_UI_TALC_CHECKPOINT="$TALC" \
-  -e ORE_UI_TALC_THRESHOLD=0.50 \
-  -e ORE_UI_GRADE_CHECKPOINT="$GRADE" \
-  -e ORE_UI_PROCESSING_MAX_SIDE=2600 \
-  -e ORE_UI_PANORAMA_MAX_SIDE=1800 \
-  -e ORE_UI_PREVIEW_MAX_SIDES=1024,2048,4096 \
-  -v "$RUNTIME/outputs/ore_pipeline_ui:/data/ore_pipeline_ui" \
-  -v "$REPO/models:/app/models:ro" \
-  -v "$REPO/outputs/talc_segformer_folds:/app/outputs/talc_segformer_folds:ro" \
-  nornikel/ore-pipeline-ui:v2-gx10-ml
+cd "$BUILD_DIR"
+env \
+  ORE_UI_GPU_IMAGE=nornikel/ore-pipeline-ui:v2-gx10-ml \
+  ORE_UI_GPU_CONTAINER_NAME="$CONTAINER" \
+  ORE_UI_PUBLIC_PORT=8210 \
+  ORE_UI_BACKEND=ml \
+  ORE_UI_CHECKPOINT="$BINARY" \
+  ORE_UI_TALC_BACKEND=ml \
+  ORE_UI_TALC_CHECKPOINT="$TALC" \
+  ORE_UI_TALC_THRESHOLD=0.50 \
+  ORE_UI_GRADE_CHECKPOINT="$GRADE" \
+  ORE_UI_WORKSPACE_HOST="$RUNTIME/outputs/ore_pipeline_ui" \
+  ORE_UI_MODELS_HOST="$REPO/models" \
+  ORE_UI_TALC_OUTPUTS_HOST="$REPO/outputs/talc_segformer_folds" \
+  docker compose --profile gpu up -d --no-build ore-pipeline-ui-gpu
 docker ps --filter name="$CONTAINER" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 '
 ```
 
-To fall back to the lightweight heuristic image, use `nornikel/ore-pipeline-ui:v2-arm64`, set `ORE_UI_BACKEND=heuristic`, omit the talc/grade env vars, and mount only the persistent workspace plus any optional model directory.
+To fall back to the lightweight heuristic image, run the default `ore-pipeline-ui` service with `ORE_UI_IMAGE=nornikel/ore-pipeline-ui:v2-arm64`, set `ORE_UI_BACKEND=heuristic`, omit the talc/grade env vars, and mount only the persistent workspace plus any optional model directory.
 
 ### 3. Smoke gx10
 

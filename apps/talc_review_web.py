@@ -8,6 +8,7 @@ import io
 import json
 import mimetypes
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -52,6 +53,12 @@ from ore_classifier.talc_zone_heuristic import (  # noqa: E402
 
 DEFAULT_ANNOTATED_DIR = ROOT / "dataset/Фото руд по сортам. ч1/Оталькованные руды/Области оталькования"
 DEFAULT_WORKSPACE_DIR = ROOT / "outputs/talc_blue_line_conversion"
+DEFAULT_TALC_CHECKPOINT = ROOT / "outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt"
+DEFAULT_TALC_THRESHOLD = 0.50
+DEFAULT_TALC_TILE_SIZE = 1024
+DEFAULT_TALC_STRIDE = 768
+DEFAULT_TALC_BATCH_SIZE = 4
+DEFAULT_TALC_DEVICE = "auto"
 MAX_POST_BYTES = 150 * 1024 * 1024
 
 
@@ -251,6 +258,12 @@ class TalcReviewStore:
         sam2_model_id: str,
         sam2_device: str | None,
         talc_model_mask_dir: Path | None = None,
+        talc_checkpoint: Path | None = None,
+        talc_threshold: float = DEFAULT_TALC_THRESHOLD,
+        talc_tile_size: int = DEFAULT_TALC_TILE_SIZE,
+        talc_stride: int = DEFAULT_TALC_STRIDE,
+        talc_batch_size: int = DEFAULT_TALC_BATCH_SIZE,
+        talc_device: str = DEFAULT_TALC_DEVICE,
         human_review_dirs: list[Path] | None = None,
     ) -> None:
         self.lock = threading.RLock()
@@ -260,6 +273,14 @@ class TalcReviewStore:
         self.sulfide_mask_dir = resolve_path(sulfide_mask_dir) if sulfide_mask_dir else None
         self.silicate_mask_dir = resolve_path(silicate_mask_dir) if silicate_mask_dir else None
         self.talc_model_mask_dir = resolve_path(talc_model_mask_dir) if talc_model_mask_dir else None
+        default_talc_checkpoint = DEFAULT_TALC_CHECKPOINT if DEFAULT_TALC_CHECKPOINT.exists() else None
+        effective_talc_checkpoint = talc_checkpoint or default_talc_checkpoint
+        self.talc_checkpoint = resolve_path(effective_talc_checkpoint) if effective_talc_checkpoint else None
+        self.talc_threshold = float(talc_threshold)
+        self.talc_tile_size = int(talc_tile_size)
+        self.talc_stride = int(talc_stride)
+        self.talc_batch_size = int(talc_batch_size)
+        self.talc_device = str(talc_device or DEFAULT_TALC_DEVICE)
         self.human_review_dirs = [resolve_path(path) for path in (human_review_dirs or [])]
         self.sam2_model_id = sam2_model_id
         self.sam2_device = sam2_device
@@ -438,6 +459,104 @@ class TalcReviewStore:
                     ]
                 )
         return self._existing_mask_candidate(candidates)
+
+    def _effective_talc_checkpoint(self) -> Path:
+        if self.talc_checkpoint is None:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "talc neural model checkpoint is not configured")
+        checkpoint = resolve_path(self.talc_checkpoint)
+        if not checkpoint.exists():
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"talc neural model checkpoint does not exist: {checkpoint}")
+        return checkpoint
+
+    def _sample_model_image_path(self, sample: ReviewSample) -> Path:
+        paths = sample.summary.get("paths", {})
+        candidates = [
+            sample.original_path,
+            resolve_path(paths["source_image"]) if paths.get("source_image") else None,
+            sample.annotated_path,
+        ]
+        for candidate in candidates:
+            if candidate is not None and candidate.exists():
+                return candidate
+        raise ApiError(HTTPStatus.BAD_REQUEST, "sample has no image for neural talc model inference")
+
+    def run_neural_talc_model(self, sample_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        del payload  # Reserved for future threshold/device overrides without changing the endpoint.
+        sample = self.get_sample(sample_id)
+        image_path = self._sample_model_image_path(sample)
+        checkpoint = self._effective_talc_checkpoint()
+        paths = sample.summary.get("paths", {})
+        sulfide_path = resolve_path(paths["sulfide_mask"]) if paths.get("sulfide_mask") else None
+
+        out_dir = sample.sample_dir / "qa/neural_talc_model"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        log_path = out_dir / "run.log"
+        cmd = [
+            sys.executable,
+            str(ROOT / "scripts/infer_talc_segmentation.py"),
+            "--image",
+            str(image_path),
+            "--checkpoint",
+            str(checkpoint),
+            "--out-dir",
+            str(out_dir),
+            "--tile-size",
+            str(self.talc_tile_size),
+            "--stride",
+            str(self.talc_stride),
+            "--batch-size",
+            str(self.talc_batch_size),
+            "--device",
+            self.talc_device,
+            "--threshold",
+            str(self.talc_threshold),
+        ]
+        if sulfide_path and sulfide_path.exists():
+            cmd.extend(["--sulfide-mask", str(sulfide_path)])
+
+        with log_path.open("w", encoding="utf-8") as log:
+            completed = subprocess.run(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, check=False)
+        if completed.returncode != 0:
+            raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, f"neural talc model failed; see {log_path}")
+
+        summary_path = out_dir / "summary.json"
+        if not summary_path.exists():
+            raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "neural talc model did not write summary.json")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        generated_mask = resolve_path(summary.get("paths", {}).get("talc_mask") or out_dir / "talc_mask.png")
+        if not generated_mask.exists():
+            raise ApiError(HTTPStatus.INTERNAL_SERVER_ERROR, "neural talc model did not write talc_mask.png")
+
+        model_mask_path = sample.sample_dir / "model_talc_mask.png"
+        shutil.copy2(generated_mask, model_mask_path)
+        copied_mask = read_mask(model_mask_path, (int(sample.summary["height"]), int(sample.summary["width"])))
+        summary_paths = summary.get("paths", {})
+        artifact_urls = {
+            "model_talc_mask": self.artifact_url(model_mask_path),
+            "raw_talc_mask": self.artifact_url(generated_mask),
+            "overlay_preview": self.artifact_url(summary_paths.get("overlay_preview")),
+            "confidence": self.artifact_url(summary_paths.get("confidence")),
+            "confidence_non_sulfide": self.artifact_url(summary_paths.get("confidence_non_sulfide")),
+            "summary_json": self.artifact_url(summary_path),
+            "log": self.artifact_url(log_path),
+        }
+        return {
+            "schema_version": "talc-review-web-neural-model-v0.1",
+            "sample_id": sample.sample_id,
+            "image_name": sample.image_name,
+            "generated_at": utc_now_iso(),
+            "checkpoint": str(checkpoint),
+            "threshold": self.talc_threshold,
+            "summary": summary,
+            "paths": {
+                "model_talc_mask": str(model_mask_path),
+                "raw_talc_mask": str(generated_mask),
+                "summary_json": str(summary_path),
+                "log": str(log_path),
+            },
+            "urls": artifact_urls,
+            "model_talc_pixels": mask_pixels(copied_mask),
+        }
 
     def _human_review_masks(self, sample: ReviewSample) -> list[dict[str, str]]:
         masks: list[dict[str, str]] = []
@@ -812,6 +931,11 @@ class TalcReviewStore:
             },
             "urls": urls,
             "non_neural_talcose_qa": talcose_heuristic_qa,
+            "neural_model_runner": {
+                "checkpoint": str(self.talc_checkpoint) if self.talc_checkpoint else None,
+                "checkpoint_exists": bool(self.talc_checkpoint and self.talc_checkpoint.exists()),
+                "threshold": self.talc_threshold,
+            },
             "editable": sample.original_path is not None,
             "summary": summary,
         }
@@ -1177,6 +1301,9 @@ class TalcReviewHandler(BaseHTTPRequestHandler):
             if action == "talcose-heuristic":
                 self.send_json(self.server.store.run_talcose_heuristic(sample_id, payload))
                 return
+            if action == "neural-model":
+                self.send_json(self.server.store.run_neural_talc_model(sample_id, payload))
+                return
         raise ApiError(HTTPStatus.NOT_FOUND, "not found")
 
     def read_json_payload(self) -> dict[str, Any]:
@@ -1264,19 +1391,29 @@ def render_html_page() -> str:
       </div>
       <div class="topbar-controls">
         <div class="toolbar">
-          <button type="button" data-tool="brush" class="tool-button active" aria-pressed="true" aria-keyshortcuts="B" title="Brush (B): left mouse draws the selected class, right mouse erases it">Brush</button>
-          <button type="button" data-tool="fill" class="tool-button" aria-pressed="false" aria-keyshortcuts="F" title="Fill (F): click an area bounded by blue lines, sulfides, existing selected-class regions, or image edges">Fill</button>
-          <button type="button" data-tool="similar" class="tool-button" aria-pressed="false" title="Similar: add positive talc seeds and negative non-talc seeds to preview luma/color/texture-similar talc pixels">Similar</button>
-          <button type="button" data-tool="rectangle" class="tool-button" aria-pressed="false" title="Rectangle: drag or click two corners, then edit handles">Rectangle</button>
-          <button type="button" data-tool="polygon" class="tool-button" aria-pressed="false" title="Polygon: place points, close on the first point, right-click a point to remove">Polygon</button>
-          <button type="button" data-tool="sam2" class="tool-button" aria-pressed="false" title="SAM2: draw a box or hold still over a point for preview">SAM2</button>
+          <button type="button" data-tool="brush" class="tool-button icon-tool active" aria-pressed="true" aria-keyshortcuts="B" aria-label="Brush" title="Brush (B): left mouse draws the selected class, right mouse erases it" data-tooltip="Brush (B): left mouse draws the selected class, right mouse erases it">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18c0 1.7-1.5 3-3.4 3H3c1.1-.8 1.6-1.8 1.6-3 0-1.5 1.1-2.6 2.5-2.6S9 16.5 9 18z"></path><path d="M8.5 15.5 19.3 4.7a2 2 0 0 1 2.8 2.8L11.3 18.3"></path><path d="m13.5 7.5 3 3"></path></svg>
+            <span class="visually-hidden">Brush</span>
+          </button>
+          <button type="button" data-tool="fill" class="tool-button icon-tool" aria-pressed="false" aria-keyshortcuts="F" aria-label="Fill" title="Fill (F): click an area bounded by blue lines, sulfides, existing selected-class regions, or image edges" data-tooltip="Fill (F): click an area bounded by blue lines, sulfides, existing selected-class regions, or image edges">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 13 8-8 8 8-8 8-8-8z"></path><path d="m6 10 8 8"></path><path d="M19 15c1.4 1.7 2 2.9 2 3.8a2 2 0 0 1-4 0c0-.9.6-2.1 2-3.8z"></path></svg>
+            <span class="visually-hidden">Fill</span>
+          </button>
+          <button type="button" data-tool="similar" class="tool-button icon-tool" aria-pressed="false" aria-label="Similar" title="Similar: add positive talc seeds and negative non-talc seeds to preview luma/color/texture-similar talc pixels" data-tooltip="Similar: add positive talc seeds and negative non-talc seeds to preview luma/color/texture-similar talc pixels">
+            <svg class="magic-wand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20 14.5 9.5"></path><path d="m12.5 7.5 4 4"></path><path d="M16 3l.7 1.8 1.8.7-1.8.7L16 8l-.7-1.8-1.8-.7 1.8-.7L16 3z"></path><path d="M20 10l.5 1.3 1.3.5-1.3.5L20 13.6l-.5-1.3-1.3-.5 1.3-.5L20 10z"></path><path d="M6.5 4l.5 1.3 1.3.5-1.3.5-.5 1.3L6 6.3l-1.3-.5L6 5.3 6.5 4z"></path></svg>
+            <span class="visually-hidden">Similar</span>
+          </button>
+          <button type="button" data-tool="rectangle" class="tool-button icon-tool" aria-pressed="false" aria-label="Rectangle" title="Rectangle: drag or click two corners, then edit handles" data-tooltip="Rectangle: drag or click two corners, then edit handles">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="6" width="14" height="12" rx="1"></rect><path d="M3 4h4"></path><path d="M17 4h4"></path><path d="M3 20h4"></path><path d="M17 20h4"></path></svg>
+            <span class="visually-hidden">Rectangle</span>
+          </button>
+          <button type="button" data-tool="polygon" class="tool-button icon-tool" aria-pressed="false" aria-label="Polygon" title="Polygon: place points, close on the first point, right-click a point to remove" data-tooltip="Polygon: place points, close on the first point, right-click a point to remove">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5 19 8l-2 11H8L4 12 7 5z"></path><circle cx="7" cy="5" r="1.5"></circle><circle cx="19" cy="8" r="1.5"></circle><circle cx="17" cy="19" r="1.5"></circle><circle cx="8" cy="19" r="1.5"></circle><circle cx="4" cy="12" r="1.5"></circle></svg>
+            <span class="visually-hidden">Polygon</span>
+          </button>
+          <button type="button" data-tool="sam2" class="tool-button" aria-pressed="false" title="SAM2: draw a box or hold still over a point for preview" data-tooltip="SAM2: draw a box or hold still over a point for preview">SAM2</button>
           <span class="toolbar-separator" aria-hidden="true"></span>
-          <button type="button" id="undoBtn" class="icon-button" title="Undo last mask edit">Undo</button>
-          <span class="toolbar-separator" aria-hidden="true"></span>
-          <button type="button" id="zoomInBtn" class="small-button" title="Zoom in">Zoom In</button>
-          <button type="button" id="zoomOutBtn" class="small-button" title="Zoom out">Zoom Out</button>
-          <button type="button" id="fitBtn" class="small-button" title="Fit image to viewer">Fit</button>
-          <span id="zoomValue" class="zoom-value" aria-live="polite">100%</span>
+          <button type="button" id="undoBtn" class="icon-button" title="Undo last mask edit" data-tooltip="Undo last mask edit">Undo</button>
           <span class="toolbar-separator" aria-hidden="true"></span>
           <div class="tool-params" aria-label="Tool parameters">
             <div id="brushParams" class="tool-param-group">
@@ -1311,8 +1448,9 @@ def render_html_page() -> str:
         </div>
       </div>
     </div>
+    <div id="toolTooltip" class="tool-tooltip hidden" role="tooltip" aria-hidden="true"></div>
     <div class="viewer-wrap" id="viewerWrap">
-      <div class="viewer-top-widgets">
+      <div id="viewerTopWidgets" class="viewer-top-widgets">
         <div class="segmentation-class-widget" aria-label="Visible segmentation classes">
           <div class="segmentation-class-title">Segmentation classes</div>
           <div class="segmentation-class-header"><span>Show</span><span>Class</span><span>%</span><span>Edit</span></div>
@@ -1343,9 +1481,19 @@ def render_html_page() -> str:
             <span>Background</span>
           </label>
           <label class="viewer-layer-row">
+            <input type="checkbox" id="layerLines" aria-label="Show Original blue lines">
+            <span class="class-name"><span class="class-swatch blue-lines"></span>Original blue lines</span>
+            <span class="class-percent"></span>
+          </label>
+          <label class="viewer-layer-row">
             <input type="checkbox" id="layerClusterAreas" aria-label="Show Talc cluster areas">
             <span class="class-name"><span class="class-swatch cluster"></span>Talc cluster areas</span>
             <span id="clusterAreaPct" class="class-percent">0.00%</span>
+          </label>
+          <label class="viewer-layer-row">
+            <input type="checkbox" id="layerSulfides" aria-label="Show Sulfides">
+            <span class="class-name"><span class="class-swatch sulfides"></span>Sulfides</span>
+            <span class="class-percent"></span>
           </label>
         </div>
       </div>
@@ -1449,6 +1597,7 @@ def render_html_page() -> str:
         <option value="neural_model">Neural Model</option>
         <option value="current_vs_heuristic">Current vs Heuristic</option>
         <option value="current_vs_neural">Current vs Neural Model</option>
+        <option value="heuristic_vs_neural">Heuristic vs Neural Model</option>
       </select>
       <div id="currentComparisonControls" class="comparison-subpanel">
         <div class="filter-hint">Showing current annotation classes only.</div>
@@ -1461,6 +1610,12 @@ def render_html_page() -> str:
           <span><span class="qa-swatch qa-agreement"></span>agreement</span>
           <span><span class="qa-swatch qa-heuristic-only"></span>heuristic only</span>
           <span><span class="qa-swatch qa-human-only"></span>current only</span>
+          <span><span class="qa-swatch qa-conflict"></span>sulfide conflict</span>
+        </div>
+        <div id="heuristicNeuralComparisonLegend" class="qa-legend hidden">
+          <span><span class="qa-swatch qa-agreement"></span>agreement</span>
+          <span><span class="qa-swatch qa-heuristic-only"></span>heuristic only</span>
+          <span><span class="qa-swatch qa-model-only"></span>neural only</span>
           <span><span class="qa-swatch qa-conflict"></span>sulfide conflict</span>
         </div>
         <div class="qa-param-grid">
@@ -1486,13 +1641,13 @@ def render_html_page() -> str:
           <span><span class="qa-swatch qa-human-only"></span>current only</span>
           <span><span class="qa-swatch qa-conflict"></span>sulfide conflict</span>
         </div>
+        <button type="button" id="runNeuralModelBtn" class="small-button full-width">Run model</button>
         <div id="modelQaStats" class="filter-hint">Neural comparison is off.</div>
       </div>
     </div>
     <div id="assetWarnings" class="asset-warnings hidden" role="status" aria-live="polite"></div>
     <div class="layers">
       <label><input type="checkbox" id="layerAuto"> Autodetected mask</label>
-      <label><input type="checkbox" id="layerLines"> Original blue lines</label>
       <label><input type="checkbox" id="layerOverlap" checked> Sulfide overlap</label>
       <label><input type="checkbox" id="layerIgnore"> Ignore/uncertain</label>
     </div>
@@ -1645,17 +1800,19 @@ button, input, select, textarea { font: inherit; }
 .tag.ok { background: var(--tag-ok-bg); color: var(--tag-ok-text); }
 .tag.reviewed { background: var(--tag-reviewed-bg); color: var(--tag-reviewed-text); }
 .work-pane { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-.topbar { min-height: 56px; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 12px; display: grid; grid-template-columns: minmax(170px, 250px) minmax(260px, 1fr) auto; align-items: start; gap: 12px; }
+.topbar { flex: 0 0 auto; min-height: 56px; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 12px; display: grid; grid-template-columns: minmax(170px, 250px) minmax(0, 1fr); align-items: start; gap: 12px; }
 .topbar-title { min-width: 0; }
 .sample-title { font-size: 17px; font-weight: 750; }
 .sample-subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.topbar-controls { display: contents; }
-.toolbar { grid-column: 2; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-start; min-width: 0; }
-.review-actions { grid-column: 3; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: max-content; }
+.topbar-controls { grid-column: 2; min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; }
+.toolbar { flex: 1 1 520px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-start; min-width: 0; }
+.review-actions { flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: max-content; }
 .tool-button, .small-button, .icon-button, .primary-button, .danger-button, .plain-button { border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--text); padding: 7px 10px; cursor: pointer; }
 .tool-button:disabled, .small-button:disabled, .icon-button:disabled, .primary-button:disabled, .danger-button:disabled, .plain-button:disabled { opacity: 0.48; cursor: not-allowed; }
 .tool-button.active { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .tool-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+.icon-tool { width: 34px; height: 34px; min-width: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.icon-tool svg { width: 18px; height: 18px; display: block; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .seed-button.active, .seed-button[aria-pressed="true"] { background: var(--accent-weak); border-color: var(--accent); color: var(--text); }
 .icon-button { min-width: 54px; }
 .primary-button, .danger-button, .plain-button { font-weight: 700; }
@@ -1671,7 +1828,22 @@ button, input, select, textarea { font: inherit; }
 .tool-param-group.hidden { display: none; }
 .tool-param-group label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .tool-param-group input[type="range"] { max-width: 130px; }
-.zoom-value { min-width: 48px; color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; align-self: center; }
+.tool-tooltip {
+  position: fixed;
+  z-index: 40;
+  max-width: 320px;
+  padding: 7px 9px;
+  border: 1px solid var(--floating-panel-border);
+  border-radius: 6px;
+  background: var(--floating-panel-bg);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+.tool-tooltip.hidden { display: none; }
 .viewer-wrap { --pan-gutter-x: 0px; --pan-gutter-y: 0px; position: relative; flex: 1; overflow: auto; padding: 14px; padding-right: calc(14px + var(--pan-gutter-x)); padding-bottom: calc(14px + var(--pan-gutter-y)); background: var(--viewer-bg); }
 #viewerCanvas { display: block; margin-top: var(--pan-gutter-y); margin-left: var(--pan-gutter-x); background: var(--canvas-bg); image-rendering: auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.22); user-select: none; touch-action: none; -webkit-user-drag: none; }
 .viewer-options-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
@@ -1729,19 +1901,25 @@ button, input, select, textarea { font: inherit; }
   text-align: center;
 }
 .viewer-top-widgets {
-  position: sticky;
-  top: 10px;
-  z-index: 4;
-  margin-bottom: -88px;
+  position: fixed;
+  top: var(--viewer-top-widgets-top, 10px);
+  left: var(--viewer-top-widgets-left, 10px);
+  width: var(--viewer-top-widgets-width, 0px);
+  z-index: 6;
+  box-sizing: border-box;
+  visibility: var(--viewer-top-widgets-visibility, hidden);
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  align-content: flex-start;
+  flex-wrap: wrap;
   gap: 10px;
   pointer-events: none;
 }
 .segmentation-class-widget, .viewer-layer-widget {
   width: max-content;
-  max-width: min(286px, calc(100vw - 36px));
+  max-width: min(286px, 100%);
+  min-width: 0;
   display: grid;
   gap: 7px;
   padding: 9px 10px;
@@ -1762,14 +1940,16 @@ button, input, select, textarea { font: inherit; }
 .viewer-layer-row input { justify-self: center; }
 .viewer-layer-row:first-of-type { grid-template-columns: 28px minmax(122px, 1fr); }
 .segmentation-class-row input { justify-self: center; }
-.class-name { display: inline-flex; align-items: center; gap: 7px; }
+.class-name { min-width: 0; display: inline-flex; align-items: center; gap: 7px; overflow: hidden; text-overflow: ellipsis; }
 .class-percent { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
 .class-edit-placeholder { width: 18px; height: 18px; }
 .class-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(15, 23, 42, 0.25); }
 .class-swatch.positive-bag { background: #05a3d8; }
 .class-swatch.talc { background: #ffc400; }
 .class-swatch.not-talc { background: #dc2626; }
+.class-swatch.blue-lines { background: #2563eb; }
 .class-swatch.cluster { background: #ec4899; }
+.class-swatch.sulfides { background: #f97316; }
 .segmentation-threshold { border-top: 1px solid var(--line); padding-top: 7px; color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1.3; }
 .segmentation-threshold.under-target { color: var(--status-error); }
 .segmentation-threshold.target-met { color: #0f9f6e; }
@@ -1818,15 +1998,13 @@ button, input, select, textarea { font: inherit; }
 .advanced-box { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .advanced-box ul { margin: 8px 0 0; padding-left: 18px; }
 @media (max-width: 1320px) {
-  .topbar { grid-template-columns: minmax(170px, 220px) minmax(240px, 1fr); }
-  .review-actions { grid-column: 2; justify-self: end; }
+  .topbar { grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); }
 }
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 240px minmax(0, 1fr); }
   .details-pane { grid-column: 1 / -1; height: 260px; border-left: 0; border-top: 1px solid var(--line); }
   .topbar { grid-template-columns: minmax(160px, 1fr); }
-  .topbar-title, .toolbar, .review-actions { grid-column: 1; }
-  .review-actions { justify-self: start; }
+  .topbar-title, .topbar-controls { grid-column: 1; }
 }
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; grid-template-rows: minmax(150px, 26vh) minmax(420px, 1fr) minmax(220px, 30vh); overflow: auto; }
@@ -1836,6 +2014,7 @@ button, input, select, textarea { font: inherit; }
   .viewer-wrap { min-height: 300px; }
   .toolbar { gap: 5px; }
   .tool-button, .small-button, .icon-button, .primary-button, .danger-button, .plain-button { padding: 6px 8px; }
+  .icon-tool { width: 34px; height: 34px; min-width: 34px; padding: 0; }
 }
 """
 
@@ -1958,12 +2137,21 @@ const state = {
     canvas: null,
     stats: null
   },
+  heuristicNeuralComparison: {
+    key: null,
+    canvas: null,
+    stats: null
+  },
   heuristicStandalone: {
     key: null,
     canvas: null,
     stats: null
   },
   talcoseHeuristicQa: {
+    running: false,
+    result: null
+  },
+  neuralModelQa: {
     running: false,
     result: null
   }
@@ -2030,16 +2218,14 @@ const els = {
   similarApplyBtn: document.getElementById('similarApplyBtn'),
   similarClearBtn: document.getElementById('similarClearBtn'),
   sam2Params: document.getElementById('sam2Params'),
-  zoomInBtn: document.getElementById('zoomInBtn'),
-  zoomOutBtn: document.getElementById('zoomOutBtn'),
-  fitBtn: document.getElementById('fitBtn'),
-  zoomValue: document.getElementById('zoomValue'),
   zoomFitWidgetBtn: document.getElementById('zoomFitWidgetBtn'),
   zoomActualWidgetBtn: document.getElementById('zoomActualWidgetBtn'),
   zoomInWidgetBtn: document.getElementById('zoomInWidgetBtn'),
   zoomOutWidgetBtn: document.getElementById('zoomOutWidgetBtn'),
   zoomWidgetValue: document.getElementById('zoomWidgetValue'),
   zoomWidget: document.getElementById('zoomWidget'),
+  toolTooltip: document.getElementById('toolTooltip'),
+  viewerTopWidgets: document.getElementById('viewerTopWidgets'),
   themeSelect: document.getElementById('themeSelect'),
   baseMode: document.getElementById('baseMode'),
   brightnessThreshold: document.getElementById('brightnessThreshold'),
@@ -2063,8 +2249,10 @@ const els = {
   neuralComparisonControls: document.getElementById('neuralComparisonControls'),
   heuristicLayerLegend: document.getElementById('heuristicLayerLegend'),
   heuristicComparisonLegend: document.getElementById('heuristicComparisonLegend'),
+  heuristicNeuralComparisonLegend: document.getElementById('heuristicNeuralComparisonLegend'),
   neuralLayerLegend: document.getElementById('neuralLayerLegend'),
   neuralComparisonLegend: document.getElementById('neuralComparisonLegend'),
+  runNeuralModelBtn: document.getElementById('runNeuralModelBtn'),
   modelQaStats: document.getElementById('modelQaStats'),
   heuristicKThreshold: document.getElementById('heuristicKThreshold'),
   heuristicClassifyThreshold: document.getElementById('heuristicClassifyThreshold'),
@@ -2086,6 +2274,7 @@ const els = {
   sam2StatusBtn: document.getElementById('sam2StatusBtn'),
   layers: {
     background: document.getElementById('layerBackground'),
+    sulfides: document.getElementById('layerSulfides'),
     current: document.getElementById('layerCurrent'),
     talcNode: document.getElementById('layerTalcNode'),
     notTalc: document.getElementById('layerNotTalc'),
@@ -2222,7 +2411,6 @@ function applyZoom() {
   viewer.style.width = `${Math.max(120, Math.round(state.imageW * state.zoom))}px`;
   viewer.style.height = `${Math.max(120, Math.round(state.imageH * state.zoom))}px`;
   const zoomText = `${Math.round(state.zoom * 100)}%`;
-  if (els.zoomValue) els.zoomValue.textContent = zoomText;
   if (els.zoomWidgetValue) els.zoomWidgetValue.textContent = zoomText;
 }
 
@@ -2234,10 +2422,89 @@ function updateZoomWidgetPosition() {
   els.zoomWidget.style.setProperty('--zoom-widget-bottom', `${Math.max(8, Math.round(window.innerHeight - rect.bottom + 12))}px`);
 }
 
+function updateViewerTopWidgetsPosition() {
+  const wrap = document.getElementById('viewerWrap');
+  if (!wrap || !els.viewerTopWidgets) return;
+  const rect = wrap.getBoundingClientRect();
+  const workPane = wrap.closest('.work-pane');
+  const workRect = workPane ? workPane.getBoundingClientRect() : rect;
+  const viewportPadding = 8;
+  const viewerInset = 10;
+  const visibleLeft = Math.max(viewportPadding, Math.round(Math.max(rect.left, workRect.left) + viewerInset));
+  const rawRight = Math.round(Math.min(rect.right, workRect.right) - viewerInset);
+  const visibleRight = Math.min(
+    window.innerWidth - viewportPadding,
+    Math.max(visibleLeft, rawRight)
+  );
+  els.viewerTopWidgets.style.setProperty('--viewer-top-widgets-left', `${visibleLeft}px`);
+  els.viewerTopWidgets.style.setProperty('--viewer-top-widgets-top', `${Math.max(viewportPadding, Math.round(rect.top + viewerInset))}px`);
+  els.viewerTopWidgets.style.setProperty('--viewer-top-widgets-width', `${Math.max(0, visibleRight - visibleLeft)}px`);
+  els.viewerTopWidgets.style.setProperty('--viewer-top-widgets-visibility', 'visible');
+}
+
+function updateViewerOverlayPositions() {
+  updateZoomWidgetPosition();
+  updateViewerTopWidgetsPosition();
+}
+
+function hideToolTooltip() {
+  if (!els.toolTooltip) return;
+  els.toolTooltip.classList.add('hidden');
+  els.toolTooltip.setAttribute('aria-hidden', 'true');
+  els.toolTooltip.textContent = '';
+}
+
+function showToolTooltip(target) {
+  if (!els.toolTooltip || !target) return;
+  const text = target.dataset ? target.dataset.tooltip : '';
+  if (!text) return;
+  els.toolTooltip.textContent = text;
+  els.toolTooltip.classList.remove('hidden');
+  els.toolTooltip.setAttribute('aria-hidden', 'false');
+  const targetRect = target.getBoundingClientRect();
+  const tooltipRect = els.toolTooltip.getBoundingClientRect();
+  const viewportPadding = 8;
+  const centered = targetRect.left + targetRect.width / 2;
+  const minLeft = viewportPadding + tooltipRect.width / 2;
+  const maxLeft = Math.max(minLeft, window.innerWidth - viewportPadding - tooltipRect.width / 2);
+  const left = Math.min(maxLeft, Math.max(minLeft, centered));
+  let top = targetRect.bottom + 8;
+  if (top + tooltipRect.height > window.innerHeight - viewportPadding) {
+    top = Math.max(viewportPadding, targetRect.top - tooltipRect.height - 8);
+  }
+  els.toolTooltip.style.left = `${Math.round(left)}px`;
+  els.toolTooltip.style.top = `${Math.round(top)}px`;
+}
+
+function findToolTooltipTarget(node) {
+  let current = node;
+  while (current && current !== document) {
+    if (current.matches && current.matches('[data-tooltip]')) return current;
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function getToolTooltipTarget(event) {
+  return findToolTooltipTarget(event.target);
+}
+
+function handleToolTooltipOver(event) {
+  const target = getToolTooltipTarget(event);
+  if (target) showToolTooltip(target);
+}
+
+function handleToolTooltipOut(event) {
+  const target = getToolTooltipTarget(event);
+  if (!target) return;
+  if (findToolTooltipTarget(event.relatedTarget) === target) return;
+  hideToolTooltip();
+}
+
 function updatePanGutter(options = {}) {
   const wrap = document.getElementById('viewerWrap');
   if (!wrap) return state.panGutter;
-  updateZoomWidgetPosition();
+  updateViewerOverlayPositions();
   const previous = { ...state.panGutter };
   const next = {
     x: Math.max(PAN_GUTTER_MIN_PX, Math.round(wrap.clientWidth || 0)),
@@ -2396,7 +2663,8 @@ function selectTool(tool, options = {}) {
   if (options.status !== false) {
     const suffix = options.shortcut ? ` (${options.shortcut})` : '';
     const targetSuffix = ['brush', 'fill', 'rectangle', 'polygon'].includes(tool) ? ` Editing: ${editClassLabel()}.` : '';
-    setStatus(`Tool: ${button.textContent}${suffix}.${targetSuffix}`);
+    const label = button.getAttribute('aria-label') || button.textContent.trim();
+    setStatus(`Tool: ${label}${suffix}.${targetSuffix}`);
   }
   return true;
 }
@@ -3228,6 +3496,7 @@ function viewSettingsPayload() {
   const clusterStats = clusterSettings.enabled ? clusterOverlayStatsPayload() : null;
   const qaStats = state.modelHumanQa.stats;
   const heuristicStats = state.heuristicComparison.stats;
+  const heuristicNeuralStats = state.heuristicNeuralComparison.stats;
   return {
     comparison_mode: selectedComparisonMode(),
     brightness_threshold_luma: currentBrightnessThreshold(),
@@ -3250,10 +3519,12 @@ function viewSettingsPayload() {
       stats: qaStats
     },
     heuristic_qa: {
-      enabled: heuristicStandaloneEnabled() || heuristicComparisonEnabled(),
+      enabled: heuristicStandaloneEnabled() || heuristicComparisonEnabled() || heuristicNeuralComparisonEnabled(),
       standalone_enabled: heuristicStandaloneEnabled(),
       comparison_enabled: heuristicComparisonEnabled(),
+      heuristic_vs_neural_enabled: heuristicNeuralComparisonEnabled(),
       stats: heuristicStats,
+      heuristic_vs_neural_stats: heuristicNeuralStats,
       result: currentTalcoseHeuristicRecord()
     },
     background_mode: els.baseMode ? els.baseMode.value : null,
@@ -3477,12 +3748,18 @@ function invalidateModelHumanQa() {
   state.modelStandalone.key = null;
   state.modelStandalone.canvas = null;
   state.modelStandalone.stats = null;
+  state.heuristicNeuralComparison.key = null;
+  state.heuristicNeuralComparison.canvas = null;
+  state.heuristicNeuralComparison.stats = null;
 }
 
 function invalidateHeuristicComparison() {
   state.heuristicComparison.key = null;
   state.heuristicComparison.canvas = null;
   state.heuristicComparison.stats = null;
+  state.heuristicNeuralComparison.key = null;
+  state.heuristicNeuralComparison.canvas = null;
+  state.heuristicNeuralComparison.stats = null;
   state.heuristicStandalone.key = null;
   state.heuristicStandalone.canvas = null;
   state.heuristicStandalone.stats = null;
@@ -3494,13 +3771,15 @@ function selectedComparisonMode() {
 
 function updateComparisonModeVisibility() {
   const mode = selectedComparisonMode();
-  const heuristicMode = mode === 'heuristic' || mode === 'current_vs_heuristic';
-  const neuralMode = mode === 'neural_model' || mode === 'current_vs_neural';
+  const sourceComparisonMode = mode === 'heuristic_vs_neural';
+  const heuristicMode = mode === 'heuristic' || mode === 'current_vs_heuristic' || sourceComparisonMode;
+  const neuralMode = mode === 'neural_model' || mode === 'current_vs_neural' || sourceComparisonMode;
   if (els.currentComparisonControls) els.currentComparisonControls.classList.toggle('hidden', mode !== 'current');
   if (els.heuristicComparisonControls) els.heuristicComparisonControls.classList.toggle('hidden', !heuristicMode);
   if (els.neuralComparisonControls) els.neuralComparisonControls.classList.toggle('hidden', !neuralMode);
   if (els.heuristicLayerLegend) els.heuristicLayerLegend.classList.toggle('hidden', mode !== 'heuristic');
   if (els.heuristicComparisonLegend) els.heuristicComparisonLegend.classList.toggle('hidden', mode !== 'current_vs_heuristic');
+  if (els.heuristicNeuralComparisonLegend) els.heuristicNeuralComparisonLegend.classList.toggle('hidden', !sourceComparisonMode);
   if (els.neuralLayerLegend) els.neuralLayerLegend.classList.toggle('hidden', mode !== 'neural_model');
   if (els.neuralComparisonLegend) els.neuralComparisonLegend.classList.toggle('hidden', mode !== 'current_vs_neural');
   updateModelHumanQaStats();
@@ -3523,8 +3802,16 @@ function modelStandaloneEnabled() {
   return selectedComparisonMode() === 'neural_model';
 }
 
+function neuralModelPanelEnabled() {
+  return modelHumanQaEnabled() || modelStandaloneEnabled() || heuristicNeuralComparisonEnabled();
+}
+
 function heuristicComparisonEnabled() {
   return selectedComparisonMode() === 'current_vs_heuristic';
+}
+
+function heuristicNeuralComparisonEnabled() {
+  return selectedComparisonMode() === 'heuristic_vs_neural';
 }
 
 function heuristicStandaloneEnabled() {
@@ -3660,13 +3947,20 @@ function modelStandaloneCanvasForCurrentState() {
 
 function updateModelHumanQaStats() {
   if (!els.modelQaStats) return;
-  const enabled = modelHumanQaEnabled() || modelStandaloneEnabled() || humanAgreementQaEnabled();
+  const enabled = neuralModelPanelEnabled() || humanAgreementQaEnabled();
+  if (els.runNeuralModelBtn) {
+    els.runNeuralModelBtn.disabled = Boolean(state.neuralModelQa.running || !state.sampleId);
+  }
   if (!state.sample || !enabled) {
     els.modelQaStats.textContent = 'Neural model layer is off.';
     return;
   }
-  if ((modelHumanQaEnabled() || modelStandaloneEnabled()) && !modelMaskAvailable()) {
-    els.modelQaStats.textContent = 'Neural model mask is not available for this sample.';
+  if (state.neuralModelQa.running) {
+    els.modelQaStats.textContent = 'Running neural model for this sample...';
+    return;
+  }
+  if (neuralModelPanelEnabled() && !modelMaskAvailable()) {
+    els.modelQaStats.textContent = 'Neural model mask is not available for this sample. Run model to generate it.';
     return;
   }
   if (humanAgreementQaEnabled() && (!state.images.humanReviewMasks || state.images.humanReviewMasks.length === 0)) {
@@ -3684,6 +3978,15 @@ function updateModelHumanQaStats() {
     return;
   }
   if (!stats) {
+    if (heuristicNeuralComparisonEnabled()) {
+      const sourceStats = state.heuristicNeuralComparison.stats;
+      if (!sourceStats) {
+        els.modelQaStats.textContent = 'Heuristic vs neural overlay will update after redraw.';
+        return;
+      }
+      els.modelQaStats.textContent = `agreement ${formatPct(sourceStats.agreement, sourceStats.image_pixels)} · neural only ${formatPct(sourceStats.neural_only, sourceStats.image_pixels)} · heuristic only ${formatPct(sourceStats.heuristic_only, sourceStats.image_pixels)} · sulfide conflict ${formatPct(sourceStats.sulfide_conflict, sourceStats.image_pixels)}`;
+      return;
+    }
     els.modelQaStats.textContent = 'QA overlay will update after redraw.';
     return;
   }
@@ -3835,6 +4138,84 @@ function heuristicComparisonCanvasForCurrentState() {
   return canvas;
 }
 
+function heuristicNeuralComparisonCanvasForCurrentState() {
+  if (!state.sample || !heuristicNeuralComparisonEnabled()) {
+    state.heuristicNeuralComparison.stats = null;
+    return null;
+  }
+  if (!heuristicMaskAvailable() || !modelMaskAvailable()) {
+    state.heuristicNeuralComparison.stats = null;
+    return null;
+  }
+  const key = [
+    state.sampleId,
+    state.imageW,
+    state.imageH,
+    'heuristic-vs-neural',
+    heuristicMaskAvailable() ? 'heuristic-yes' : 'heuristic-no',
+    modelMaskAvailable() ? 'model-yes' : 'model-no'
+  ].join(':');
+  if (state.heuristicNeuralComparison.key === key && state.heuristicNeuralComparison.canvas) return state.heuristicNeuralComparison.canvas;
+
+  const width = state.imageW;
+  const height = state.imageH;
+  const total = width * height;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const canvasCtx = canvas.getContext('2d', { willReadFrequently: true });
+  const imageData = canvasCtx.createImageData(width, height);
+  const out = imageData.data;
+  const heuristicData = heuristicTalcCtx.getImageData(0, 0, width, height).data;
+  const modelData = modelTalcCtx.getImageData(0, 0, width, height).data;
+  const sulfideData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
+  const stats = {
+    agreement: 0,
+    heuristic_only: 0,
+    neural_only: 0,
+    sulfide_conflict: 0,
+    image_pixels: total
+  };
+
+  for (let pixel = 0; pixel < total; pixel += 1) {
+    const i = pixel * 4;
+    const heuristicActive = isMaskDataActive(heuristicData, pixel, 0);
+    const neuralActive = isMaskDataActive(modelData, pixel, 0);
+    const sulfideActive = sulfideData ? isMaskDataActive(sulfideData, pixel, 0) : false;
+    let alpha = 0;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+
+    if ((heuristicActive || neuralActive) && sulfideActive) {
+      stats.sulfide_conflict += 1;
+      r = 239; g = 68; b = 68; alpha = 178;
+    } else if (heuristicActive && neuralActive) {
+      stats.agreement += 1;
+      r = 34; g = 197; b = 94; alpha = 138;
+    } else if (heuristicActive) {
+      stats.heuristic_only += 1;
+      r = 249; g = 115; b = 22; alpha = 150;
+    } else if (neuralActive) {
+      stats.neural_only += 1;
+      r = 139; g = 92; b = 246; alpha = 150;
+    }
+
+    if (alpha > 0) {
+      out[i] = r;
+      out[i + 1] = g;
+      out[i + 2] = b;
+      out[i + 3] = alpha;
+    }
+  }
+
+  canvasCtx.putImageData(imageData, 0, 0);
+  state.heuristicNeuralComparison.key = key;
+  state.heuristicNeuralComparison.canvas = canvas;
+  state.heuristicNeuralComparison.stats = stats;
+  return canvas;
+}
+
 function updateHeuristicQaStats() {
   if (!els.heuristicQaStats) return;
   if (els.runTalcoseHeuristicBtn) {
@@ -3858,6 +4239,11 @@ function updateHeuristicQaStats() {
     comparisonText = stats
       ? ` · agreement ${formatPct(stats.agreement, stats.image_pixels)} · heuristic only ${formatPct(stats.heuristic_only, stats.image_pixels)} · current only ${formatPct(stats.current_only, stats.image_pixels)}`
       : heuristicMaskAvailable() ? ' · comparison updates after redraw' : ' · run or reload to load zone mask';
+  } else if (heuristicNeuralComparisonEnabled()) {
+    const stats = state.heuristicNeuralComparison.stats;
+    comparisonText = stats
+      ? ` · agreement ${formatPct(stats.agreement, stats.image_pixels)} · heuristic only ${formatPct(stats.heuristic_only, stats.image_pixels)} · neural only ${formatPct(stats.neural_only, stats.image_pixels)}`
+      : heuristicMaskAvailable() ? (modelMaskAvailable() ? ' · comparison updates after redraw' : ' · run neural model to compare') : ' · run or reload to load zone mask';
   } else if (heuristicStandaloneEnabled()) {
     const layerStats = state.heuristicStandalone.stats;
     comparisonText = layerStats
@@ -3910,6 +4296,34 @@ async function runTalcoseHeuristicQa() {
   }
 }
 
+async function runNeuralModelQa() {
+  if (!state.sampleId) return;
+  state.neuralModelQa.running = true;
+  updateModelHumanQaStats();
+  setStatus('Running neural talc model for this sample...');
+  try {
+    const result = await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/neural-model`, {});
+    state.neuralModelQa.result = result;
+    if (state.sample) {
+      state.sample.urls.model_talc_mask = result.urls ? result.urls.model_talc_mask : null;
+      if (state.sample.metrics) state.sample.metrics.has_model_talc_mask = Boolean(state.sample.urls.model_talc_mask);
+    }
+    const modelImg = await loadImage(result.urls ? result.urls.model_talc_mask : null, result.urls && result.urls.model_talc_mask ? 'Neural model talc mask' : null);
+    modelTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
+    state.images.modelMask = modelImg;
+    if (modelImg) modelTalcCtx.drawImage(modelImg, 0, 0, state.imageW, state.imageH);
+    invalidateModelHumanQa();
+    const modelPixels = Number.isFinite(Number(result.model_talc_pixels)) ? Number(result.model_talc_pixels) : countMaskPixelsFromCtx(modelTalcCtx);
+    setStatus(`Neural model finished: ${formatInt(modelPixels)} talc px.`);
+  } catch (err) {
+    setStatus(`Neural model failed: ${err.message}`, true);
+  } finally {
+    state.neuralModelQa.running = false;
+    updateModelHumanQaStats();
+    drawWithAvailabilityStatus();
+  }
+}
+
 function drawHeuristicComparisonOverlay() {
   const overlay = heuristicComparisonCanvasForCurrentState();
   if (!overlay) {
@@ -3930,6 +4344,18 @@ function drawHeuristicStandaloneOverlay() {
   updateHeuristicQaStats();
 }
 
+function drawHeuristicNeuralComparisonOverlay() {
+  const overlay = heuristicNeuralComparisonCanvasForCurrentState();
+  if (!overlay) {
+    updateModelHumanQaStats();
+    updateHeuristicQaStats();
+    return;
+  }
+  ctx.drawImage(overlay, 0, 0);
+  updateModelHumanQaStats();
+  updateHeuristicQaStats();
+}
+
 function drawComparisonOverlay() {
   if (selectedComparisonMode() === 'neural_model') {
     drawModelStandaloneOverlay();
@@ -3945,6 +4371,10 @@ function drawComparisonOverlay() {
   }
   if (selectedComparisonMode() === 'current_vs_heuristic') {
     drawHeuristicComparisonOverlay();
+    return;
+  }
+  if (selectedComparisonMode() === 'heuristic_vs_neural') {
+    drawHeuristicNeuralComparisonOverlay();
     return;
   }
   updateModelHumanQaStats();
@@ -3978,6 +4408,7 @@ function draw() {
   if (els.layers.auto.checked && state.staticTints.auto) ctx.drawImage(state.staticTints.auto, 0, 0);
   if (els.layers.lines.checked && state.staticTints.lines) ctx.drawImage(state.staticTints.lines, 0, 0);
   if (els.layers.overlap.checked && state.staticTints.overlap) ctx.drawImage(state.staticTints.overlap, 0, 0);
+  if (els.layers.sulfides && els.layers.sulfides.checked && state.staticTints.sulfide) ctx.drawImage(state.staticTints.sulfide, 0, 0);
   if (els.layers.ignore.checked && state.staticTints.ignore) ctx.drawImage(state.staticTints.ignore, 0, 0);
   if (els.layers.current.checked) ctx.drawImage(currentTintCanvas, 0, 0);
   if (els.layers.talcNode.checked) ctx.drawImage(talcNodeTintCanvas, 0, 0);
@@ -4011,6 +4442,7 @@ function selectedUnavailableLayerMessages() {
   if (els.layers.auto.checked && !state.staticTints.auto) messages.push('Autodetected mask layer is not available.');
   if (els.layers.lines.checked && !state.staticTints.lines) messages.push('Original blue lines layer is not available.');
   if (els.layers.overlap.checked && !state.staticTints.overlap) messages.push('Sulfide overlap layer is not available.');
+  if (els.layers.sulfides && els.layers.sulfides.checked && !state.staticTints.sulfide) messages.push('Sulfides layer is not available.');
   if (els.layers.ignore.checked && !state.staticTints.ignore) messages.push('Ignore/uncertain layer is not available.');
   if (els.layers.current.checked && !currentTintCanvas.width) messages.push('Positive bag layer is not available.');
   if (els.layers.talcNode.checked && !talcNodeTintCanvas.width) messages.push('Talc node layer is not available.');
@@ -5987,14 +6419,27 @@ document.addEventListener('mouseup', (event) => {
 
 window.addEventListener('resize', () => {
   updatePanGutter({ preserveCanvasPosition: true });
-  updateZoomWidgetPosition();
+  updateViewerOverlayPositions();
+  hideToolTooltip();
 });
 
 document.querySelectorAll('.tool-button').forEach((button) => {
   button.addEventListener('click', () => {
+    hideToolTooltip();
     selectTool(button.dataset.tool);
   });
 });
+
+document.addEventListener('pointerover', handleToolTooltipOver);
+document.addEventListener('pointermove', handleToolTooltipOver);
+document.addEventListener('mouseover', handleToolTooltipOver);
+document.addEventListener('mousemove', handleToolTooltipOver);
+document.addEventListener('focusin', handleToolTooltipOver);
+document.addEventListener('pointerout', handleToolTooltipOut);
+document.addEventListener('mouseout', handleToolTooltipOut);
+document.addEventListener('focusout', handleToolTooltipOut);
+
+document.addEventListener('scroll', hideToolTooltip, true);
 
 els.searchBox.addEventListener('input', renderQueue);
 els.filterSelect.addEventListener('change', renderQueue);
@@ -6067,13 +6512,16 @@ if (els.runTalcoseHeuristicBtn) {
     runTalcoseHeuristicQa().catch((err) => setStatus(`Non-neural classifier failed: ${err.message}`, true));
   });
 }
+if (els.runNeuralModelBtn) {
+  els.runNeuralModelBtn.addEventListener('click', () => {
+    runNeuralModelQa().catch((err) => setStatus(`Neural model failed: ${err.message}`, true));
+  });
+}
 els.sam2PromptMode.addEventListener('change', () => {
   clearSam2Preview({ redraw: false });
   updateSam2ApplyButton();
   if (state.tool === 'sam2') draw();
 });
-els.zoomInBtn.addEventListener('click', () => zoomBy(ZOOM_STEP));
-els.zoomOutBtn.addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
 els.zoomInWidgetBtn.addEventListener('click', () => zoomBy(ZOOM_STEP));
 els.zoomOutWidgetBtn.addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
 els.zoomFitWidgetBtn.addEventListener('click', fitToViewer);
@@ -6082,7 +6530,6 @@ els.themeSelect.addEventListener('change', () => applyTheme(els.themeSelect.valu
 els.subtractSulfidesBtn.addEventListener('click', () => {
   subtractSulfidesFromMask().catch((err) => setStatus(`Sulfide subtraction failed: ${err.message}`, true));
 });
-els.fitBtn.addEventListener('click', fitToViewer);
 els.undoBtn.addEventListener('click', () => undo().catch((err) => setStatus(`Undo failed: ${err.message}`, true)));
 els.saveBtn.addEventListener('click', () => saveReview(false).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
 els.saveNextBtn.addEventListener('click', () => saveReview(true).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
@@ -6253,6 +6700,7 @@ async function loadSample(sampleId, options = {}) {
     auto: buildTintFromImage(autoMask, [47, 120, 255, 90]),
     lines: buildTintFromImage(rawLines, [20, 40, 255, 170]),
     overlap: buildTintFromImage(overlapMask, [255, 85, 30, 140]),
+    sulfide: buildTintFromImage(sulfideMask, [249, 115, 22, 125]),
     ignore: buildTintFromImage(ignoreMask, [255, 214, 10, 110])
   };
   state.images = { original, annotated, qa, sulfideMask, modelMask, heuristicZoneMask, humanReviewMasks: humanReviewLoaded.filter(Boolean).map((item) => item.canvas), humanReviewLabels: humanReviewLoaded.filter(Boolean).map((item) => item.label) };
@@ -6286,6 +6734,8 @@ async function loadSample(sampleId, options = {}) {
   state.samBox = null;
   state.talcoseHeuristicQa.result = state.sample.non_neural_talcose_qa || null;
   state.talcoseHeuristicQa.running = false;
+  state.neuralModelQa.result = null;
+  state.neuralModelQa.running = false;
   clearSam2Preview({ redraw: false });
   clearSimilarTalcPreview({ redraw: false });
   invalidateHeuristicComparison();
@@ -6299,6 +6749,8 @@ async function loadSample(sampleId, options = {}) {
   draw();
   renderQueue();
   updateViewerCursor();
+  updateViewerOverlayPositions();
+  requestAnimationFrame(updateViewerOverlayPositions);
   setStatus(state.sample.editable ? `Editing positive bag and talc-node masks. Active edit class: ${editClassLabel()}.` : 'Original image is missing; editing disabled for this sample.', !state.sample.editable);
 }
 
@@ -6309,6 +6761,8 @@ updateSimilarStrictnessUi();
 setSimilarSeedMode('positive');
 updateToolParams();
 updateComparisonModeVisibility();
+updateViewerOverlayPositions();
+requestAnimationFrame(updateViewerOverlayPositions);
 
 loadManifest(true).catch((err) => {
   emptyState.textContent = `Failed to start: ${err.message}`;
@@ -6326,6 +6780,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sulfide-mask-dir", type=Path, default=None, help="Optional sulfide masks by image stem for conversion.")
     parser.add_argument("--silicate-mask-dir", type=Path, default=None, help="Optional silicate support masks by image stem for conversion.")
     parser.add_argument("--talc-model-mask-dir", type=Path, default=None, help="Optional trained talc model prediction masks for model-vs-human QA.")
+    parser.add_argument(
+        "--talc-checkpoint",
+        type=Path,
+        default=DEFAULT_TALC_CHECKPOINT if DEFAULT_TALC_CHECKPOINT.exists() else None,
+        help="Trained talc segmentation checkpoint used by the per-sample Neural Model -> Run model action.",
+    )
+    parser.add_argument("--talc-threshold", type=float, default=DEFAULT_TALC_THRESHOLD, help="Probability threshold for Neural Model -> Run model.")
+    parser.add_argument("--talc-tile-size", type=int, default=DEFAULT_TALC_TILE_SIZE, help="Tile size for Neural Model -> Run model.")
+    parser.add_argument("--talc-stride", type=int, default=DEFAULT_TALC_STRIDE, help="Tile stride for Neural Model -> Run model.")
+    parser.add_argument("--talc-batch-size", type=int, default=DEFAULT_TALC_BATCH_SIZE, help="Batch size for Neural Model -> Run model.")
+    parser.add_argument("--talc-device", default=DEFAULT_TALC_DEVICE, help="Device for Neural Model -> Run model: auto, cpu, mps, cuda.")
     parser.add_argument(
         "--human-review-dir",
         type=Path,
@@ -6363,6 +6828,12 @@ def main(argv: list[str] | None = None) -> int:
             sam2_model_id=args.sam2_model_id,
             sam2_device=args.sam2_device,
             talc_model_mask_dir=args.talc_model_mask_dir,
+            talc_checkpoint=args.talc_checkpoint,
+            talc_threshold=args.talc_threshold,
+            talc_tile_size=args.talc_tile_size,
+            talc_stride=args.talc_stride,
+            talc_batch_size=args.talc_batch_size,
+            talc_device=args.talc_device,
             human_review_dirs=args.human_review_dir,
         )
     except ApiError as exc:

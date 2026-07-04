@@ -35,7 +35,7 @@ MAX_PANORAMA_SCALE_FACTOR = 1.0
 
 # Canonical default preprocessing preset. Matches DEFAULT_APP_SETTINGS["preprocess"].
 DEFAULT_PREPROCESS_SETTINGS: dict[str, Any] = {
-    "preprocessing_enabled": True,
+    "preprocessing_enabled": False,
     "illumination_normalization": True,
     "denoise": True,
     "contrast_correction": True,
@@ -150,7 +150,7 @@ def normalize_preprocess_settings(payload: Any, base: dict[str, Any] | None = No
 def preprocessing_enabled(preset: dict[str, Any] | None) -> bool:
     if not isinstance(preset, dict):
         return False
-    return bool(preset.get("preprocessing_enabled", preset.get("enabled", True)))
+    return bool(preset.get("preprocessing_enabled", preset.get("enabled", DEFAULT_PREPROCESS_SETTINGS["preprocessing_enabled"])))
 
 
 def apply_preprocessing(image: Image.Image, preset: dict[str, Any]) -> Image.Image:

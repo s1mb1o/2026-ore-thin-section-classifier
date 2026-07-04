@@ -17,10 +17,12 @@ It replaces the always-visible preprocessing checklist in the left sidebar with 
 - Show preprocessing as one compact control:
 
 ```text
-[x] Preprocessing   [Edit...] [Apply]
+[ ] Preprocessing   [Edit...] [Apply]
 ```
 
-- Keep preprocessing enabled by default and remember the user's choice.
+- Keep preprocessing disabled by default and remember the user's choice.
+- Keep individual preprocessing filter options selected by default as the
+  ready-to-use preset for when the main `Preprocessing` checkbox is enabled.
 - Move these settings into an `Edit...` popup:
   - illumination normalization `(?)`;
   - noise reduction `(?)`;
@@ -75,7 +77,7 @@ The preprocessing preset sent by the browser includes:
 
 ```json
 {
-  "preprocessing_enabled": true,
+  "preprocessing_enabled": false,
   "illumination_normalization": true,
   "denoise": true,
   "contrast_correction": true,
@@ -135,5 +137,7 @@ The internal analysis input can still be stored at `input/preprocessed.png` for 
 - `Apply` checks the main preprocessing checkbox and updates the preprocessed preview.
 - `Start` with the main checkbox unchecked creates a complete run without a preprocessed display layer.
 - `preprocessed` and side-by-side `preprocessed` controls are disabled when no preprocessed display layer exists or preprocessing is currently unchecked for tuning.
+- The default main preprocessing checkbox is unchecked, while the default
+  filter/panorama options are checked.
 - The user's preprocessing enabled/settings choice persists in local storage.
 - Focused unit tests cover the UI controls and disabled-preprocessed run behavior.

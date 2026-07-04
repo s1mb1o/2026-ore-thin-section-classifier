@@ -68,7 +68,9 @@ from ore_classifier.gis_export import (  # noqa: E402
 )
 from ore_classifier.preprocessing import (  # noqa: E402
     apply_preprocessing,
+    default_preprocess_settings,
     normalize_preprocess_settings,
+    preprocessing_enabled as preprocess_gate_enabled,
 )
 from ore_classifier.rule_config_io import default_rule_config  # noqa: E402
 from ore_classifier.tiling import iter_tiles  # noqa: E402
@@ -80,13 +82,20 @@ DEFAULT_WORKSPACE_DIR = ROOT / "outputs/ore_pipeline_ui"
 DEFAULT_CHECKPOINT = ROOT / "models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt"
 DEFAULT_TALC_CHECKPOINT = ROOT / "outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt"
 DEFAULT_TALC_THRESHOLD = 0.5
+DEFAULT_SULFIDE_BACKEND = "ml" if DEFAULT_CHECKPOINT.exists() else "heuristic"
 DEFAULT_TALC_BACKEND = "ml" if DEFAULT_TALC_CHECKPOINT.exists() else "heuristic"
 DEFAULT_GRADE_CHECKPOINT = ROOT / "models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt"
+DEFAULT_GRAIN_BACKEND = "heuristic"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 220 * 1024 * 1024
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 LOG_ENTRY_LIMIT = 300
 STATUS_LOG_LIMIT = 80
+# /api/status is the endpoint the UI polls continuously; recomputing it (filesystem
+# size walks + disk/memory/cpu/gpu probes) per request serializes under the GIL and
+# caps throughput. Cache the expensive computation for a short window; the live access
+# log is still injected fresh on every request (see OrePipelineHTTPServer.status_payload).
+STATUS_CACHE_TTL_SECONDS = 1.0
 RUNTIME_TEST_TIMEOUT_SECONDS = 90
 DISPLAY_TILE_SIZE = 1024
 DISPLAY_TILE_STRIDE = 768
@@ -144,6 +153,7 @@ BATCH_SCHEMA_VERSION = "ore-pipeline-batch-v0.1"
 BATCH_ITEM_SCHEMA_VERSION = "ore-pipeline-batch-item-v0.1"
 RUNTIME_PROVENANCE_SCHEMA_VERSION = "ore-pipeline-runtime-provenance-v0.1"
 TALC_CLUSTERIZATION_SCHEMA_VERSION = "ore-pipeline-talc-clusterization-v0.1"
+APP_VERSION = "v2"
 OPENAPI_DOCUMENT_VERSION = "0.1.0"
 AUTH_COOKIE_NAME = "ore_pipeline_session"
 AUTH_SESSION_SECONDS = 24 * 60 * 60
@@ -173,14 +183,16 @@ DEFAULT_APP_SETTINGS = {
     "theme": "system",
     "show_tiling": False,
     "runtime": {
-        "backend": "heuristic",
+        "backend": DEFAULT_SULFIDE_BACKEND,
         "checkpoint": str(DEFAULT_CHECKPOINT.resolve()) if DEFAULT_CHECKPOINT.exists() else "",
         "talc_backend": DEFAULT_TALC_BACKEND,
         "talc_checkpoint": str(DEFAULT_TALC_CHECKPOINT.resolve()) if DEFAULT_TALC_CHECKPOINT.exists() else "",
         "talc_threshold": DEFAULT_TALC_THRESHOLD,
+        "grain_backend": DEFAULT_GRAIN_BACKEND,
+        "grade_checkpoint": str(DEFAULT_GRADE_CHECKPOINT.resolve()) if DEFAULT_GRADE_CHECKPOINT.exists() else "",
     },
     "preprocess": {
-        "preprocessing_enabled": True,
+        "preprocessing_enabled": False,
         "illumination_normalization": True,
         "denoise": True,
         "contrast_correction": True,
@@ -442,33 +454,7 @@ def normalized_panorama_scaling_mode(value: Any, fallback: str = PANORAMA_SCALIN
 
 
 def preset_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    preset = {
-        "preprocessing_enabled": bool(payload.get("preprocessing_enabled", payload.get("enabled", True))),
-        "illumination_normalization": bool(payload.get("illumination_normalization") or payload.get("illumination")),
-        "denoise": bool(payload.get("denoise") or payload.get("noise_reduction")),
-        "contrast_correction": bool(payload.get("contrast_correction") or payload.get("contrast")),
-        "panorama_scaling": bool(payload.get("panorama_scaling") or payload.get("panoramaScaling")),
-        "panorama_scaling_mode": normalized_panorama_scaling_mode(
-            payload_value(payload, "panorama_scaling_mode", ("panoramaScalingMode",))
-        ),
-    }
-    max_side = payload_value(payload, "panorama_max_side_px", ("panoramaMaxSidePx", "panorama_max_side", "panoramaMaxSide"))
-    if max_side is not None:
-        preset["panorama_max_side_px"] = normalized_int(
-            max_side,
-            DEFAULT_PANORAMA_MAX_SIDE_PX,
-            MIN_PANORAMA_MAX_SIDE_PX,
-            MAX_PANORAMA_MAX_SIDE_PX,
-        )
-    scale_factor = payload_value(payload, "panorama_scale_factor", ("panoramaScaleFactor", "panorama_scaling_factor"))
-    if scale_factor is not None:
-        preset["panorama_scale_factor"] = normalized_float(
-            scale_factor,
-            DEFAULT_PANORAMA_SCALE_FACTOR,
-            MIN_PANORAMA_SCALE_FACTOR,
-            MAX_PANORAMA_SCALE_FACTOR,
-        )
-    return preset
+    return normalize_preprocess_settings(payload, default_preprocess_settings())
 
 
 def augmentation_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -655,12 +641,39 @@ def normalize_settings_runtime(payload: Any, base: dict[str, Any] | None = None,
             raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime.talc_checkpoint is required for talc ml backend")
         if validate_checkpoint and not Path(talc_checkpoint_value).exists():
             raise ApiError(HTTPStatus.BAD_REQUEST, f"settings.runtime.talc_checkpoint does not exist: {talc_checkpoint_value}")
+    grain_backend_raw = payload_value(payload, "grain_backend", ("grainBackend", "grade_backend", "gradeBackend"))
+    grain_backend = str(grain_backend_raw if grain_backend_raw is not None else fallback.get("grain_backend", "heuristic") or "heuristic").lower()
+    if grain_backend in {"model", "ml_model", "cnn", "grade_cnn"}:
+        grain_backend = "ml"
+    if grain_backend in {"rules", "rule", "component_rules", "heuristics"}:
+        grain_backend = "heuristic"
+    if grain_backend not in {"heuristic", "ml"}:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime.grain_backend must be heuristic or ml")
+    grade_checkpoint_raw = payload_value(payload, "grade_checkpoint", ("gradeCheckpoint", "grain_checkpoint", "grainCheckpoint"))
+    grade_checkpoint_value = str(
+        grade_checkpoint_raw
+        if grade_checkpoint_raw is not None
+        else fallback.get("grade_checkpoint", "")
+        or ""
+    ).strip()
+    if grade_checkpoint_value:
+        grade_checkpoint_path = Path(grade_checkpoint_value).expanduser()
+        if not grade_checkpoint_path.is_absolute():
+            grade_checkpoint_path = ROOT / grade_checkpoint_path
+        grade_checkpoint_value = str(grade_checkpoint_path.resolve())
+    if grain_backend == "ml":
+        if not grade_checkpoint_value:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime.grade_checkpoint is required for grain ml backend")
+        if validate_checkpoint and not Path(grade_checkpoint_value).exists():
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"settings.runtime.grade_checkpoint does not exist: {grade_checkpoint_value}")
     return {
         "backend": backend,
         "checkpoint": checkpoint_value,
         "talc_backend": talc_backend,
         "talc_checkpoint": talc_checkpoint_value,
         "talc_threshold": talc_threshold,
+        "grain_backend": grain_backend,
+        "grade_checkpoint": grade_checkpoint_value,
     }
 
 
@@ -1617,9 +1630,10 @@ class OrePipelineStore:
         processing_max_side: int,
         panorama_max_side: int,
         preview_max_sides: tuple[int, ...],
-        talc_backend: str = "heuristic",
+        talc_backend: str = DEFAULT_TALC_BACKEND,
         talc_checkpoint: Path | None = None,
         talc_threshold: float = DEFAULT_TALC_THRESHOLD,
+        grain_backend: str = DEFAULT_GRAIN_BACKEND,
         grade_checkpoint: Path | None = None,
     ) -> None:
         self.workspace_dir = resolve_path(workspace_dir)
@@ -1631,10 +1645,15 @@ class OrePipelineStore:
         self.backend = backend
         self.checkpoint = resolve_path(checkpoint) if checkpoint else None
         self.talc_backend = talc_backend
-        self.talc_checkpoint = resolve_path(talc_checkpoint) if talc_checkpoint else None
+        effective_talc_checkpoint = talc_checkpoint
+        if effective_talc_checkpoint is None and self.talc_backend == "ml" and DEFAULT_TALC_CHECKPOINT.exists():
+            effective_talc_checkpoint = DEFAULT_TALC_CHECKPOINT
+        self.talc_checkpoint = resolve_path(effective_talc_checkpoint) if effective_talc_checkpoint else None
         self.talc_threshold = float(talc_threshold)
+        self.grain_backend = grain_backend
         self.grade_checkpoint = resolve_path(grade_checkpoint) if grade_checkpoint else None
         self._grade_model: Any = None
+        self._grade_model_checkpoint: Path | None = None
         self.processing_max_side = int(processing_max_side)
         self.panorama_max_side = int(panorama_max_side)
         self.preview_max_sides = preview_max_sides
@@ -1662,6 +1681,8 @@ class OrePipelineStore:
             talc_backend=self.talc_backend,
             talc_checkpoint=str(self.talc_checkpoint) if self.talc_checkpoint else None,
             talc_threshold=self.talc_threshold,
+            grain_backend=self.grain_backend,
+            grade_checkpoint=str(self.grade_checkpoint) if self.grade_checkpoint else None,
         )
 
     def record_system_event(self, level: str, message: str, **fields: Any) -> None:
@@ -1719,6 +1740,8 @@ class OrePipelineStore:
                 "talc_backend": self.talc_backend,
                 "talc_checkpoint": str(self.talc_checkpoint) if self.talc_checkpoint else "",
                 "talc_threshold": self.talc_threshold,
+                "grain_backend": self.grain_backend,
+                "grade_checkpoint": str(self.grade_checkpoint) if self.grade_checkpoint else "",
             }
         )
 
@@ -1755,6 +1778,12 @@ class OrePipelineStore:
             self.talc_backend = normalized["talc_backend"]
             self.talc_checkpoint = Path(normalized["talc_checkpoint"]) if normalized["talc_checkpoint"] else None
             self.talc_threshold = float(normalized["talc_threshold"])
+            previous_grade_checkpoint = self.grade_checkpoint
+            self.grain_backend = normalized["grain_backend"]
+            self.grade_checkpoint = Path(normalized["grade_checkpoint"]) if normalized["grade_checkpoint"] else None
+            if self.grade_checkpoint != previous_grade_checkpoint:
+                self._grade_model = None
+                self._grade_model_checkpoint = None
         return self.current_runtime_settings()
 
     def _load_persisted_runtime_settings(self) -> None:
@@ -1791,6 +1820,8 @@ class OrePipelineStore:
         talc_backend: str | None = None,
         talc_checkpoint: str | Path | None = None,
         talc_threshold: float | None = None,
+        grain_backend: str | None = None,
+        grade_checkpoint: str | Path | None = None,
     ) -> dict[str, Any]:
         backend_value = str(backend or self.backend or "heuristic").lower()
         checkpoint_path = self._runtime_checkpoint_path(checkpoint if checkpoint is not None else self.checkpoint)
@@ -1808,16 +1839,25 @@ class OrePipelineStore:
             if talc_threshold is not None
             else normalized_float(self.talc_threshold, DEFAULT_TALC_THRESHOLD, 0.01, 0.99)
         )
+        grain_backend_value = str(grain_backend or self.grain_backend or "heuristic").lower()
+        if grain_backend_value in {"model", "ml_model", "cnn", "grade_cnn"}:
+            grain_backend_value = "ml"
+        if grain_backend_value not in {"heuristic", "ml"}:
+            grain_backend_value = "heuristic"
+        grade_checkpoint_path = self._runtime_checkpoint_path(grade_checkpoint if grade_checkpoint is not None else self.grade_checkpoint)
+        grade_checkpoint_path = grade_checkpoint_path if grain_backend_value == "ml" else None
         return {
             "schema_version": RUNTIME_PROVENANCE_SCHEMA_VERSION,
             "backend": backend_value,
             "talc_backend": talc_backend_value,
             "talc_threshold": talc_threshold_value,
+            "grain_backend": grain_backend_value,
             "recorded_at": utc_now_iso(),
             "python_executable": sys.executable,
             "checkpoints": {
                 "binary_sulfide": binary_checkpoint,
                 "talc": talc_checkpoint_path,
+                "grain_classification": grade_checkpoint_path,
                 "final_segmentation": None,
             },
             "models": {
@@ -1839,8 +1879,43 @@ class OrePipelineStore:
                     "role": "ordinary/fine intergrowth and final class metrics",
                     "rule_config": json_safe_value(DEFAULT_RULE_CONFIG),
                 },
+                "grain_classification": {
+                    "backend": "ml" if grain_backend_value == "ml" else "ore_grain_heuristics",
+                    "checkpoint": grade_checkpoint_path,
+                    "role": "ordinary/fine grain classification",
+                    "source": "ML checkpoint" if grain_backend_value == "ml" else "component feature heuristics",
+                },
             },
         }
+
+    def _initial_runtime_from_settings(self, runtime: dict[str, Any]) -> dict[str, Any]:
+        normalized = normalize_settings_runtime(runtime, base=self.current_runtime_settings(), validate_checkpoint=False)
+        return self._initial_runtime_provenance(
+            backend=normalized["backend"],
+            checkpoint=normalized["checkpoint"],
+            talc_backend=normalized["talc_backend"],
+            talc_checkpoint=normalized["talc_checkpoint"],
+            talc_threshold=normalized["talc_threshold"],
+            grain_backend=normalized["grain_backend"],
+            grade_checkpoint=normalized["grade_checkpoint"],
+        )
+
+    def _runtime_settings_from_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._runtime_provenance_from_metadata(metadata)
+        checkpoints = runtime.get("checkpoints") if isinstance(runtime.get("checkpoints"), dict) else {}
+        return normalize_settings_runtime(
+            {
+                "backend": runtime.get("backend"),
+                "checkpoint": checkpoints.get("binary_sulfide") or runtime.get("checkpoint"),
+                "talc_backend": runtime.get("talc_backend"),
+                "talc_checkpoint": checkpoints.get("talc") or runtime.get("talc_checkpoint"),
+                "talc_threshold": runtime.get("talc_threshold"),
+                "grain_backend": runtime.get("grain_backend"),
+                "grade_checkpoint": checkpoints.get("grain_classification") or runtime.get("grade_checkpoint"),
+            },
+            base=self.current_runtime_settings(),
+            validate_checkpoint=False,
+        )
 
     def _runtime_provenance_from_metadata(self, metadata: dict[str, Any], run_dir: Path | None = None) -> dict[str, Any]:
         runtime = metadata.get("runtime") if isinstance(metadata.get("runtime"), dict) else {}
@@ -1868,12 +1943,32 @@ class OrePipelineStore:
             or (str(self.talc_checkpoint) if self.talc_checkpoint else None)
         )
         talc_threshold = runtime.get("talc_threshold", talc_model.get("threshold", self.talc_threshold))
+        grain_model = runtime_models.get("grain_classification") if isinstance(runtime_models.get("grain_classification"), dict) else {}
+        grain_backend = str(
+            runtime.get("grain_backend")
+            or grain_model.get("configured_backend")
+            or grain_model.get("backend")
+            or self.grain_backend
+            or "heuristic"
+        ).lower()
+        if grain_backend in {"model", "ml_model", "cnn", "grade_cnn"}:
+            grain_backend = "ml"
+        elif grain_backend in {"rules", "rule", "component_rules", "ore_grain_heuristics", "heuristics"}:
+            grain_backend = "heuristic"
+        grade_checkpoint = (
+            checkpoints.get("grain_classification")
+            or runtime.get("grade_checkpoint")
+            or grain_model.get("checkpoint")
+            or (str(self.grade_checkpoint) if self.grade_checkpoint else None)
+        )
         provenance = self._initial_runtime_provenance(
             backend=backend,
             checkpoint=checkpoint,
             talc_backend=talc_backend,
             talc_checkpoint=talc_checkpoint,
             talc_threshold=talc_threshold,
+            grain_backend=grain_backend,
+            grade_checkpoint=grade_checkpoint,
         )
         if isinstance(runtime.get("checkpoints"), dict):
             for key, value in runtime["checkpoints"].items():
@@ -1969,6 +2064,16 @@ class OrePipelineStore:
                 "tiles": talc_summary.get("tiles"),
                 "talc_fraction_non_sulfide": talc_summary.get("talc_fraction_non_sulfide"),
                 "talc_fraction_analyzed": talc_summary.get("talc_fraction_analyzed"),
+            }
+        grade_branch = metadata.get("grade_branch") if isinstance(metadata.get("grade_branch"), dict) else None
+        if grade_branch is not None:
+            runtime["grain_backend"] = runtime.get("grain_backend") or "ml"
+            runtime["models"]["grain_classification"] = {
+                **runtime["models"].get("grain_classification", {}),
+                "backend": "ml" if not grade_branch.get("error") else "ml_error",
+                "checkpoint": runtime["checkpoints"].get("grain_classification"),
+                "role": "ordinary/fine grain classification",
+                "prediction": json_safe_value(grade_branch),
             }
         runtime["completed_at"] = metadata.get("completed_at") or runtime.get("completed_at")
         if metadata.get("elapsed_seconds") is not None:
@@ -2116,7 +2221,7 @@ class OrePipelineStore:
         metadata = self._read_upload(upload_id)
         original_path = resolve_path(metadata["original_path"])
         augmentation = normalize_augmentation_settings(augmentation_settings or default_augmentation_settings())
-        preprocessing_enabled = bool(preset.get("preprocessing_enabled", preset.get("enabled", True)))
+        preprocessing_enabled = preprocess_gate_enabled(preset)
         target_max_side, panorama_scaling = panorama_scaling_target(
             preset,
             preprocessing_enabled=preprocessing_enabled,
@@ -2264,6 +2369,7 @@ class OrePipelineStore:
         curated_metadata: Any = None,
         augmentation_settings: dict[str, Any] | None = None,
         talc_clusterization: dict[str, Any] | None = None,
+        runtime_settings: dict[str, Any] | None = None,
         batch_link: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_curated_metadata = normalize_curated_metadata_payload(curated_metadata)
@@ -2271,6 +2377,7 @@ class OrePipelineStore:
             talc_clusterization,
             self.app_settings().get("talc_clusterization"),
         )
+        normalized_runtime = normalize_settings_runtime(runtime_settings or {}, base=self.current_runtime_settings(), validate_checkpoint=True)
         upload = self.prepare_upload(upload_id, preset, augmentation_settings)
         run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000_000:09d}_{hashlib.sha1(upload_id.encode()).hexdigest()[:8]}"
         run_dir = self.runs_dir / run_id
@@ -2282,6 +2389,7 @@ class OrePipelineStore:
             preset,
             curated_metadata=normalized_curated_metadata,
             talc_clusterization=normalized_talc_clusterization,
+            runtime_settings=normalized_runtime,
             batch_link=batch_link,
         )
         started_at_iso = utc_now_iso()
@@ -2323,6 +2431,7 @@ class OrePipelineStore:
         *,
         augmentation_settings: dict[str, Any] | None = None,
         talc_clusterization: dict[str, Any] | None = None,
+        runtime_settings: dict[str, Any] | None = None,
         changed_step: str,
     ) -> dict[str, Any]:
         if changed_step not in {"augmentation", "preprocess"}:
@@ -2338,6 +2447,11 @@ class OrePipelineStore:
         normalized_talc_clusterization = normalize_talc_clusterization_payload(
             talc_clusterization,
             parent.get("talc_clusterization") if isinstance(parent.get("talc_clusterization"), dict) else self.app_settings().get("talc_clusterization"),
+        )
+        normalized_runtime = normalize_settings_runtime(
+            runtime_settings or {},
+            base=self._runtime_settings_from_metadata(parent),
+            validate_checkpoint=True,
         )
         upload = self.prepare_upload(upload_id, preset, augmentation_settings)
         if status == "complete":
@@ -2361,6 +2475,7 @@ class OrePipelineStore:
             preset,
             curated_metadata=(parent.get("input") or {}).get("curated_metadata"),
             talc_clusterization=normalized_talc_clusterization,
+            runtime_settings=normalized_runtime,
         )
         metadata = self._read_run(target_run_id)
         metadata["status"] = "prepared"
@@ -2369,7 +2484,9 @@ class OrePipelineStore:
         metadata["eta_seconds"] = None
         metadata["backend"] = parent.get("backend", self.backend)
         metadata["checkpoint"] = parent.get("checkpoint", str(self.checkpoint) if self.checkpoint else None)
-        metadata["runtime"] = self._runtime_provenance_from_metadata(parent, parent_dir)
+        metadata["runtime"] = self._initial_runtime_from_settings(normalized_runtime)
+        metadata["backend"] = metadata["runtime"]["backend"]
+        metadata["checkpoint"] = metadata["runtime"]["checkpoints"].get("binary_sulfide")
         metadata["derivation"] = {
             "type": "apply_pipeline_settings",
             "parent_run_id": parent_run_id,
@@ -2382,7 +2499,7 @@ class OrePipelineStore:
         self._finalize_prepared_run_metadata(
             metadata,
             target_run_dir,
-            preprocessing_enabled=bool((upload.get("preprocess") or {}).get("enabled", True)),
+            preprocessing_enabled=preprocess_gate_enabled(upload.get("preprocess")),
         )
         self._write_json(target_run_dir / "run.json", metadata)
         self.record_system_event(
@@ -2401,6 +2518,7 @@ class OrePipelineStore:
         run_async: bool = True,
         curated_metadata: Any = None,
         talc_clusterization: dict[str, Any] | None = None,
+        runtime_settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         run_dir = self._existing_run_dir(run_id)
         metadata = self._read_run(run_id)
@@ -2411,6 +2529,15 @@ class OrePipelineStore:
                 talc_clusterization,
                 metadata.get("talc_clusterization") if isinstance(metadata.get("talc_clusterization"), dict) else self.app_settings().get("talc_clusterization"),
             )
+        if runtime_settings is not None:
+            normalized_runtime = normalize_settings_runtime(
+                runtime_settings,
+                base=self._runtime_settings_from_metadata(metadata),
+                validate_checkpoint=True,
+            )
+            metadata["runtime"] = self._initial_runtime_from_settings(normalized_runtime)
+            metadata["backend"] = metadata["runtime"]["backend"]
+            metadata["checkpoint"] = metadata["runtime"]["checkpoints"].get("binary_sulfide")
         normalized_curated_metadata = normalize_curated_metadata_payload(curated_metadata)
         if normalized_curated_metadata:
             shutil.rmtree(run_dir / "metadata", ignore_errors=True)
@@ -2493,7 +2620,7 @@ class OrePipelineStore:
         run_metadata["checkpoint"] = parent.get("checkpoint", str(self.checkpoint) if self.checkpoint else None)
         run_metadata["runtime"] = self._runtime_provenance_from_metadata(parent, parent_dir)
         run_metadata["runtime"]["derived_from_run_id"] = parent_run_id
-        run_metadata["preprocess"]["enabled"] = bool((parent.get("preprocess") or {}).get("enabled", True))
+        run_metadata["preprocess"]["enabled"] = preprocess_gate_enabled(parent.get("preprocess"))
         run_metadata["augmentation"] = parent.get("augmentation") or {"enabled": False, "settings": default_augmentation_settings()}
         run_metadata["derivation"] = derivation
         run_metadata["input"]["original_source_path"] = parent["input"].get("original_source_path")
@@ -2597,6 +2724,12 @@ class OrePipelineStore:
             checks.append({"key": "talc_checkpoint", "status": "ok", "message": str(self.talc_checkpoint)})
         else:
             checks.append({"key": "talc_backend", "status": "ok", "message": self.talc_backend})
+        if self.grain_backend == "ml" and (not self.grade_checkpoint or not self.grade_checkpoint.exists()):
+            checks.append({"key": "grade_checkpoint", "status": "error", "message": str(self.grade_checkpoint or "")})
+        elif self.grain_backend == "ml":
+            checks.append({"key": "grade_checkpoint", "status": "ok", "message": str(self.grade_checkpoint)})
+        else:
+            checks.append({"key": "grain_backend", "status": "ok", "message": self.grain_backend})
         if disk["free_percent"] < 3:
             checks.append({"key": "flash_free", "status": "error", "message": f"{disk['free_percent']:.1f}%"})
         elif disk["free_percent"] < 10:
@@ -2649,10 +2782,18 @@ class OrePipelineStore:
             "threshold": self.talc_threshold if self.talc_backend == "ml" else None,
             "role": "talc detection",
         }
+        grain_model = {
+            "backend": "ml" if self.grain_backend == "ml" else "ore_grain_heuristics",
+            "configured_backend": self.grain_backend,
+            "checkpoint": str(self.grade_checkpoint) if self.grade_checkpoint else None,
+            "checkpoint_exists": bool(self.grade_checkpoint and self.grade_checkpoint.exists()),
+            "role": "ordinary/fine grain classification",
+        }
         return {
             "schema_version": "ore-pipeline-status-v0.1",
             "generated_at": utc_now_iso(),
             "app": {
+                "version": APP_VERSION,
                 "started_at": self.started_at_iso,
                 "uptime_seconds": max(0.0, time.time() - self.started_at),
                 "backend": self.backend,
@@ -2662,9 +2803,13 @@ class OrePipelineStore:
                 "talc_checkpoint": str(self.talc_checkpoint) if self.talc_checkpoint else None,
                 "talc_checkpoint_exists": bool(self.talc_checkpoint and self.talc_checkpoint.exists()),
                 "talc_threshold": self.talc_threshold,
+                "grain_backend": self.grain_backend,
+                "grade_checkpoint": str(self.grade_checkpoint) if self.grade_checkpoint else None,
+                "grade_checkpoint_exists": bool(self.grade_checkpoint and self.grade_checkpoint.exists()),
                 "models": {
                     "binary_sulfide": binary_model,
                     "talc": talc_model,
+                    "grain_classification": grain_model,
                 },
                 "workspace_dir": str(self.workspace_dir),
             },
@@ -2775,11 +2920,13 @@ class OrePipelineStore:
             "talc_backend": runtime["talc_backend"],
             "talc_checkpoint": runtime["talc_checkpoint"] or None,
             "talc_threshold": runtime["talc_threshold"],
+            "grain_backend": runtime["grain_backend"],
+            "grade_checkpoint": runtime["grade_checkpoint"] or None,
             "ok": False,
             "status": "error",
             "seconds": 0.0,
         }
-        requested_ml = runtime["backend"] == "ml" or runtime["talc_backend"] == "ml"
+        requested_ml = runtime["backend"] == "ml" or runtime["talc_backend"] == "ml" or runtime["grain_backend"] == "ml"
         if requested_ml:
             active_jobs = self._active_runtime_jobs()
             if active_jobs:
@@ -2794,6 +2941,17 @@ class OrePipelineStore:
                 "checkpoint": None,
                 "message": f"{role} uses {backend}",
                 "details": {"module": "heuristic_segmentation.segmentation", "function": "segment_image"},
+            }
+
+        def grain_heuristic_probe() -> dict[str, Any]:
+            return {
+                "ok": True,
+                "status": "ok",
+                "backend": "ore_grain_heuristics",
+                "role": "grain_classification",
+                "checkpoint": None,
+                "message": "grain_classification uses component feature heuristics",
+                "details": {"module": "ore_classifier.component_analysis", "function": "analyze_components"},
             }
 
         def checkpoint_probe(checkpoint_value: str, role: str) -> dict[str, Any]:
@@ -2888,6 +3046,91 @@ print(json.dumps({
                 "details": json_safe_value(details),
             }
 
+        def grade_checkpoint_probe(checkpoint_value: str, role: str) -> dict[str, Any]:
+            checkpoint = Path(checkpoint_value)
+            probe_script = r"""
+import json
+import sys
+import time
+from pathlib import Path
+
+root = Path(sys.argv[1])
+checkpoint = Path(sys.argv[2])
+sys.path.insert(0, str(root / "src"))
+started = time.time()
+import torch
+from ore_classifier.grade_classifier import load_grade_model
+model = load_grade_model(checkpoint, device="auto")
+parameter_count = int(sum(parameter.numel() for parameter in model.model.parameters()))
+print(json.dumps({
+    "device": str(model.device),
+    "torch": torch.__version__,
+    "checkpoint_meta": {"model": "efficientnet_b3", "classes": model.classes, "img_size": model.img_size},
+    "parameter_count": parameter_count,
+    "seconds": round(time.time() - started, 3),
+}, default=str))
+"""
+            probe_started = time.time()
+            command = [sys.executable, "-c", probe_script, str(ROOT), str(checkpoint)]
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=RUNTIME_TEST_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                elapsed = round(time.time() - probe_started, 3)
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "backend": "ml",
+                    "role": role,
+                    "checkpoint": str(checkpoint),
+                    "seconds": elapsed,
+                    "message": f"{role} ML runtime probe timed out after {elapsed:.1f}s",
+                    "details": {
+                        "timeout_seconds": RUNTIME_TEST_TIMEOUT_SECONDS,
+                        "stdout": compact_text(exc.stdout),
+                        "stderr": compact_text(exc.stderr),
+                    },
+                }
+
+            elapsed = round(time.time() - probe_started, 3)
+            stdout = (completed.stdout or "").strip()
+            stderr = (completed.stderr or "").strip()
+            if completed.returncode:
+                error_text = compact_text(stderr or stdout or f"runtime probe exited with code {completed.returncode}")
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "backend": "ml",
+                    "role": role,
+                    "checkpoint": str(checkpoint),
+                    "seconds": elapsed,
+                    "message": error_text,
+                    "details": {"returncode": completed.returncode, "stdout": compact_text(stdout), "stderr": compact_text(stderr)},
+                }
+
+            try:
+                details = json.loads(stdout.splitlines()[-1]) if stdout else {}
+            except (json.JSONDecodeError, IndexError):
+                details = {"stdout": compact_text(stdout)}
+            checkpoint_meta = details.get("checkpoint_meta") if isinstance(details.get("checkpoint_meta"), dict) else {}
+            model_name = str(checkpoint_meta.get("model") or "unknown")
+            device = str(details.get("device") or "cpu")
+            return {
+                "ok": True,
+                "status": "ok",
+                "backend": "ml",
+                "role": role,
+                "checkpoint": str(checkpoint),
+                "seconds": elapsed,
+                "message": f"{role} ML checkpoint loaded: model={model_name}, device={device}",
+                "details": json_safe_value(details),
+            }
+
         models = {
             "binary_sulfide": (
                 checkpoint_probe(runtime["checkpoint"], "binary_sulfide")
@@ -2898,6 +3141,11 @@ print(json.dumps({
                 checkpoint_probe(runtime["talc_checkpoint"], "talc")
                 if runtime["talc_backend"] == "ml"
                 else heuristic_probe("talc", "auto_candidate" if runtime["backend"] == "ml" else "heuristic_candidate")
+            ),
+            "grain_classification": (
+                grade_checkpoint_probe(runtime["grade_checkpoint"], "grain_classification")
+                if runtime["grain_backend"] == "ml"
+                else grain_heuristic_probe()
             ),
         }
         ok = all(bool(model.get("ok")) for model in models.values())
@@ -2922,6 +3170,8 @@ print(json.dumps({
                 checkpoint=runtime["checkpoint"] or None,
                 talc_backend=runtime["talc_backend"],
                 talc_checkpoint=runtime["talc_checkpoint"] or None,
+                grain_backend=runtime["grain_backend"],
+                grade_checkpoint=runtime["grade_checkpoint"] or None,
                 seconds=elapsed_total,
             )
         else:
@@ -3535,7 +3785,7 @@ print(json.dumps({
         try:
             self._build_display_layers(
                 run_dir,
-                preprocessing_enabled=bool((data.get("preprocess") or {}).get("enabled", True)),
+                preprocessing_enabled=preprocess_gate_enabled(data.get("preprocess")),
             )
             refreshed_display = json.loads((run_dir / "display/display.json").read_text(encoding="utf-8"))["layers"]
             if (run_dir / "reports/ore_summary.json").exists():
@@ -3733,6 +3983,7 @@ print(json.dumps({
         *,
         curated_metadata: Any = None,
         talc_clusterization: dict[str, Any] | None = None,
+        runtime_settings: dict[str, Any] | None = None,
         batch_link: dict[str, Any] | None = None,
     ) -> None:
         input_dir = run_dir / "input"
@@ -3748,7 +3999,14 @@ print(json.dumps({
             shutil.copy2(resolve_path(preprocessed_full_source), preprocessed_full_path)
         original_for_analysis = downscaled_image(source_path, size=(upload["preprocess"]["width"], upload["preprocess"]["height"]))
         save_image(input_dir / "original_for_analysis.png", original_for_analysis)
-        metadata = self._base_run_metadata(run_id, run_dir, upload["upload_id"], preset, talc_clusterization=talc_clusterization)
+        metadata = self._base_run_metadata(
+            run_id,
+            run_dir,
+            upload["upload_id"],
+            preset,
+            talc_clusterization=talc_clusterization,
+            runtime_settings=runtime_settings,
+        )
         metadata["input"]["original_source_path"] = upload["original_path"]
         metadata["input"]["original_artifact_path"] = str(original_artifact)
         if preprocessed_full_source:
@@ -3769,7 +4027,7 @@ print(json.dumps({
                 artifact_path = input_dir / "artifact_mask.png"
                 shutil.copy2(artifact_source, artifact_path)
                 metadata["input"]["artifact_mask_path"] = str(artifact_path)
-        metadata["preprocess"]["enabled"] = bool((upload.get("preprocess") or {}).get("enabled", True))
+        metadata["preprocess"]["enabled"] = preprocess_gate_enabled(upload.get("preprocess"))
         if batch_link:
             metadata["batch"] = json_safe_value(batch_link)
         self._attach_curated_metadata(metadata, run_dir, curated_metadata)
@@ -3784,27 +4042,30 @@ print(json.dumps({
         preset: dict[str, Any],
         *,
         talc_clusterization: dict[str, Any] | None = None,
+        runtime_settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_talc_clusterization = normalize_talc_clusterization_payload(
             talc_clusterization,
             self.app_settings().get("talc_clusterization"),
         )
+        normalized_runtime = normalize_settings_runtime(runtime_settings or {}, base=self.current_runtime_settings(), validate_checkpoint=False)
+        runtime = self._initial_runtime_from_settings(normalized_runtime)
         return {
             "schema_version": "ore-pipeline-ui-run-v0.1",
             "run_id": run_id,
             "created_at": utc_now_iso(),
             "status": "running",
             "progress": 0,
-            "backend": self.backend,
-            "checkpoint": str(self.checkpoint) if self.checkpoint else None,
-            "runtime": self._initial_runtime_provenance(backend=self.backend, checkpoint=self.checkpoint),
+            "backend": runtime["backend"],
+            "checkpoint": runtime["checkpoints"].get("binary_sulfide"),
+            "runtime": runtime,
             "input": {
                 "upload_id": upload_id,
                 "original_artifact_path": str(run_dir / "input/original_source"),
                 "original_for_analysis_path": str(run_dir / "input/original_for_analysis.png"),
                 "preprocessed_path": str(run_dir / "input/preprocessed.png"),
             },
-            "preprocess": {"enabled": bool(preset.get("preprocessing_enabled", preset.get("enabled", True))), "preset": preset},
+            "preprocess": {"enabled": preprocess_gate_enabled(preset), "preset": preset},
             "talc_clusterization": normalized_talc_clusterization,
             "image": {},
             "summary": {},
@@ -3906,9 +4167,9 @@ print(json.dumps({
             str(self.checkpoint) if self.checkpoint else None,
         )
         if run_backend == "ml":
-            self._run_ml_backend(run_id, run_dir, checkpoint=run_checkpoint)
+            self._run_ml_backend(run_id, run_dir, checkpoint=run_checkpoint, runtime=runtime)
         else:
-            self._run_heuristic_backend(run_id, run_dir)
+            self._run_heuristic_backend(run_id, run_dir, runtime=runtime)
         self._check_cancelled(run_id)
         metadata = self._read_run(run_id)
         completed_at = utc_now_iso()
@@ -3926,8 +4187,8 @@ print(json.dumps({
                 "elapsed_seconds": metadata.get("elapsed_seconds"),
             }
 
-    def _effective_talc_checkpoint(self) -> Path:
-        effective_checkpoint = self.talc_checkpoint
+    def _effective_talc_checkpoint(self, talc_checkpoint: str | Path | None = None) -> Path:
+        effective_checkpoint = Path(talc_checkpoint).expanduser() if talc_checkpoint else self.talc_checkpoint
         if effective_checkpoint and not effective_checkpoint.is_absolute():
             effective_checkpoint = ROOT / effective_checkpoint
         effective_checkpoint = effective_checkpoint.resolve() if effective_checkpoint else None
@@ -3935,8 +4196,18 @@ print(json.dumps({
             raise ApiError(HTTPStatus.BAD_REQUEST, "Talc ML backend requires settings.runtime.talc_checkpoint")
         return effective_checkpoint
 
-    def _run_talc_model_inference(self, run_id: str, run_dir: Path, *, image_path: Path, sulfide_mask: np.ndarray) -> np.ndarray:
-        effective_checkpoint = self._effective_talc_checkpoint()
+    def _run_talc_model_inference(
+        self,
+        run_id: str,
+        run_dir: Path,
+        *,
+        image_path: Path,
+        sulfide_mask: np.ndarray,
+        talc_checkpoint: str | Path | None = None,
+        talc_threshold: float | None = None,
+    ) -> np.ndarray:
+        effective_checkpoint = self._effective_talc_checkpoint(talc_checkpoint)
+        effective_threshold = normalized_float(talc_threshold, self.talc_threshold, 0.01, 0.99)
         talc_dir = run_dir / "talc_model"
         talc_dir.mkdir(parents=True, exist_ok=True)
         sulfide_path = talc_dir / "sulfide_mask_input.png"
@@ -3961,7 +4232,7 @@ print(json.dumps({
             "--device",
             "auto",
             "--threshold",
-            str(self.talc_threshold),
+            str(effective_threshold),
             "--preview-max-side",
             str(max(self.preview_max_sides)),
         ]
@@ -3982,7 +4253,7 @@ print(json.dumps({
                 raise subprocess.CalledProcessError(process.returncode, cmd)
         return read_binary_mask(talc_dir / "talc_mask.png", sulfide_mask.shape)
 
-    def _run_heuristic_backend(self, run_id: str, run_dir: Path) -> None:
+    def _run_heuristic_backend(self, run_id: str, run_dir: Path, *, runtime: dict[str, Any] | None = None) -> None:
         self._set_progress(run_id, 25, "sulfide/non-sulfide segmentation")
         self._check_cancelled(run_id)
         rgb = np.asarray(Image.open(run_dir / "input/preprocessed.png").convert("RGB"))
@@ -3991,7 +4262,13 @@ print(json.dumps({
         self._check_cancelled(run_id)
         sulfide_mask = (result.sulfide_mask > 0).astype(np.uint8) * 255
         analyzed_mask = build_analyzed_mask(rgb)
-        if self.talc_backend == "ml":
+        runtime = runtime if isinstance(runtime, dict) else self._runtime_provenance_from_metadata(self._read_run(run_id), run_dir)
+        talc_backend = str(runtime.get("talc_backend") or self.talc_backend or "heuristic").lower()
+        talc_checkpoint = (runtime.get("checkpoints") or {}).get("talc") if isinstance(runtime.get("checkpoints"), dict) else None
+        talc_threshold = runtime.get("talc_threshold", self.talc_threshold)
+        if talc_backend in {"model", "ml_model"}:
+            talc_backend = "ml"
+        if talc_backend == "ml":
             self._set_progress(run_id, 42, "talc ML inference")
             self._check_cancelled(run_id)
             talc_mask = self._run_talc_model_inference(
@@ -3999,6 +4276,8 @@ print(json.dumps({
                 run_dir,
                 image_path=run_dir / "input/preprocessed.png",
                 sulfide_mask=sulfide_mask,
+                talc_checkpoint=talc_checkpoint,
+                talc_threshold=talc_threshold,
             )
         else:
             talc_mask = (result.talc_candidate_mask > 0).astype(np.uint8) * 255
@@ -4028,7 +4307,14 @@ print(json.dumps({
             artifact_mask=artifact_mask,
         )
 
-    def _run_ml_backend(self, run_id: str, run_dir: Path, *, checkpoint: str | Path | None = None) -> None:
+    def _run_ml_backend(
+        self,
+        run_id: str,
+        run_dir: Path,
+        *,
+        checkpoint: str | Path | None = None,
+        runtime: dict[str, Any] | None = None,
+    ) -> None:
         effective_checkpoint = Path(checkpoint).expanduser() if checkpoint else self.checkpoint
         if effective_checkpoint and not effective_checkpoint.is_absolute():
             effective_checkpoint = ROOT / effective_checkpoint
@@ -4052,13 +4338,20 @@ print(json.dumps({
             "--progress-json",
             str(tile_progress_path),
         ]
-        if self.talc_backend == "ml":
+        runtime = runtime if isinstance(runtime, dict) else self._runtime_provenance_from_metadata(self._read_run(run_id), run_dir)
+        talc_backend = str(runtime.get("talc_backend") or self.talc_backend or "heuristic").lower()
+        if talc_backend in {"model", "ml_model"}:
+            talc_backend = "ml"
+        checkpoints = runtime.get("checkpoints") if isinstance(runtime.get("checkpoints"), dict) else {}
+        talc_checkpoint = checkpoints.get("talc") or (str(self.talc_checkpoint) if self.talc_checkpoint else None)
+        talc_threshold = normalized_float(runtime.get("talc_threshold"), self.talc_threshold, 0.01, 0.99)
+        if talc_backend == "ml":
             cmd.extend(
                 [
                     "--talc-checkpoint",
-                    str(self._effective_talc_checkpoint()),
+                    str(self._effective_talc_checkpoint(talc_checkpoint)),
                     "--talc-threshold",
-                    str(self.talc_threshold),
+                    str(talc_threshold),
                 ]
             )
         else:
@@ -4084,7 +4377,7 @@ print(json.dumps({
         self._check_cancelled(run_id)
         ore_summary = json.loads((ml_dir / "ore_analysis/ore_summary.json").read_text(encoding="utf-8"))
         sulfide_mask = np.asarray(Image.open(ml_dir / "binary_sulfide/sulfide_mask.png").convert("L"))
-        talc_path = ml_dir / "talc_model/talc_mask.png" if self.talc_backend == "ml" else ml_dir / "talc_candidate/talc_candidate_mask.png"
+        talc_path = ml_dir / "talc_model/talc_mask.png" if talc_backend == "ml" else ml_dir / "talc_candidate/talc_candidate_mask.png"
         talc_mask = np.asarray(Image.open(talc_path).convert("L")) if talc_path.exists() else np.zeros_like(sulfide_mask)
         intergrowth = np.asarray(Image.open(ml_dir / "ore_analysis/intergrowth_mask.png").convert("L"))
         analyzed_path = ml_dir / "ore_analysis/analyzed_mask.png"
@@ -4157,7 +4450,7 @@ print(json.dumps({
             analyzed_mask=analyzed_mask,
             final_mask=final_mask,
             artifact_mask=artifact_mask,
-            preprocessing_enabled=bool((parent_metadata.get("preprocess") or {}).get("enabled", True)),
+            preprocessing_enabled=preprocess_gate_enabled(parent_metadata.get("preprocess")),
             talc_clusterization=parent_metadata.get("talc_clusterization"),
         )
 
@@ -4189,7 +4482,7 @@ print(json.dumps({
             analyzed_mask=analyzed_mask,
             final_mask=final_mask,
             artifact_mask=artifact_mask,
-            preprocessing_enabled=bool((parent_metadata.get("preprocess") or {}).get("enabled", True)),
+            preprocessing_enabled=preprocess_gate_enabled(parent_metadata.get("preprocess")),
             talc_clusterization=parent_metadata.get("talc_clusterization"),
         )
 
@@ -4219,7 +4512,7 @@ print(json.dumps({
             analyzed_mask=analyzed_mask,
             final_mask=final_mask,
             artifact_mask=artifact_mask,
-            preprocessing_enabled=bool((parent_metadata.get("preprocess") or {}).get("enabled", True)),
+            preprocessing_enabled=preprocess_gate_enabled(parent_metadata.get("preprocess")),
             talc_clusterization=parent_metadata.get("talc_clusterization"),
         )
 
@@ -4352,9 +4645,9 @@ print(json.dumps({
             run_metadata_path = run_dir / "run.json"
             if run_metadata_path.exists():
                 run_metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
-                preprocessing_enabled = bool((run_metadata.get("preprocess") or {}).get("enabled", True))
+                preprocessing_enabled = preprocess_gate_enabled(run_metadata.get("preprocess"))
             else:
-                preprocessing_enabled = True
+                preprocessing_enabled = False
         layers = {
             "original": save_preview_pyramid(original, display_dir / "original", "original", self.preview_max_sides),
             "non_sulfide_base": save_preview_pyramid(
@@ -4565,16 +4858,28 @@ print(json.dumps({
         if shapefile_metadata:
             metadata["reports"]["final_classes_shapefile_zip"] = str(shapefile_zip_path)
 
-    def _maybe_predict_grade(self, run_dir: Path) -> dict[str, Any] | None:
+    def _maybe_predict_grade(self, run_dir: Path, runtime: dict[str, Any] | None = None) -> dict[str, Any] | None:
         # Optional parallel learned grade opinion (efficientnet_b3, ordinary vs fine).
         # Auxiliary and best-effort: a failure here must never fail the run.
-        checkpoint = self.grade_checkpoint
+        runtime = runtime if isinstance(runtime, dict) else {}
+        grain_backend = str(runtime.get("grain_backend") or self.grain_backend or "heuristic").lower()
+        if grain_backend in {"model", "ml_model", "cnn", "grade_cnn"}:
+            grain_backend = "ml"
+        if grain_backend != "ml":
+            return None
+        checkpoints = runtime.get("checkpoints") if isinstance(runtime.get("checkpoints"), dict) else {}
+        checkpoint_value = checkpoints.get("grain_classification") or (str(self.grade_checkpoint) if self.grade_checkpoint else None)
+        checkpoint = Path(checkpoint_value).expanduser() if checkpoint_value else None
+        if checkpoint and not checkpoint.is_absolute():
+            checkpoint = ROOT / checkpoint
+        checkpoint = checkpoint.resolve() if checkpoint else None
         if not checkpoint or not Path(checkpoint).exists():
             return None
         try:
-            if self._grade_model is None:
+            if self._grade_model is None or self._grade_model_checkpoint != checkpoint:
                 from ore_classifier.grade_classifier import load_grade_model
                 self._grade_model = load_grade_model(checkpoint, device="auto")
+                self._grade_model_checkpoint = checkpoint
             from ore_classifier.grade_classifier import predict_grade
             with Image.open(run_dir / "input/preprocessed.png") as image:
                 return predict_grade(self._grade_model, image)
@@ -4599,7 +4904,8 @@ print(json.dumps({
             metadata.pop("scale", None)
         metadata["metrics"] = metric_rows(summary, scale)
         metadata["text_output"] = text_output_for_summary(summary)
-        grade_branch = self._maybe_predict_grade(run_dir)
+        runtime = self._runtime_provenance_from_metadata(metadata, run_dir)
+        grade_branch = self._maybe_predict_grade(run_dir, runtime)
         if grade_branch is not None:
             metadata["grade_branch"] = grade_branch
             summary["grade_branch"] = grade_branch
@@ -4753,6 +5059,7 @@ print(json.dumps({
                     curated_metadata=item.get("curated_metadata"),
                     augmentation_settings=settings.get("augmentation"),
                     talc_clusterization=settings.get("talc_clusterization"),
+                    runtime_settings=settings.get("runtime"),
                     batch_link={
                         "batch_id": batch_id,
                         "item_id": item["item_id"],
@@ -4855,11 +5162,18 @@ print(json.dumps({
                 values.get("talc_clusterization"),
                 self.app_settings().get("talc_clusterization"),
             ),
+            "runtime": normalize_settings_runtime(
+                values.get("runtime"),
+                base=self.current_runtime_settings(),
+                validate_checkpoint=True,
+            ),
             "backend": self.backend,
             "checkpoint": str(self.checkpoint) if self.checkpoint else None,
             "talc_backend": self.talc_backend,
             "talc_checkpoint": str(self.talc_checkpoint) if self.talc_checkpoint else None,
             "talc_threshold": self.talc_threshold,
+            "grain_backend": self.grain_backend,
+            "grade_checkpoint": str(self.grade_checkpoint) if self.grade_checkpoint else None,
         }
 
     def _batch_upload_refs(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5246,7 +5560,7 @@ def report_preprocess_lines(data: dict[str, Any]) -> list[str]:
     preprocess = data.get("preprocess") if isinstance(data.get("preprocess"), dict) else {}
     preset = preprocess.get("preset") if isinstance(preprocess.get("preset"), dict) else {}
     tiling = data.get("tiling") if isinstance(data.get("tiling"), dict) else {}
-    enabled = bool(preprocess.get("enabled", preset.get("preprocessing_enabled", preset.get("enabled", True))))
+    enabled = bool(preprocess.get("enabled", preprocess_gate_enabled(preset)))
     lines = [f"Предобработка: {'включена' if enabled else 'отключена'}."]
     if enabled:
         lines.append(f"Нормализация освещения: {'да' if preset.get('illumination_normalization') else 'нет'}.")
@@ -6576,6 +6890,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
                         curated_metadata=payload.get("curated_metadata"),
                         augmentation_settings=augmentation_from_payload(payload),
                         talc_clusterization=payload_value(payload, "talc_clusterization", ("talcClusterization",)),
+                        runtime_settings=payload.get("runtime") if isinstance(payload.get("runtime"), dict) else None,
                     )
                 )
             finally:
@@ -6597,6 +6912,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
                         preset_from_payload(payload),
                         augmentation_settings=augmentation_from_payload(payload),
                         talc_clusterization=payload_value(payload, "talc_clusterization", ("talcClusterization",)),
+                        runtime_settings=payload.get("runtime") if isinstance(payload.get("runtime"), dict) else None,
                         changed_step=str(payload.get("changed_step") or ""),
                     )
                 )
@@ -6611,6 +6927,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
                     run_async=True,
                     curated_metadata=payload.get("curated_metadata"),
                     talc_clusterization=payload_value(payload, "talc_clusterization", ("talcClusterization",)),
+                    runtime_settings=payload.get("runtime") if isinstance(payload.get("runtime"), dict) else None,
                 )
             )
             return
@@ -6813,6 +7130,9 @@ class OrePipelineHTTPServer(ThreadingHTTPServer):
         self.store = store
         self.access_log: deque[dict[str, Any]] = deque(maxlen=LOG_ENTRY_LIMIT)
         self.log_lock = threading.RLock()
+        self._status_cache_lock = threading.Lock()
+        self._status_cache_payload: dict[str, Any] | None = None
+        self._status_cache_monotonic = 0.0
         super().__init__(server_address, OrePipelineHandler)
         self.store.record_system_event("info", "http server listening", host=str(server_address[0]), port=int(self.server_address[1]))
 
@@ -6843,7 +7163,22 @@ class OrePipelineHTTPServer(ThreadingHTTPServer):
             return list(reversed(list(self.access_log)[-limit:]))
 
     def status_payload(self) -> dict[str, Any]:
-        return self.store.status_payload(access_log=self.access_log_payload())
+        # Serve the expensive store computation from a short-lived cache. Holding the
+        # lock across the miss-path compute also collapses a burst of concurrent
+        # requests into a single recompute instead of one per request.
+        now = time.monotonic()
+        with self._status_cache_lock:
+            cached = self._status_cache_payload
+            if cached is None or (now - self._status_cache_monotonic) >= STATUS_CACHE_TTL_SECONDS:
+                cached = self.store.status_payload()
+                self._status_cache_payload = cached
+                self._status_cache_monotonic = now
+        # Inject a fresh access log without mutating the shared cached dict.
+        payload = dict(cached)
+        logs = dict(payload.get("logs") or {})
+        logs["access"] = self.access_log_payload()
+        payload["logs"] = logs
+        return payload
 
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -6874,11 +7209,12 @@ def main() -> int:
     parser.add_argument("--workspace-dir", type=Path, default=DEFAULT_WORKSPACE_DIR)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("--backend", choices=["heuristic", "ml"], default="heuristic")
+    parser.add_argument("--backend", choices=["heuristic", "ml"], default=DEFAULT_SULFIDE_BACKEND)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT if DEFAULT_CHECKPOINT.exists() else None)
     parser.add_argument("--talc-backend", choices=["heuristic", "ml"], default=DEFAULT_TALC_BACKEND)
     parser.add_argument("--talc-checkpoint", type=Path, default=DEFAULT_TALC_CHECKPOINT if DEFAULT_TALC_CHECKPOINT.exists() else None)
     parser.add_argument("--talc-threshold", type=float, default=DEFAULT_TALC_THRESHOLD)
+    parser.add_argument("--grain-backend", choices=["heuristic", "ml"], default=DEFAULT_GRAIN_BACKEND)
     parser.add_argument(
         "--grade-checkpoint",
         type=Path,
@@ -6900,6 +7236,7 @@ def main() -> int:
         talc_backend=args.talc_backend,
         talc_checkpoint=args.talc_checkpoint,
         talc_threshold=args.talc_threshold,
+        grain_backend=args.grain_backend,
         grade_checkpoint=args.grade_checkpoint,
     )
     server = OrePipelineHTTPServer((args.host, args.port), store)

@@ -17,7 +17,7 @@ long-lasting app defaults.
 4. Add runtime settings for `backend` and `checkpoint`.
 5. Apply runtime changes immediately after a successful save, with active-job
    protection.
-6. Add a runtime `Test` path:
+6. Add a runtime `Test All` path:
    - `POST /api/runtime/test`;
    - accept unsaved runtime form values;
    - return immediate success for `heuristic`;

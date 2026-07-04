@@ -1,0 +1,63 @@
+name: nornikel-ore-pipeline-ui
+
+x-ore-pipeline-env: &ore-pipeline-env
+  ORE_UI_HOST: 0.0.0.0
+  ORE_UI_PORT: 8080
+  ORE_UI_WORKSPACE: /data/ore_pipeline_ui
+  ORE_UI_BACKEND: "${ORE_UI_BACKEND:-heuristic}"
+  ORE_UI_CHECKPOINT: "${ORE_UI_CHECKPOINT:-}"
+  ORE_UI_TALC_BACKEND: "${ORE_UI_TALC_BACKEND:-}"
+  ORE_UI_TALC_CHECKPOINT: "${ORE_UI_TALC_CHECKPOINT:-}"
+  ORE_UI_TALC_THRESHOLD: "${ORE_UI_TALC_THRESHOLD:-}"
+  ORE_UI_GRADE_CHECKPOINT: "${ORE_UI_GRADE_CHECKPOINT:-}"
+  ORE_UI_PROCESSING_MAX_SIDE: "${ORE_UI_PROCESSING_MAX_SIDE:-2600}"
+  ORE_UI_PANORAMA_MAX_SIDE: "${ORE_UI_PANORAMA_MAX_SIDE:-1800}"
+  ORE_UI_PREVIEW_MAX_SIDES: "${ORE_UI_PREVIEW_MAX_SIDES:-1024,2048,4096}"
+
+services:
+  ore-pipeline-ui:
+    image: "${ORE_UI_IMAGE:-nornikel/ore-pipeline-ui:v2}"
+    container_name: "${ORE_UI_CONTAINER_NAME:-nornikel-ore-pipeline-ui}"
+    build:
+      context: .
+      dockerfile: "${ORE_UI_DOCKERFILE:-docker/ore-pipeline-ui/Dockerfile}"
+    ports:
+      - "${ORE_UI_PUBLIC_HOST:-0.0.0.0}:${ORE_UI_PUBLIC_PORT:-8080}:8080"
+    environment:
+      <<: *ore-pipeline-env
+    volumes:
+      - "${ORE_UI_WORKSPACE_HOST:-./outputs/ore_pipeline_ui}:/data/ore_pipeline_ui"
+      - "${ORE_UI_MODELS_HOST:-./models}:/app/models:ro"
+    restart: unless-stopped
+
+  ore-pipeline-ui-gpu:
+    profiles:
+      - gpu
+    image: "${ORE_UI_GPU_IMAGE:-nornikel/ore-pipeline-ui:v2-gx10-ml}"
+    container_name: "${ORE_UI_GPU_CONTAINER_NAME:-nornikel-ore-pipeline-ui-v2}"
+    build:
+      context: .
+      dockerfile: "${ORE_UI_GPU_DOCKERFILE:-docker/ore-pipeline-ui/Dockerfile.gx10-ml}"
+    ports:
+      - "${ORE_UI_PUBLIC_HOST:-0.0.0.0}:${ORE_UI_PUBLIC_PORT:-8210}:8080"
+    environment:
+      <<: *ore-pipeline-env
+      ORE_UI_BACKEND: "${ORE_UI_BACKEND:-ml}"
+      ORE_UI_TALC_BACKEND: "${ORE_UI_TALC_BACKEND:-ml}"
+    volumes:
+      - "${ORE_UI_WORKSPACE_HOST:-./outputs/ore_pipeline_ui}:/data/ore_pipeline_ui"
+      - "${ORE_UI_MODELS_HOST:-./models}:/app/models:ro"
+      - "${ORE_UI_TALC_OUTPUTS_HOST:-./outputs/talc_segformer_folds}:/app/outputs/talc_segformer_folds:ro"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    restart: unless-stopped

@@ -86,14 +86,14 @@ to the heuristic backend and does not copy the dataset, generated outputs, or
 model checkpoints into the image.
 
 ```bash
-docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+docker compose up --build
 ```
 
 On the organizer VM, use `sudo docker compose ...` if the `team123` user still
 does not have Docker socket access:
 
 ```bash
-sudo docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+sudo docker compose up --build
 ```
 
 Open:
@@ -105,7 +105,7 @@ http://<vm-host>:8080/workspace
 Use a different host port if `8080` is already occupied:
 
 ```bash
-ORE_UI_PUBLIC_PORT=18080 docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+ORE_UI_PUBLIC_PORT=18080 docker compose up --build
 ```
 
 The persistent UI workspace is bind-mounted at `./outputs/ore_pipeline_ui`.
@@ -115,7 +115,7 @@ If a checkpoint-capable derived image is used later, mount the existing
 ```bash
 ORE_UI_BACKEND=ml \
 ORE_UI_CHECKPOINT=/app/models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
-docker compose -f docker-compose.ore-pipeline-ui.yml up --build
+docker compose up --build
 ```
 
 ## Talc Review UI (Preferred Browser/Canvas App)
@@ -507,10 +507,16 @@ python3 scripts/build_grain_dataset.py \
 
 Runtime: ~30 s for the 345-image baseline batch (≈14.4k grain crops exported).
 
-2. Label grains in the browser (O=ordinary, F=fine, U=uncertain; arrows to move).
-Each grain shows its full feature report + heuristic reason so you can decide
-ordinary vs fine. Persists `annotations.json` in the dataset dir. Quickest launch
-is the repo-root wrapper `run_grain_app.sh` (prefers `.venv`, defaults to
+2. Label grains in the browser. Grid mode keeps `O=ordinary`, `F=fine`,
+`U=uncertain`, and arrows for navigation. `Tinder mode` shows one grain at a
+time with the original image context and stroked bbox plus a zoomed grain crop:
+`←` labels thin/fine (`fine_intergrowth`), `→` labels ordinary
+(`ordinary_intergrowth`), `↑` postpones without saving a label, and `↓` labels
+uncertain. Each grain shows its full feature report + heuristic reason so you
+can decide ordinary vs fine. The three visible choice buttons are ordered
+`тонкое | ? | рядовое` to match the left/down/right review semantics. Persists
+`annotations.json` in the dataset dir.
+Quickest launch is the repo-root wrapper `run_grain_app.sh` (prefers `.venv`, defaults to
 `outputs/grain_dataset_v0` on an OS-assigned port, passes extra args through):
 
 ```bash

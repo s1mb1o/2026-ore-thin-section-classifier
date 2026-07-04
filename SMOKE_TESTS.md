@@ -87,8 +87,9 @@ Run from the v2 root on a Docker-capable host:
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_ore_pipeline_docker.py' -v
-docker compose -f docker-compose.ore-pipeline-ui.yml build
-docker compose -f docker-compose.ore-pipeline-ui.yml up
+docker compose config
+docker compose build
+docker compose up
 ```
 
 On the organizer VM, prefix the Docker commands with `sudo` if Docker socket
@@ -120,6 +121,36 @@ Expected:
 - `outputs/augmentation_review/index.html` opens as a static local HTML file.
 - The gallery contains one source image for each deconflicted official class and nine cards per source: original, UI default, color/tone, acquisition noise, scratches, polishing haze, pits/dust, combined moderate, and combined stress.
 - Each non-original card includes the exact v2 augmentation settings JSON used to create that preview.
+
+## Grain Browser Review App Smoke
+
+Run from the v2 root:
+
+```bash
+python3 -m py_compile apps/grain_review_web.py
+python3 -m unittest discover -s tests -p 'test_grain_review_web.py' -v
+.venv/bin/python -m pytest tests/browser/test_grain_review_ui_browser.py -q
+```
+
+```bash
+python3 apps/grain_review_web.py \
+  --dataset-dir outputs/grain_dataset_v0 \
+  --host 127.0.0.1 \
+  --port 0
+```
+
+Expected:
+
+- Focused unit tests pass for manifest paging, filters, annotation persistence, crop serving, source-image serving by grain UID, and HTTP error paths.
+- Browser smoke passes for grid population, click/keyboard labeling, labeled/unlabeled filters, and `Tinder mode`.
+- The `Сортировка` selector includes `ценные для проверки`; selecting it reorders grains before pagination by manual-review value, and cards/details show `Ценность проверки: N/100` with short reasons.
+- Grid cards and the detail panel show the three decision buttons in this order: `тонкое | ? | рядовое`.
+- The zoomed grain crop viewer has a `контур зерна` checkbox. When checked, it overlays a transparent contour PNG from `/contours/<grain_uid>` built from the source batch sulfide mask and selected connected component, without hiding the base crop. A separate checked-by-default `background` checkbox hides only the base crop image when unchecked.
+- The heuristic explanation is a table, not a long inline sentence: columns are `Признак`, `Значение`, `Порог тонкого`, and `Голос`.
+- The detail panel and `Tinder mode` verdict show `Счёт эвристики: рядовое X% · тонкое Y%` based on the existing three fine-threshold votes.
+- `Tinder mode` shows exactly one selected grain at a time: the original source image with a stroked bbox on the grain, plus a zoomed crop and the same feature/reason details as the grid side panel.
+- In `Tinder mode`, arrow keys map to review decisions: `←` marks тонкое / `fine_intergrowth`, `→` marks рядовое / `ordinary_intergrowth`, `↑` postpones without writing a label, and `↓` marks uncertain.
+- Labels are still persisted only to `annotations.json`; postponing leaves the current grain unlabeled.
 
 ## Talc Blue-Line Converter Smoke
 
@@ -202,15 +233,15 @@ python3 apps/talc_review_web.py \
 
 Expected:
 
-- Focused tests pass and cover same-filename annotated/original pairing, first-open `current_talc_mask.png` creation, reviewed save artifacts, Not Talc hard-negative save semantics, optional model/teammate mask discovery, non-neural talcose QA artifacts, reset behavior, and basic HTTP endpoints.
+- Focused tests pass and cover same-filename annotated/original pairing, first-open `current_talc_mask.png` creation, reviewed save artifacts, Not Talc hard-negative save semantics, optional model/teammate mask discovery, non-neural talcose QA artifacts, per-sample neural model run artifacts, reset behavior, and basic HTTP endpoints.
 - The app prints a local URL such as `http://127.0.0.1:<port>/`.
 - `/api/manifest` reports `42` samples for the full conversion workspace.
 - The `Theme` selector supports `System`, `Light`, and `Dark`; explicit dark/light choices update the UI immediately and persist across reloads.
 - Opening a sample auto-creates or reuses `current_positive_bag_mask.png`, `current_talc_node_mask.png`, `current_not_talc_mask.png`, and compatibility union `current_talc_mask.png`.
-- The viewer shows a compact top-left Segmentation classes widget for editable classes only: checked `Positive bag`, `Talc`, and `Not Talc` visibility toggles plus an `Edit` radio for each class. Turning visibility off hides only that class overlay, while the selected `Edit` class controls Brush, Fill, Rectangle, and Polygon. The widget shows live visible-pixel percentages for `Positive bag`, confirmed `Talc`, and `Not Talc`, and flags confirmed `Talc` below the known talcose threshold of `10%` visible pixels.
-- The viewer also shows a separate top-right `Display layers` widget with a checked `Background` checkbox and display-only `Talc cluster areas` row. Unchecking `Background` hides only the base image while selected mask/QA/cluster overlays remain visible. Turning on `Talc cluster areas` highlights locally dense non-sulfide talc regions and shows the highlighted-area percentage in the top-right widget.
-- The top toolbar is ordered `Brush`, `Fill`, `Similar`, `Rectangle`, `Polygon`, `SAM2`, `Undo`, `Zoom In`, `Zoom Out`, `Fit`, followed by active-tool parameters and a visible zoom percentage, with `Save`, `Save & Next`, and transparent `Next` pinned at the top right; Brush shows brush size with a `2-240 px` range, Similar shows `Strictness`, `+ seed`, `- seed`, `Apply Similar`, and `Clear Preview`, and SAM2 shows prompt mode and `Load SAM2`.
-- The bottom-left viewer zoom widget is a single vertical stack: `Fit`, `Actual size`, `Zoom in`, the live zoom percentage, and `Zoom out`; it shares state with the toolbar and mouse-wheel zoom, and `Actual size` returns the canvas to `100%`.
+- The viewer shows a compact top-left Segmentation classes widget for editable classes only: checked `Positive bag`, `Talc`, and `Not Talc` visibility toggles plus an `Edit` radio for each class. Turning visibility off hides only that class overlay, while the selected `Edit` class controls Brush, Fill, Rectangle, and Polygon. The widget shows live visible-pixel percentages for `Positive bag`, confirmed `Talc`, and `Not Talc`, flags confirmed `Talc` below the known talcose threshold of `10%` visible pixels, and stays anchored to the visible viewer after the image loads and free-pan scroll origin is applied.
+- The viewer also shows a separate top-right `Display layers` widget with a checked `Background` checkbox plus display-only `Original blue lines`, `Talc cluster areas`, and `Sulfides` rows. Unchecking `Background` hides only the base image while selected mask/QA/blue-line/cluster/sulfide overlays remain visible. Turning on `Original blue lines` shows the raw blue annotation strokes. Turning on `Talc cluster areas` highlights locally dense non-sulfide talc regions and shows the highlighted-area percentage in the top-right widget; turning on `Sulfides` tints the sample sulfide mask as an independent overlay. The widget stays inside the visible center work/viewer area before image load, after sample load, and during resize, without overlapping the right settings panel.
+- The top toolbar is ordered icon-only `Brush`, `Fill`, `Similar`, `Rectangle`, and `Polygon` with hover titles, then `SAM2`, `Undo`, and active-tool parameters; it does not show duplicate `Zoom In`, `Zoom Out`, `Fit`, or toolbar zoom percentage controls. `Save`, `Save & Next`, and transparent `Next` stay pinned at the top right. If the toolbar wraps at narrower widths, every wrapped row remains inside the topbar and the viewer starts below it; Brush shows brush size with a `2-240 px` range, Similar shows `Strictness`, `+ seed`, `- seed`, `Apply Similar`, and `Clear Preview`, and SAM2 shows prompt mode and `Load SAM2`.
+- The bottom-left viewer zoom widget is a single vertical stack: `Fit`, `Actual size`, `Zoom in`, the live zoom percentage, and `Zoom out`; it shares state with mouse-wheel zoom, and `Actual size` returns the canvas to `100%`.
 - Below the main viewer, the mouse hint row shows `Mouse wheel - zoom in / out` and `Mouse wheel press - pan`.
 - Mouse wheel over the canvas zooms in/out anchored around the cursor without changing mask geometry.
 - Holding the mouse wheel / middle button and dragging over the canvas pans the zoomed view without drawing, erasing, moving shapes, changing the selected tool, or triggering native middle-click browser scrolling; the canvas can move past the viewer edges so its top-left coordinate can become negative inside the visible viewport.
@@ -226,9 +257,9 @@ Expected:
 - `Fill` adds the selected `Edit` class to the clicked connected area bounded by raw/closed blue annotation strokes, sulfide pixels, existing selected-class regions, and the image edge; it autosaves, is undoable, and still clips newly added pixels against sulfides when protection is enabled.
 - `Similar` supports `+ seed` and `- seed` modes. Positive seeds mean "this is talc"; negative seeds mean "this dark object is not talc". It previews luma/color/texture-similar non-sulfide pixels in yellow, excludes existing `talc_node` and `not_talc` pixels, treats `Not Talc` regions as reusable negative examples, recomputes on `Strictness`, and right-click or `Clear Preview` discards it. `Apply Similar` merges the preview into `talc_node` with autosave/undo, while `Save` and `Save & Next` also apply an active preview before writing reviewed outputs. Clicking inside an existing positive bag still uses the clicked seed patch as the anchor; nearby bag pixels may refine calibration only after passing seed-similarity filtering, so `Strictness=100` should not match broad matrix-heavy regions. Similar may mark pixels inside `positive_bag`; the bag remains a rough containing region, not confirmed talc.
 - `Not Talc` is an editable hard-negative class for dark pores, scratches, and matrix objects that should teach later model training what talc is not. It is drawn in red, saved separately, excluded from `talc_node`, and included in review patch audit metadata.
-- The `Comparison mode` selector has exactly these user-facing options: `Current`, `Heuristic`, `Neural Model`, `Current vs Heuristic`, and `Current vs Neural Model`. It defaults to `Current`, showing only the normal editable annotation classes in the Segmentation classes widget, with `Background` and display-only `Talc cluster areas` kept in the separate top-right `Display layers` widget.
+- The `Comparison mode` selector has exactly these user-facing options: `Current`, `Heuristic`, `Neural Model`, `Current vs Heuristic`, `Current vs Neural Model`, and `Heuristic vs Neural Model`. It defaults to `Current`, showing only the normal editable annotation classes in the Segmentation classes widget, with `Background`, display-only `Original blue lines`, `Talc cluster areas`, and `Sulfides` kept in the separate top-right `Display layers` widget.
 - Selecting `Heuristic` shows only the non-neural talc-zone layer. Selecting `Current vs Heuristic` adds a comparison overlay against the current `Talc` mask. Pressing `Run non-neural classifier` in either heuristic mode calls `/api/samples/{sample_id}/talcose-heuristic`, uses the sample sulfide mask as the ore exclusion mask when available, and writes `qa/non_neural_talcose/talc_zone_mask.png`, `talc_flake_mask.png`, `overlay.jpg`, and `talcose_result.json`. The comparison overlay highlights agreement, heuristic-only, current-only, and sulfide-conflict pixels.
-- Selecting `Neural Model` shows only the trained model talc prediction when `model_talc_mask.png` or an explicit `--talc-model-mask-dir` artifact is available. Selecting `Current vs Neural Model` compares that prediction against the current `Talc` mask and highlights agreement, neural-only, current-only, and sulfide-conflict pixels.
+- Selecting `Neural Model` shows only the trained model talc prediction when `model_talc_mask.png` or an explicit `--talc-model-mask-dir` artifact is available; otherwise the panel offers `Run model` for the current sample. Pressing it calls `/api/samples/{sample_id}/neural-model`, runs `scripts/infer_talc_segmentation.py`, writes `qa/neural_talc_model/` plus sample-level `model_talc_mask.png`, and refreshes the neural layer. Selecting `Current vs Neural Model` compares that prediction against the current `Talc` mask and highlights agreement, neural-only, current-only, and sulfide-conflict pixels. Selecting `Heuristic vs Neural Model` compares the non-neural talc-zone mask against the neural mask, keeps both `Run non-neural classifier` and `Run model` available, and highlights agreement, heuristic-only, neural-only, and sulfide-conflict pixels.
 - Keyboard shortcuts select tools without changing text fields: `B` selects Brush and `F` selects Fill.
 - In Brush mode, left mouse draws the selected `Edit` class and right mouse erases it without opening the browser context menu.
 - In Brush mode, hovering over the image shows a circle matching the current brush draw/erase area; changing brush size updates the circle.
@@ -496,6 +527,46 @@ writes an experiment under `./mlruns` (gitignored) that `mlflow ui` can browse.
 python scripts/train_grade_classifier.py --out-dir outputs/smoke_grade_mlflow \
   --epochs 1 --limit 32 --max-steps-per-epoch 2 --mlflow --mlflow-experiment smoke
 test -d mlruns && echo "mlruns store created"
+```
+
+## Ore MCP Server Smoke
+
+Run from the v2 root:
+
+```bash
+python3 -m py_compile apps/ore_mcp_server.py
+.venv/bin/python -m pytest tests/test_ore_mcp_server.py -q
+```
+
+Expected:
+
+- The fast tests pass: both `classify_thin_section` and `get_config` tools register, `get_config` resolves checkpoints/device/out-root without loading a model (`model_loaded=false`), and a missing `image_path` raises `ValueError` before any checkpoint is touched.
+
+End-to-end (loads the model; needs the sulfide checkpoint present):
+
+```bash
+.venv/bin/python - <<'PY'
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("ore_mcp_server", "apps/ore_mcp_server.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(json.dumps(m.get_config(), indent=2))              # model_loaded == false
+res = m.classify_thin_section("data/external/lumenstone/full/S2_v2/S2_v2/imgs/test/test_01.jpg")
+print(res["result_quality"], res["talc_source"], res["ore_summary"]["ore_class"])
+print("model_loaded now:", m.get_config()["model_loaded"])  # true — warm
+PY
+```
+
+Expected:
+
+- First `get_config` reports `model_loaded=false`; after the classify call it reports `true` (the model is loaded once and stays warm — the point of Option A).
+- `classify_thin_section` returns `result_quality`, `talc_source` (`ml_model` when the talc checkpoint is present, else `auto_candidate`), an inlined `ore_summary` with `ore_class` and fractions, an optional `grade_branch`, and an `artifacts` map of written mask/overlay/CSV paths under `outputs/mcp_runs/`.
+
+Register with Claude Code (absolute paths required):
+
+```bash
+claude mcp add ore-classifier -- \
+  /abs/path/2026_Nornikel_Hackaton_v2/.venv/bin/python \
+  /abs/path/2026_Nornikel_Hackaton_v2/apps/ore_mcp_server.py
 ```
 
 ## Planned Pipeline Checks

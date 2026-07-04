@@ -5,11 +5,13 @@ import concurrent.futures
 import io
 import json
 import shutil
+import subprocess
 import sys
 import threading
 import urllib.parse
 import unittest
 import urllib.request
+from unittest import mock
 from pathlib import Path
 
 import cv2
@@ -299,6 +301,8 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertEqual(len(refreshed["urls"]["human_review_masks"]), 1)
         self.assertEqual(refreshed["urls"]["human_review_masks"][0]["label"], "alex")
         self.assertIn("human_reviews/alex/reviewed_talc_node_mask.png", refreshed["urls"]["human_review_masks"][0]["path"])
+        self.assertIn("neural_model_runner", refreshed)
+        self.assertIn("checkpoint_exists", refreshed["neural_model_runner"])
 
     def test_talcose_heuristic_qa_writes_sample_artifacts(self) -> None:
         sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
@@ -322,6 +326,62 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIsNotNone(refreshed["non_neural_talcose_qa"])
         self.assertEqual(refreshed["non_neural_talcose_qa"]["schema_version"], "talc-zone-heuristic-v1")
         self.assertIsNotNone(refreshed["urls"]["talcose_heuristic_overlay"])
+
+    def test_neural_model_run_writes_sample_model_mask(self) -> None:
+        sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
+        payload = self.store.sample_payload(sample_id)
+        sample_dir = Path(payload["image"]["sample_dir"])
+        shape = (payload["image"]["height"], payload["image"]["width"])
+        fake_checkpoint = self.root / "fake_talc_checkpoint.pt"
+        fake_checkpoint.write_bytes(b"fake checkpoint")
+        self.store.talc_checkpoint = fake_checkpoint
+        self.store.talc_tile_size = 64
+        self.store.talc_stride = 48
+        self.store.talc_batch_size = 1
+        self.store.talc_device = "cpu"
+
+        def fake_run(cmd, cwd, stdout, stderr, check):  # noqa: ANN001
+            self.assertEqual(cwd, ROOT)
+            self.assertIn(str(ROOT / "scripts/infer_talc_segmentation.py"), cmd)
+            self.assertIn("--checkpoint", cmd)
+            self.assertEqual(cmd[cmd.index("--checkpoint") + 1], str(fake_checkpoint.resolve()))
+            if "--sulfide-mask" in cmd:
+                self.assertTrue(Path(cmd[cmd.index("--sulfide-mask") + 1]).exists())
+            out_dir = Path(cmd[cmd.index("--out-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            mask = np.zeros(shape, dtype=np.uint8)
+            mask[12:22, 30:45] = 255
+            Image.fromarray(mask, mode="L").save(out_dir / "talc_mask.png")
+            Image.fromarray(mask, mode="L").save(out_dir / "confidence.png")
+            Image.fromarray(mask, mode="L").save(out_dir / "confidence_non_sulfide.png")
+            Image.fromarray(np.zeros((*shape, 3), dtype=np.uint8), mode="RGB").save(out_dir / "overlay_preview.jpg")
+            summary = {
+                "schema_version": "binary-talc-inference-v0.1",
+                "paths": {
+                    "talc_mask": str(out_dir / "talc_mask.png"),
+                    "confidence": str(out_dir / "confidence.png"),
+                    "confidence_non_sulfide": str(out_dir / "confidence_non_sulfide.png"),
+                    "overlay_preview": str(out_dir / "overlay_preview.jpg"),
+                },
+            }
+            (out_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+            stdout.write("fake run\n")
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with mock.patch("apps.talc_review_web.subprocess.run", side_effect=fake_run):
+            result = self.store.run_neural_talc_model(sample_id, {})
+
+        self.assertEqual(result["schema_version"], "talc-review-web-neural-model-v0.1")
+        self.assertEqual(result["sample_id"], sample_id)
+        self.assertEqual(result["model_talc_pixels"], 150)
+        self.assertEqual(Path(result["paths"]["model_talc_mask"]), sample_dir / "model_talc_mask.png")
+        self.assertTrue((sample_dir / "model_talc_mask.png").exists())
+        self.assertTrue((sample_dir / "qa/neural_talc_model/summary.json").exists())
+        self.assertIsNotNone(result["urls"]["model_talc_mask"])
+        self.assertIsNotNone(result["urls"]["overlay_preview"])
+        refreshed = self.store.sample_payload(sample_id)
+        self.assertTrue(refreshed["metrics"]["has_model_talc_mask"])
+        self.assertIsNotNone(refreshed["urls"]["model_talc_mask"])
 
     def test_reset_restores_autodetected_mask(self) -> None:
         sample_id = self.store.manifest_payload()["samples"][0]["sample_id"]
@@ -373,11 +433,51 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertLess(markup.index('data-tool="similar"'), markup.index('data-tool="rectangle"'))
         self.assertLess(markup.index('data-tool="rectangle"'), markup.index('data-tool="polygon"'))
         self.assertLess(markup.index('data-tool="polygon"'), markup.index('data-tool="sam2"'))
+        for tool, label in (
+            ("brush", "Brush"),
+            ("fill", "Fill"),
+            ("similar", "Similar"),
+            ("rectangle", "Rectangle"),
+            ("polygon", "Polygon"),
+        ):
+            tool_button = markup.split(f'data-tool="{tool}"', 1)[1].split("</button>", 1)[0]
+            self.assertIn('class="tool-button icon-tool', tool_button)
+            self.assertIn(f'aria-label="{label}"', tool_button)
+            self.assertIn("<svg ", tool_button)
+            self.assertIn(f'<span class="visually-hidden">{label}</span>', tool_button)
+            self.assertIn("data-tooltip=", tool_button)
+        self.assertIn(".icon-tool { width: 34px; height: 34px; min-width: 34px; padding: 0; display: inline-flex;", markup)
+        self.assertIn(".icon-tool svg { width: 18px; height: 18px;", markup)
+        similar_button = markup.split('data-tool="similar"', 1)[1].split("</button>", 1)[0]
+        self.assertIn('class="magic-wand-icon"', similar_button)
+        self.assertIn('d="M4 20 14.5 9.5"', similar_button)
+        self.assertIn('id="toolTooltip"', markup)
+        self.assertIn('class="tool-tooltip hidden"', markup)
+        self.assertIn('role="tooltip"', markup)
+        self.assertIn(".tool-tooltip {\n  position: fixed;", markup)
+        self.assertIn("function showToolTooltip(target)", markup)
+        self.assertIn("function hideToolTooltip()", markup)
+        self.assertIn("function findToolTooltipTarget(node)", markup)
+        self.assertIn("function handleToolTooltipOver(event)", markup)
+        self.assertIn("document.addEventListener('pointerover', handleToolTooltipOver);", markup)
+        self.assertIn("document.addEventListener('pointermove', handleToolTooltipOver);", markup)
+        self.assertIn("document.addEventListener('mouseover', handleToolTooltipOver);", markup)
+        self.assertIn("document.addEventListener('mousemove', handleToolTooltipOver);", markup)
+        self.assertIn("document.addEventListener('focusin', handleToolTooltipOver);", markup)
+        self.assertIn("document.addEventListener('pointerout', handleToolTooltipOut);", markup)
+        self.assertIn("document.addEventListener('mouseout', handleToolTooltipOut);", markup)
+        self.assertIn("document.addEventListener('focusout', handleToolTooltipOut);", markup)
+        self.assertIn("document.addEventListener('scroll', hideToolTooltip, true);", markup)
+        self.assertIn("const label = button.getAttribute('aria-label') || button.textContent.trim();", markup)
         self.assertIn('class="toolbar-separator"', markup)
-        self.assertIn('id="zoomInBtn"', markup)
-        self.assertIn('id="zoomOutBtn"', markup)
-        self.assertIn('id="fitBtn"', markup)
-        self.assertIn('id="zoomValue"', markup)
+        self.assertNotIn('id="zoomInBtn"', markup)
+        self.assertNotIn('id="zoomOutBtn"', markup)
+        self.assertNotIn('id="fitBtn"', markup)
+        self.assertNotIn('id="zoomValue"', markup)
+        self.assertNotIn("document.getElementById('zoomInBtn')", markup)
+        self.assertNotIn("document.getElementById('zoomOutBtn')", markup)
+        self.assertNotIn("document.getElementById('fitBtn')", markup)
+        self.assertNotIn("document.getElementById('zoomValue')", markup)
         self.assertIn('id="zoomWidget"', markup)
         self.assertIn('class="zoom-widget"', markup)
         self.assertIn('id="zoomFitWidgetBtn"', markup)
@@ -408,6 +508,13 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn("Mouse wheel press - pan", viewer_options)
         self.assertIn('<rect x="7" y="3" width="10" height="18" rx="5"></rect>', viewer_options)
         self.assertIn('class="review-actions"', markup)
+        self.assertIn(".topbar { flex: 0 0 auto;", markup)
+        self.assertIn(".topbar-controls { grid-column: 2; min-width: 0; display: flex;", markup)
+        self.assertIn("flex-wrap: wrap", markup)
+        self.assertIn(".toolbar { flex: 1 1 520px;", markup)
+        self.assertIn(".review-actions { flex: 0 0 auto;", markup)
+        self.assertIn(".topbar-title, .topbar-controls { grid-column: 1; }", markup)
+        self.assertNotIn(".topbar-controls { display: contents; }", markup)
         self.assertIn('id="saveBtn"', markup)
         self.assertIn('Save &amp; Next', markup)
         self.assertIn('id="nextBtn"', markup)
@@ -425,7 +532,30 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn('value="sulfide"', markup)
         self.assertIn("Sulfide mask (sulfide/non-sulfide mask segmentation)", markup)
         self.assertIn("Mask-only background", markup)
+        self.assertIn('id="viewerTopWidgets"', markup)
         self.assertIn('class="viewer-top-widgets"', markup)
+        self.assertIn("position: fixed", markup)
+        self.assertIn("top: var(--viewer-top-widgets-top, 10px)", markup)
+        self.assertIn("left: var(--viewer-top-widgets-left, 10px)", markup)
+        self.assertIn("width: var(--viewer-top-widgets-width, 0px)", markup)
+        self.assertIn("visibility: var(--viewer-top-widgets-visibility, hidden)", markup)
+        self.assertIn("align-content: flex-start", markup)
+        self.assertIn("flex-wrap: wrap", markup)
+        self.assertIn("max-width: min(286px, 100%)", markup)
+        self.assertIn("min-width: 0", markup)
+        self.assertIn("function updateViewerTopWidgetsPosition()", markup)
+        self.assertIn("function updateViewerOverlayPositions()", markup)
+        self.assertIn("els.viewerTopWidgets.style.setProperty('--viewer-top-widgets-left'", markup)
+        self.assertIn("els.viewerTopWidgets.style.setProperty('--viewer-top-widgets-visibility', 'visible')", markup)
+        self.assertIn("const workPane = wrap.closest('.work-pane');", markup)
+        self.assertIn("const workRect = workPane ? workPane.getBoundingClientRect() : rect;", markup)
+        self.assertIn("const viewportPadding = 8;", markup)
+        self.assertIn("const viewerInset = 10;", markup)
+        self.assertIn("Math.max(rect.left, workRect.left) + viewerInset", markup)
+        self.assertIn("Math.min(rect.right, workRect.right) - viewerInset", markup)
+        self.assertIn("window.innerWidth - viewportPadding", markup)
+        self.assertIn("Math.max(0, visibleRight - visibleLeft)", markup)
+        self.assertIn("requestAnimationFrame(updateViewerOverlayPositions)", markup)
         self.assertIn('class="segmentation-class-widget"', markup)
         self.assertIn('aria-label="Visible segmentation classes"', markup)
         self.assertIn("Segmentation classes", markup)
@@ -438,19 +568,50 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn('id="layerBackground"', markup)
         self.assertIn('aria-label="Show background image"', markup)
         self.assertIn("Background", markup)
+        self.assertIn('id="layerLines"', markup)
+        self.assertIn('aria-label="Show Original blue lines"', markup)
+        self.assertIn('class="class-swatch blue-lines"', markup)
+        self.assertIn("Original blue lines", markup)
+        self.assertIn(".class-swatch.blue-lines { background: #2563eb; }", markup)
+        self.assertIn('id="layerSulfides"', markup)
+        self.assertIn('aria-label="Show Sulfides"', markup)
+        self.assertIn('class="class-swatch sulfides"', markup)
+        self.assertIn("Sulfides", markup)
+        self.assertIn(".class-swatch.sulfides { background: #f97316; }", markup)
         self.assertLess(markup.index('class="segmentation-class-widget"'), markup.index('class="viewer-layer-widget"'))
         self.assertLess(markup.index('class="viewer-layer-widget"'), markup.index('id="viewerCanvas"'))
         self.assertLess(markup.index('class="viewer-layer-widget"'), markup.index('id="layerBackground"'))
+        self.assertLess(markup.index('class="viewer-layer-widget"'), markup.index('id="layerLines"'))
         self.assertLess(markup.index('class="viewer-layer-widget"'), markup.index('id="layerClusterAreas"'))
+        self.assertLess(markup.index('class="viewer-layer-widget"'), markup.index('id="layerSulfides"'))
         segmentation_widget = markup.split('class="segmentation-class-widget"', 1)[1].split('class="viewer-layer-widget"', 1)[0]
         self.assertNotIn('id="layerBackground"', segmentation_widget)
+        self.assertNotIn('id="layerLines"', segmentation_widget)
         self.assertNotIn('id="layerClusterAreas"', segmentation_widget)
+        self.assertNotIn('id="layerSulfides"', segmentation_widget)
+        self.assertNotIn("Original blue lines", segmentation_widget)
         self.assertNotIn("Talc cluster areas", segmentation_widget)
+        self.assertNotIn("Sulfides", segmentation_widget)
+        side_layers = markup.split('<div class="layers">', 1)[1].split('<div class="guard-controls">', 1)[0]
+        self.assertNotIn('id="layerLines"', side_layers)
+        self.assertNotIn("Original blue lines", side_layers)
         self.assertIn('id="positiveBagPct"', markup)
         self.assertIn('id="talcNodePct"', markup)
         self.assertIn('id="notTalcPct"', markup)
         self.assertIn('id="layerClusterAreas"', markup)
         self.assertIn('id="clusterAreaPct"', markup)
+        self.assertIn("lines: document.getElementById('layerLines')", markup)
+        self.assertIn("Original blue lines layer is not available.", markup)
+        self.assertIn("sulfides: document.getElementById('layerSulfides')", markup)
+        self.assertIn("state.staticTints.sulfide", markup)
+        self.assertIn("Sulfides layer is not available.", markup)
+        self.assertIn("sulfide: buildTintFromImage(sulfideMask, [249, 115, 22, 125])", markup)
+        self.assertIn('id="runNeuralModelBtn"', markup)
+        self.assertIn(">Run model</button>", markup)
+        self.assertIn("async function runNeuralModelQa()", markup)
+        self.assertIn("/neural-model", markup)
+        self.assertIn("runNeuralModelQa().catch", markup)
+        self.assertIn("Neural model mask is not available for this sample. Run model to generate it.", markup)
         self.assertIn('id="talcThresholdStatus"', markup)
         self.assertIn("Target talc >= 10% visible px", markup)
         self.assertIn("TALC_VISIBLE_THRESHOLD_FRACTION = 0.10", markup)
@@ -527,6 +688,7 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn('id="neuralComparisonControls"', markup)
         self.assertIn('id="heuristicLayerLegend"', markup)
         self.assertIn('id="heuristicComparisonLegend"', markup)
+        self.assertIn('id="heuristicNeuralComparisonLegend"', markup)
         self.assertIn('id="neuralLayerLegend"', markup)
         self.assertIn('id="neuralComparisonLegend"', markup)
         self.assertIn('id="runTalcoseHeuristicBtn"', markup)
@@ -537,6 +699,7 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn('<option value="neural_model">Neural Model</option>', markup)
         self.assertIn('<option value="current_vs_heuristic">Current vs Heuristic</option>', markup)
         self.assertIn('<option value="current_vs_neural">Current vs Neural Model</option>', markup)
+        self.assertIn('<option value="heuristic_vs_neural">Heuristic vs Neural Model</option>', markup)
         self.assertNotIn("Default annotation", markup)
         self.assertNotIn("Current Talc annotation vs Heuristic", markup)
         self.assertNotIn("Current Talc annotation vs Neural Model", markup)
@@ -544,14 +707,20 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn("function selectedComparisonMode()", markup)
         self.assertIn("function modelStandaloneEnabled()", markup)
         self.assertIn("function heuristicStandaloneEnabled()", markup)
+        self.assertIn("function heuristicNeuralComparisonEnabled()", markup)
         self.assertIn("function heuristicComparisonCanvasForCurrentState()", markup)
+        self.assertIn("function heuristicNeuralComparisonCanvasForCurrentState()", markup)
         self.assertIn("function modelStandaloneCanvasForCurrentState()", markup)
         self.assertIn("function heuristicStandaloneCanvasForCurrentState()", markup)
         self.assertIn("function drawComparisonOverlay()", markup)
         self.assertIn("function drawModelStandaloneOverlay()", markup)
         self.assertIn("function drawHeuristicStandaloneOverlay()", markup)
+        self.assertIn("function drawHeuristicNeuralComparisonOverlay()", markup)
         self.assertIn("function runTalcoseHeuristicQa()", markup)
         self.assertIn("talcose-heuristic", markup)
+        self.assertIn("heuristic-vs-neural", markup)
+        self.assertIn("heuristic_vs_neural_enabled", markup)
+        self.assertIn("heuristic_vs_neural_stats", markup)
         self.assertIn("neural only", markup)
         self.assertIn("heuristic only", markup)
         self.assertIn("current only", markup)

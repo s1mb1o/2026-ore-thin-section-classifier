@@ -2,7 +2,7 @@
 
 Date: 2026-07-03
 
-Updated: 2026-07-04 with Mask2Former-Swin-Tiny comparison.
+Updated: 2026-07-04 with Mask2Former-Swin-Tiny and SegFormer-B3 comparisons.
 
 ## Scope
 
@@ -27,6 +27,7 @@ Panorama clarification: official panoramas may be used as a test/stress set, but
 | Model | Host | Status | Best val sulfide IoU | Best epoch | Val bg IoU at best | Val pixel acc at best | Avg sec/epoch | Checkpoint size |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | SegFormer-B2 | zelda `root@161.104.48.181` | completed 30/30 | `0.974381` | 20 | `0.970874` | `0.986181` | `78.40` | `320M` |
+| SegFormer-B3 | zelda `root@111.88.124.23` | completed 30/30 | `0.973350` | 26 | `0.969770` | `0.985633` | `141.41` | `541M` |
 | SegFormer-B1 | zelda `root@161.104.48.181` | completed 30/30 | `0.971548` | 16 | `0.967670` | `0.984634` | `36.59` | `160M` |
 | Mask2Former-Swin-Tiny | zelda `root@111.88.124.23` | completed 30/30 | `0.968313` | 23 | `0.963827` | `0.982819` | `226.39` | `1.1G` |
 | ResUNet `base_channels=32` | gx10 `ashmelev@192.168.86.14` | completed 30/30 | `0.956436` | 26 | `0.950908` | `0.976373` | `241.41` | `96M` |
@@ -39,6 +40,14 @@ SegFormer-B2 extended metrics from `scripts/evaluate_binary_sulfide.py`:
 - Hausdorff mean on 512 sampled val tiles: `73.32 px`
 - HD95 mean on 512 sampled val tiles: `23.57 px`
 - Output: `outputs/evaluations/segformer_b2_best_eval_metrics.json`
+
+SegFormer-B3 extended metrics from `scripts/evaluate_binary_sulfide.py`:
+
+- F1 sulfide: `0.986495`
+- AUC sulfide: `0.998784`
+- Hausdorff mean on 512 sampled val tiles: `72.85 px`
+- HD95 mean on 512 sampled val tiles: `25.20 px`
+- Output: `outputs/evaluations/segformer_b3_best_eval_metrics.json`
 
 SegFormer-B1 extended metrics from `scripts/evaluate_binary_sulfide.py`:
 
@@ -108,6 +117,15 @@ SegFormer-B2 final epoch metrics:
 - val bg IoU: `0.965199`
 - val pixel accuracy: `0.983366`
 
+SegFormer-B3 final epoch metrics:
+
+- epoch: `30`
+- train loss: `0.020431`
+- val loss: `0.039651`
+- val sulfide IoU: `0.971052`
+- val bg IoU: `0.967311`
+- val pixel accuracy: `0.984408`
+
 Mask2Former-Swin-Tiny final epoch metrics:
 
 - epoch: `30`
@@ -122,6 +140,9 @@ Mask2Former-Swin-Tiny final epoch metrics:
 - Local SegFormer-B2 mirror: `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/`
 - Current best binary sulfide checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b2_zelda_20260703_overnight_safetensors/best.pt`
 - SegFormer-B2 last checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b2_zelda_20260703_overnight_safetensors/last.pt`
+- Local SegFormer-B3 comparison mirror: `models/binary_sulfide/segformer_b3_dataset_v0_zelda_20260704_1814/`
+- SegFormer-B3 remote checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b3_zelda_20260704_1814/best.pt`
+- SegFormer-B3 last checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b3_zelda_20260704_1814/last.pt`
 - Local SegFormer-B1 fallback mirror: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/`
 - SegFormer-B1 last checkpoint: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b1_zelda_20260703_overnight_safetensors/last.pt`
 - Local Mask2Former-Swin-Tiny mirror: `models/binary_sulfide/mask2former_swin_tiny_dataset_v0_zelda_20260704_1553/`
@@ -135,6 +156,11 @@ Local SegFormer-B2 checksums:
 
 - `best.pt`: `55c31ef645cfb5c9b0b8fd91f4b9d2070e425b32ed60e23b3c15b292546b910f`
 - `last.pt`: `40cc2fa920282964d70588a9815a94915611a22f0182e97327c629220119f00c`
+
+Local SegFormer-B3 checksums:
+
+- `best.pt`: `9eac553bb2e00b2bd2980809cd00e251e9acadb08788c8f36efdf3c1a2b53444`
+- `last.pt`: `e76f81e7e1e8543658dc8777140ae93bc93dbd8be7e2e6240d05142b9d877005`
 
 Local SegFormer-B1 checksums:
 
@@ -153,7 +179,9 @@ Local SegFormer-B0 checksums:
 
 ## Recommendation
 
-Use SegFormer-B2 as the current default binary sulfide checkpoint. It beats SegFormer-B1 and Mask2Former-Swin-Tiny on the same weak-label validation split across IoU, F1, AUC, Hausdorff mean, and HD95 mean. Keep SegFormer-B1 as the faster fallback and SegFormer-B0 as the smallest fallback.
+Use SegFormer-B2 as the current default binary sulfide checkpoint. It beats SegFormer-B1, SegFormer-B3, and Mask2Former-Swin-Tiny on the same weak-label validation split for the primary IoU/F1/AUC metrics and on HD95 mean. Keep SegFormer-B1 as the faster fallback and SegFormer-B0 as the smallest fallback.
+
+SegFormer-B3 is a useful capacity check, but this run does not justify replacing SegFormer-B2: B3 is larger (`541M` checkpoint vs `320M`) and slower (`141.41s/epoch` vs `78.40s/epoch`), with lower IoU/F1/AUC/HD95. Its Hausdorff mean is marginally lower (`72.85 px` vs `73.32 px`), but that single improvement is not enough to offset the other metrics.
 
 Mask2Former-Swin-Tiny is useful as an architecture-diversity check, but this run does not justify replacing SegFormer-B2: it is about `2.9x` slower per epoch than B2 on zelda-era hardware (`226.39s` vs `78.40s`) and below B2 on every extended metric reported here.
 

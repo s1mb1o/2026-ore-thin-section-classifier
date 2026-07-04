@@ -2,7 +2,7 @@
 
 Date: 2026-07-03
 
-Updated: 2026-07-04 with Mask2Former-Swin-Tiny comparison.
+Updated: 2026-07-04 with Mask2Former-Swin-Tiny and SegFormer-B3 comparisons.
 
 ## Intended Use
 
@@ -16,6 +16,8 @@ Binary `sulfide / not_sulfide` segmentation for reflected-light optical microsco
 - Local B1 mirror: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/`
 - Small fallback: SegFormer-B0, zelda run `outputs/train_segformer_b0_zelda_20260702_220225/best.pt`
 - Local B0 mirror: `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/`
+- Non-default capacity comparison: SegFormer-B3, zelda run `outputs/train_segformer_b3_zelda_20260704_1814/best.pt`
+- Local B3 mirror: `models/binary_sulfide/segformer_b3_dataset_v0_zelda_20260704_1814/`
 - Non-default comparison: Mask2Former-Swin-Tiny, zelda run `outputs/train_mask2former_zelda_20260704_1553/best.pt`
 - Local Mask2Former mirror: `models/binary_sulfide/mask2former_swin_tiny_dataset_v0_zelda_20260704_1553/`
 - ResUNet sanity check: gx10 run `outputs/train_resunet_gx10_20260703_004425/best.pt`
@@ -50,6 +52,17 @@ Fallback SegFormer-B1 best checkpoint:
 - Hausdorff mean on 512 sampled val tiles: `76.81 px`
 - HD95 mean on 512 sampled val tiles: `26.25 px`
 
+Non-default SegFormer-B3 capacity comparison:
+
+- val sulfide IoU: `0.973350`
+- val background IoU: `0.969770`
+- val pixel accuracy: `0.985633`
+- sulfide F1: `0.986495`
+- sulfide AUC: `0.998784`
+- Hausdorff mean on 512 sampled val tiles: `72.85 px`
+- HD95 mean on 512 sampled val tiles: `25.20 px`
+- average training time: `141.41 s/epoch`
+
 Small fallback SegFormer-B0 best checkpoint:
 
 - val sulfide IoU: `0.953371`
@@ -81,4 +94,4 @@ Non-default Mask2Former-Swin-Tiny comparison:
 
 ## Recommended Use In Demo
 
-Use the final mirrored SegFormer-B2 checkpoint for sulfide masks and confidence heatmaps. Keep SegFormer-B1 as the faster fallback if B2 loading or memory becomes a blocker during the live demo. Do not switch to Mask2Former-Swin-Tiny for the demo: it is slower and below B2 on this weak-label benchmark.
+Use the final mirrored SegFormer-B2 checkpoint for sulfide masks and confidence heatmaps. Keep SegFormer-B1 as the faster fallback if B2 loading or memory becomes a blocker during the live demo. Do not switch to SegFormer-B3 or Mask2Former-Swin-Tiny for the demo: B3 is larger/slower and below B2 on IoU/F1/AUC/HD95, while Mask2Former-Swin-Tiny is slower and below B2 on this weak-label benchmark.

@@ -27,23 +27,58 @@ import grain_review_web  # noqa: E402
 
 def build_dataset(dataset_dir: Path, grains: list[dict[str, str]]) -> None:
     dataset_dir.mkdir(parents=True, exist_ok=True)
+    for grain in grains:
+        if not grain.get("source_dataset_path"):
+            grain["source_dataset_path"] = str(dataset_dir / grain["image_rel_path"])
     fieldnames = [
         "grain_uid",
+        "run_id",
         "grade_label",
         "heuristic_label",
+        "image_rel_path",
+        "source_dataset_path",
+        "component_id",
         "crop_path",
         "area_px",
         "dark_inside_ratio",
         "solidity",
+        "compactness",
+        "bbox_x",
+        "bbox_y",
+        "bbox_w",
+        "bbox_h",
     ]
     with (dataset_dir / "grains_manifest.csv").open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(grains)
+    batch_dir = dataset_dir / "batch"
+    (dataset_dir / "dataset_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "grain-dataset-v0.1",
+                "batch_dir": str(batch_dir),
+                "params": {"crop_pad_px": 10, "crop_max_side": 256},
+            }
+        ),
+        encoding="utf-8",
+    )
     for grain in grains:
         crop = dataset_dir / grain["crop_path"]
         crop.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (12, 10), (90, 90, 90)).save(crop)
+        source = Path(grain["source_dataset_path"])
+        source.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 48), (120, 115, 100)).save(source)
+        mask_dir = batch_dir / "runs" / grain["grade_label"] / grain["run_id"] / "binary_sulfide"
+        mask_dir.mkdir(parents=True, exist_ok=True)
+        mask = Image.new("L", (64, 48), 0)
+        x, y = int(grain["bbox_x"]), int(grain["bbox_y"])
+        w, h = int(grain["bbox_w"]), int(grain["bbox_h"])
+        for yy in range(y, min(y + h, mask.height)):
+            for xx in range(x, min(x + w, mask.width)):
+                mask.putpixel((xx, yy), 255)
+        mask.save(mask_dir / "sulfide_mask.png")
 
 
 def default_grains() -> list[dict[str, str]]:
@@ -55,12 +90,21 @@ def default_grains() -> list[dict[str, str]]:
         rows.append(
             {
                 "grain_uid": uid,
+                "run_id": f"run_{i}",
                 "grade_label": grade,
                 "heuristic_label": "fine_intergrowth" if i % 2 else "ordinary_intergrowth",
+                "image_rel_path": f"source_images/source_{i}.jpg",
+                "source_dataset_path": "",
+                "component_id": str(i),
                 "crop_path": f"crops/{grade}/{uid}.png",
                 "area_px": str(400 + i),
                 "dark_inside_ratio": "0.25",
                 "solidity": "0.8",
+                "compactness": "0.25",
+                "bbox_x": str(5 + i),
+                "bbox_y": str(6 + i),
+                "bbox_w": "18",
+                "bbox_h": "12",
             }
         )
     return rows
@@ -93,7 +137,53 @@ class GrainReviewStoreTest(unittest.TestCase):
         item = page["items"][0]
         self.assertEqual(item["grain_uid"], "run_1__c1")
         self.assertTrue(item["crop_url"].startswith("/crops/"))
+        self.assertTrue(item["source_url"].startswith("/source/"))
+        self.assertEqual(item["bbox"], {"x": 6.0, "y": 7.0, "w": 18.0, "h": 12.0})
+        self.assertEqual(
+            item["heuristic_scores"],
+            {"ordinary": 67, "fine": 33, "fine_votes": 1, "total_votes": 3},
+        )
+        self.assertEqual(
+            [(row["label"], row["rule"], row["matched"]) for row in item["heuristic_rows"]],
+            [
+                ("Тёмное внутри", "≥ 0.18", True),
+                ("Выпуклость", "≤ 0.62", False),
+                ("Компактность", "≤ 0.12", False),
+            ],
+        )
+        self.assertIsInstance(item["review_value"]["score"], int)
         self.assertIsNone(item["label"])
+
+    def test_page_review_value_sort_prioritizes_valuable_manual_review_cases(self) -> None:
+        self.store.grains[0].update(
+            {
+                "area_px": "120",
+                "dark_inside_ratio": "0.02",
+                "solidity": "0.92",
+                "compactness": "0.30",
+            }
+        )
+        self.store.grains[1].update(
+            {
+                "area_px": "900",
+                "dark_inside_ratio": "0.17",
+                "solidity": "0.61",
+                "compactness": "0.13",
+            }
+        )
+
+        manifest = self.store.page(offset=0, limit=1, grade="all", view="all")
+        valuable = self.store.page(offset=0, limit=1, grade="all", view="all", sort="review_value")
+
+        self.assertEqual(manifest["items"][0]["grain_uid"], "run_0__c0")
+        self.assertEqual(valuable["sort"], "review_value")
+        self.assertEqual(valuable["items"][0]["grain_uid"], "run_1__c1")
+        self.assertIn("близко к порогам", valuable["items"][0]["review_value"]["reasons"])
+
+    def test_page_rejects_unknown_sort(self) -> None:
+        with self.assertRaises(grain_review_web.ApiError) as ctx:
+            self.store.page(offset=0, limit=1, grade="all", view="all", sort="nope")
+        self.assertEqual(ctx.exception.status, HTTPStatus.BAD_REQUEST)
 
     def test_page_grade_filter(self) -> None:
         page = self.store.page(offset=0, limit=60, grade="fine_intergrowth", view="all")
@@ -174,6 +264,8 @@ class GrainReviewHTTPTest(unittest.TestCase):
         self.assertIn("text/html", response.getheader("Content-Type"))
         html = data.decode("utf-8")
         self.assertIn("Разметка зёрен", html)
+        self.assertIn("Tinder mode", html)
+        self.assertIn("← тонкое", html)
         self.assertIn("/api/annotate", html)
 
     def test_api_page_returns_items_and_stats(self) -> None:
@@ -194,6 +286,23 @@ class GrainReviewHTTPTest(unittest.TestCase):
         self.assertEqual(response.status, HTTPStatus.OK)
         self.assertEqual(response.getheader("Content-Type"), "image/png")
         self.assertTrue(data.startswith(b"\x89PNG"))
+
+    def test_source_endpoint_serves_manifest_source_image(self) -> None:
+        response, data = self.request("GET", "/source/run_0__c0")
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.getheader("Content-Type"), "image/jpeg")
+        self.assertTrue(data.startswith(b"\xff\xd8"))
+
+    def test_source_endpoint_rejects_unknown_uid(self) -> None:
+        response, _ = self.request("GET", "/source/does-not-exist")
+        self.assertEqual(response.status, HTTPStatus.NOT_FOUND)
+
+    def test_contour_endpoint_serves_png_overlay(self) -> None:
+        response, data = self.request("GET", "/contours/run_0__c0")
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.getheader("Content-Type"), "image/png")
+        self.assertTrue(data.startswith(b"\x89PNG"))
+        self.assertGreater(len(data), 50)
 
     def test_crops_endpoint_rejects_traversal(self) -> None:
         response, _ = self.request("GET", "/crops/../grains_manifest.csv")

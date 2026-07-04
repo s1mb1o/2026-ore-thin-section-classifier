@@ -1,8 +1,78 @@
 # ChangeLog
 
+## 2026-07-05
+
+- Added a short-lived (1s TTL) cache for the expensive `/api/status` computation in `apps/ore_pipeline_web.py`. External load testing of the production deployment (behind Caddy basic-auth) showed `/api/status` — the endpoint the UI polls continuously — capping at ~80 req/s with throughput flat versus concurrency and latency collapsing (p50 ~1s at c=100, unresponsive at c=200): the classic GIL-serialization signature, driven by 3 filesystem size walks plus disk/memory/cpu/gpu probes recomputed on every request. `OrePipelineHTTPServer.status_payload()` now serves the store computation from a cache guarded by a lock (which also collapses a burst of concurrent requests into a single recompute), while still injecting a fresh access log on every request so the live log is never stale. New regression test `test_status_payload_caches_expensive_computation_but_refreshes_access_log`. See `docs/benchmarks/06_production_load_stability_20260704.md`.
+
 ## 2026-07-04
 
+- Added repo-root `compose.yaml` as the primary Docker deployment entrypoint. The default service keeps the lightweight heuristic UI path, while the opt-in `gpu` profile covers gx10/ML with the SOTA image, NVIDIA device reservation, model mounts, and talc-output checkpoint mount. Updated Docker tests and deployment docs; the old `docker-compose.ore-pipeline-ui.yml` remains as a compatibility file.
+
+- Added a visible `v2` app version badge to the ore-pipeline top navigation between History and the language selector, and exposed the same value as `app.version` in `/api/status`.
+
+- Changed the default ore-pipeline talc segmentation backend to ML when the SegFormer-B0 talc checkpoint is available. Settings reset/defaults now select `ML model` for `Бэкенд сегментации талька`.
+
+- Clarified Settings / Runtime talc thresholds: the Settings field is now labeled as an ML talc probability threshold and is disabled while the talc backend is `heuristics`, since heuristic talc paths do not consume that probability cutoff.
+
+- Added explicit hover/focus tooltips to the ore-pipeline viewer zoom controls in both the main view and Edit & Recalculate dialog, using the existing Russian/English labels for Fit, Actual size, Zoom in, and Zoom out.
+
+- Moved the Talc Review `Original blue lines` overlay toggle into the top-right `Display layers` widget. It now sits with `Background`, `Talc cluster areas`, and `Sulfides`, while preserving the same raw blue-stroke overlay behavior.
+
+- Added `Heuristic vs Neural Model` to Talc Review `Comparison mode`. It compares the non-neural talc-zone mask directly against the neural talc mask, keeps both source run actions available, and highlights agreement, heuristic-only, neural-only, and sulfide-conflict pixels.
+
+- Added an MCP (Model Context Protocol) server, `apps/ore_mcp_server.py`, exposing the ore pipeline as tools over stdio. `classify_thin_section(image_path, out_dir=None)` wraps `ResidentSulfidePipeline.run_image` with the model held **warm** in-process (lazy load on first call, no per-image reload — this is "Option A"), returning `result_quality`, `talc_source`, the inlined `ore_summary` metrics, an optional learned grade branch, and artifact paths. `get_config()` reports resolved checkpoints/device without loading models. Checkpoints default to the same paths as the web app, overridable via `ORE_MCP_*` env vars. New dep `mcp>=1.2.0`; covered by `tests/test_ore_mcp_server.py` and a manual end-to-end run (`docs/notes/2026-07-04-mcp-server.md`).
+
+- Added a Talc Review `Sulfides` display layer to the top-right `Display layers` widget. It tints the sample sulfide mask as an independent overlay without changing the selected background, annotation masks, or sulfide-protection behavior.
+
 - Added an OpenAPI 3.1 description of the ore-pipeline HTTP API, served verbatim at the new unauthenticated route `GET /api/openapi.json`. The document is generated from the handler route table in `build_openapi_document()` (auth, uploads, single runs, batches, artifact downloads; 33 paths / 37 operations) so the app can declare OpenAPI support. The spec route stays open even when a UI password is configured. The document passes formal `openapi-spec-validator` validation (added to `requirements-dev.txt`). Covered by `OrePipelineOpenApiTest` (valid 3.1 doc + resolvable `$ref`s, formal spec validation that skips if the validator is absent, route-token/handler sync guard, unauthenticated HTTP round-trip).
+
+- Changed the ore-pipeline Settings Runtime action from `Test` / `Проверить` to `Test All` / `Проверить все` and separated it visually from the grain-classification backend selector.
+
+- Added Grain Review sorting by most valuable manual-review cases. The new `ценные для проверки` sort applies before pagination and prioritizes unlabeled/uncertain grains, mixed heuristic votes, boundary-only fine warnings, threshold-near features, and larger high-impact grains; cards and detail views show the review-value score and reasons.
+
+- Added per-run backend selection to the Workspace `Configuration...` dialog: sulfide segmentation can use `Sulfide Heuristics` or `ML Sulfide (SegFormer-B2)`, talc segmentation can use `Talc Heuristics` or `ML Talc SegFormer-B0`, and grain classification can use `Ore Grain Heuristics` or `ML Ore Grain Classification`. Settings now provide the defaults: ML sulfide, heuristic talc, and heuristic grain. Run provenance, Status, Series settings, Runtime Test, and technical details now record/display the selected paths.
+
+- Fixed Talc Review `Display layers` overlay positioning before and after image load. The top overlay row is hidden until it is measured, wraps inside the visible viewer width, and caps its right edge to the center work pane so the top-right widget cannot spill into the side settings panel.
+
+- Enabled Caddy reviewer Basic Auth for the Alize v2 production endpoints. Both `https://nornickel-ai-hackathon.alola.ru/` and `http://111.88.124.80/` now require username `reviewer`; unauthenticated and wrong-password requests return `401`, while authenticated `/workspace` and `/api/status` still reach the ML backend on `NVIDIA L4`.
+
+- Enabled plain HTTP IP access for the Alize v2 deployment. Caddy now serves `http://111.88.124.80/` to the same private backend as the HTTPS hostname; with reviewer authentication, root redirects to `/workspace`, `/workspace` returns `200`, and `/api/status` reports health `ok`, backend `ml`, and GPU `NVIDIA L4`.
+
+- Made heuristics the default talc segmentation backend for new ore-pipeline UI settings, Settings reset, and CLI startup while keeping `ML model` selectable.
+
+- Made the ore-pipeline Settings runtime control explicit for talc segmentation: `Talc segmentation backend` / `Бэкенд сегментации талька` now offers `heuristics` and `ML model` labels while preserving the existing `heuristic` / `ml` settings values.
+
+- Added a Talc Review Neural Model `Run model` action for the selected sample. It runs the configured talc segmentation checkpoint through `scripts/infer_talc_segmentation.py`, writes `qa/neural_talc_model/` artifacts plus `model_talc_mask.png`, and refreshes `Neural Model` / `Current vs Neural Model` overlays without leaving the sample.
+
+- Added `presentation/google_slides_draft_ru.md` — paste-ready slide texts for the official Google Slides template (Сложность задачи, Наш пайплайн, Сильные/Слабые стороны, Обучение сульфид- и talc-сегментации, Функционал решения, Как запустить), condensed from `presentation/presentation_ru.md`.
+
+- Updated `presentation/features_ru.md` and regenerated `presentation/features.html`: added REST API + OpenAPI 3.1 (`GET /api/openapi.json`), the new MCP server (`apps/ore_mcp_server.py`) as an AI-agent interface, and the implemented-but-undocumented GIS export (GeoJSON/Shapefile).
+
+- Corrected the public Alize production deployment to the v2 ore pipeline UI from `apps/ore_pipeline_web.py`. The live `https://nornickel-ai-hackathon.alola.ru/` backend now runs `nornickel-ore-pipeline-ui:v2-ml` as `nornickel-ore-pipeline-ui-v2` on private `127.0.0.1:8765->8080`, with SegFormer-B2 sulfide, SegFormer-B0 talc, and pp-aware EfficientNet-B3 grade checkpoints mounted read-only. Public `/workspace`, `/api/status`, `/api/runtime/test`, and upload/run smoke `run_20260704_180453_030668504_b9327d1a` pass. Evidence is in `docs/ui/v2/notes/2026-07-04-alize-v2-production-deploy.md`; the infra repo was updated to mark the earlier legacy `nornickel-qc-ui` deployment as superseded.
+
+- Fixed Talc Review `Display layers` overlay anchoring during browser resize. The top overlay row now clamps to the visible viewer/viewport intersection, keeping the top-right widget inside the browser viewport instead of letting it run off-screen.
+
+- Added explicit in-app hover/focus tooltips for the Talc Review toolbar controls so icon-only tool buttons show their descriptions immediately, including when hovering the SVG icon itself instead of relying on native browser title popups.
+
+- Added a separate checked-by-default Grain Review crop `background` checkbox. The `контур зерна` checkbox now only toggles the grain contour overlay; unchecking `background` hides only the base crop image while keeping the viewer size and contour overlay intact.
+
+- Changed the Talc Review `Similar` toolbar icon to an explicit magic-wand glyph with sparkles so it does not read as an eraser.
+
+- Changed the Talc Review top toolbar drawing tools to compact icon buttons with hover titles for Brush, Fill, Similar, Rectangle, and Polygon, and removed the duplicate top-toolbar Zoom In/Zoom Out/Fit controls plus toolbar zoom percentage now covered by the bottom-left zoom widget.
+
+- Fixed Talc Review toolbar wrapping at narrowed window widths. The toolbar and Save/Save & Next/Next actions now live in a real wrapping flex container that contributes its full height to the topbar, so second-row controls push the viewer down instead of being hidden behind it.
+
+- Fixed Talc Review top overlay positioning after sample load. The `Segmentation classes` and top-right `Display layers` widgets are now fixed to the visible viewer viewport and refreshed after sample layout updates, so the free-pan scroll origin no longer pushes them off-screen when the image appears.
+
+- Added an optional `контур зерна` checkbox to Grain Review crop viewers. When enabled, the app serves a transparent contour overlay from `/contours/<grain_uid>` by locating the source batch sulfide mask, selecting the connected component for the current grain, and drawing its boundary over the zoomed crop image.
+
+- Changed the Grain Review heuristic explanation from inline semicolon-separated text to a table with feature, current value, fine-threshold, and ordinary/fine vote columns in both the detail panel and `Tinder mode`.
+
+- Added ordinary/fine heuristic percentages to Grain Review verdicts. The detail panel and `Tinder mode` now show `Счёт эвристики: рядовое X% · тонкое Y%`, computed from the three existing fine-threshold votes without changing label persistence or keyboard behavior.
+
+- Changed the grain review app's three-choice action order from `рядовое | тонкое | ?` to `тонкое | ? | рядовое` in both grid cards and the side detail panel, matching the Tinder-mode left/down/right decision semantics while keeping label values and keyboard shortcuts unchanged.
+
+- Added `Tinder mode` to the grain review app (`apps/grain_review_web.py`). The app now serves source images by manifest grain UID, includes bbox/source metadata in `/api/page`, and can review one grain at a time with the original image plus stroked grain bbox, zoomed crop, feature details, and arrow-key decisions: `←` тонкое / `fine_intergrowth`, `→` рядовое / `ordinary_intergrowth`, `↑` postpone without saving, `↓` uncertain. Focused unit tests and Playwright browser smoke cover the new source endpoint, overlay bbox, and arrow flow.
 
 - Ran a live UX smoke test of the v2 ore pipeline UI on `127.0.0.1:63589` and documented results in `docs/ui/v2/notes/2026-07-04-ore-pipeline-ui-ux-smoke.md`. Confirmed no browser console errors on the checked pages, verified the final legend percentages/separators, talc-cluster default/color, Russian mouse hints, preprocessing popup fit, Status model spacing, side-by-side splitter practical `0..1` range, and Edit & Recalculate brush/zoom controls. Remaining UX findings are layout issues: Status page fixed-width overflow, Workspace viewer-option row wrapping, Edit & Recalculate statistics label wrapping, and Workspace mobile overflow.
 
@@ -26,6 +96,8 @@
 - Changed the Workspace `кластеры талька` / `talc cluster areas` color from pink to cyan/light blue in both the final segmentation legend swatch and the generated talc-cluster overlay. Completed runs with old display overlays are refreshed on load when their display manifest has a stale talc-cluster RGB marker.
 
 - Added and benchmarked Mask2Former-Swin-Tiny support for binary sulfide segmentation. The training/eval path now accepts `--model mask2former`, projects Mask2Former query outputs into dense binary logits for shared inference/evaluation, and has focused `model_io` coverage. Zelda `root@111.88.124.23` completed a 30-epoch run on `binary_sulfide_dataset_v0`: best sulfide IoU `0.968313`, F1 `0.983901`, AUC `0.998492`, HD95 mean `29.55 px`, average `226.39 s/epoch`. SegFormer-B2 remains the default because it is better on IoU/F1/AUC/HD95 and faster. Artifacts are mirrored under `models/binary_sulfide/mask2former_swin_tiny_dataset_v0_zelda_20260704_1553/`; extended metrics are in `outputs/evaluations/mask2former_best_eval_metrics.json`; benchmark docs updated.
+
+- Added and benchmarked SegFormer-B3 support for binary sulfide segmentation. The training/eval path now accepts and loads `segformer_b3` with the `nvidia/mit-b3` shape, plus focused `model_io` regression coverage. Zelda `root@111.88.124.23` completed a 30-epoch run on `binary_sulfide_dataset_v0`: best epoch 26, sulfide IoU `0.973350`, F1 `0.986495`, AUC `0.998784`, HD95 mean `25.20 px`, average `141.41 s/epoch`. B3 is larger/slower than B2 and below B2 on IoU/F1/AUC/HD95, so SegFormer-B2 remains the default. Artifacts are mirrored under `models/binary_sulfide/segformer_b3_dataset_v0_zelda_20260704_1814/`; extended metrics are in `outputs/evaluations/segformer_b3_best_eval_metrics.json`; benchmark/model-card/status docs updated.
 
 - Changed the Workspace final segmentation legend so `кластеры талька` / `talc cluster areas` is unchecked by default. The layer remains available in both left and side-by-side right legends, and resets return it to off.
 

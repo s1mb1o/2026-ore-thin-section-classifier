@@ -9,6 +9,7 @@ Provide a Docker image for running the v2 ore pipeline browser GUI on the Nornic
 ## Runtime Contract
 
 - The container starts the web UI on `0.0.0.0:8080` by default.
+- The primary deployment file is repo-root `compose.yaml`; `docker-compose.ore-pipeline-ui.yml` remains as a compatibility file for older scripted commands.
 - The host maps a public VM port to container port `8080`.
 - On the organizer VM, launch may require `sudo docker compose` if Docker socket access is not granted to the default user.
 - The app stores uploads, settings, immutable runs, batches, masks, CSV files, and PDF reports in `/data/ore_pipeline_ui`.
@@ -34,7 +35,13 @@ Environment variables:
 | `ORE_UI_PROCESSING_MAX_SIDE` | `2600` | Analysis-scale longest-side limit |
 | `ORE_UI_PANORAMA_MAX_SIDE` | `1800` | Panorama preprocessing longest-side limit |
 | `ORE_UI_PREVIEW_MAX_SIDES` | `1024,2048,4096` | Preview pyramid side sizes |
+| `ORE_UI_PUBLIC_HOST` | `0.0.0.0` | Host interface used by root Compose |
 | `ORE_UI_PUBLIC_PORT` | `8080` | Host port used by Compose |
+| `ORE_UI_IMAGE` | `nornikel/ore-pipeline-ui:v2` | Default root Compose image |
+| `ORE_UI_DOCKERFILE` | `docker/ore-pipeline-ui/Dockerfile` | Default root Compose Dockerfile |
+| `ORE_UI_WORKSPACE_HOST` | `./outputs/ore_pipeline_ui` | Host workspace bind mount |
+| `ORE_UI_MODELS_HOST` | `./models` | Host model-checkpoint bind mount |
+| `ORE_UI_TALC_OUTPUTS_HOST` | `./outputs/talc_segformer_folds` | Optional talc-checkpoint bind mount for the GPU profile |
 
 ## Volumes
 

@@ -32,7 +32,7 @@ The top navigation uses slug routes:
 - `/status`: system status and logs.
 - `/api`: REST API reference and live sandbox.
 
-`/` redirects to `/workspace`. The UI has persistent language and theme selectors. Russian is the default language, and English translations should cover all user-facing text.
+`/` redirects to `/workspace`. The header shows the UI version between History and the language selector. The UI has persistent language and theme selectors. Russian is the default language, and English translations should cover all user-facing text.
 
 ## Workspace Layout
 
@@ -76,7 +76,17 @@ Saved metadata is included in the next run request and written into the immutabl
 
 ## Run Configuration
 
-`Configuration...` opens per-run parameters that affect generated artifacts and result interpretation, including talc clusterization radius, minimum local talc, and opacity.
+`Configuration...` opens per-run parameters that affect generated artifacts and result interpretation.
+
+Runtime selectors are stored in the run configuration:
+
+- sulfide segmentation: `Sulfide Heuristics` or `ML Sulfide (SegFormer-B2)`;
+- talc segmentation: `Talc Heuristics` or `ML Talc SegFormer-B0`;
+- grain classification: `Ore Grain Heuristics` or `ML Ore Grain Classification`.
+
+The default selector values come from Settings. The shipped defaults are ML sulfide segmentation, ML talc segmentation, and heuristic grain classification.
+
+The same dialog also controls talc clusterization radius, minimum local talc, and opacity.
 
 Saving changed configuration values invalidates all generated artifacts and result state in the current Workspace: augmented/preprocessed preview layers, sulfide/final layers, metrics, exports, grain outlines, and file previews are cleared. The original upload, curated metadata, current checkbox/settings values, and any upload-level artefact mask annotation are preserved. Press `Start` to create a fresh immutable run from the original input and the new configuration.
 
@@ -97,12 +107,12 @@ If no completed run is loaded, `Apply` updates the current upload/pre-run state.
 Preprocessing is controlled by:
 
 ```text
-[x] Preprocessing [Edit] [Apply]
+[ ] Preprocessing [Edit] [Apply]
 ```
 
 `Edit` opens illumination normalization, denoising, contrast correction, and panorama scaling settings. Panorama scaling is explicit: either a longest-side bound or scale factor. The settings popup wraps panorama fields and footer text inside the dialog instead of requiring horizontal scrolling.
 
-If preprocessing is unchecked, `Start` skips preprocessing and the preprocessed view/side-by-side option stays disabled. If preprocessing is checked, the run records the exact preset used. For large images, the UI keeps original source artifacts and uses analysis/display-scale images for browser work.
+Preprocessing is unchecked by default. The individual filter settings remain selected as the ready-to-use preset, but `Start` skips preprocessing until the main checkbox is checked. If preprocessing is unchecked, the preprocessed view/side-by-side option stays disabled. If preprocessing is checked, the run records the exact preset used. For large images, the UI keeps original source artifacts and uses analysis/display-scale images for browser work.
 
 ## Run Controls
 
@@ -247,14 +257,15 @@ The Settings page controls:
 
 - default language;
 - theme;
-- binary sulfide backend/checkpoint;
-- talc source/checkpoint/threshold;
+- sulfide segmentation backend/checkpoint (`ML Sulfide (SegFormer-B2)` by default when the checkpoint is present);
+- talc segmentation backend (`ML model` by default, or `heuristics`), checkpoint, and ML probability threshold;
+- grain classification backend (`Ore Grain Heuristics` by default, or `ML Ore Grain Classification`);
 - preprocessing defaults;
 - default tiling overlay;
 - repeated session metadata defaults;
 - history removal.
 
-Runtime changes apply to new runs, validate checkpoint paths, and are blocked while a run or Series job is active. The Runtime `Test` button probes unsaved settings without saving them or creating a run.
+Runtime changes apply to new runs, validate checkpoint paths, and are blocked while a run or Series job is active. Settings keeps full checkpoint paths internally but the Runtime panel shows only shortened checkpoint names. The talc probability threshold is enabled only for `ML model`; heuristic talc paths do not consume this cutoff. The Runtime `Test All` button probes unsaved settings without saving them or creating a run.
 
 The Security section can set a password for the UI. When a password is set, opening UI pages, API endpoints, or run artifacts requires login through `/login`. The app stores only a salted PBKDF2 password hash and `/api/settings` exposes only whether password protection is enabled. Leaving the password field empty keeps the current password unchanged; checking `remove password` disables protection.
 

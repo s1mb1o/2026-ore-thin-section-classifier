@@ -175,3 +175,31 @@ Detailed benchmark note: `docs/benchmarks/01_binary_sulfide_model_benchmark.md`.
 - Local checksum `best.pt`: `e1694cdeb29551f4d5d818aa2dbac91c1601a2da5380181d0087200a693e6a03`
 - Local checksum `last.pt`: `5f837f7a2ea691a8a429d93343b374c245575f225222e5dbf9ae62d4a2cde338`
 - Conclusion: do not replace SegFormer-B2. Mask2Former-Swin-Tiny is slower than SegFormer-B2 and below B2 on IoU, F1, AUC, Hausdorff mean, and HD95 mean on `binary_sulfide_dataset_v0`.
+
+## zelda SegFormer-B3
+
+- Added code support for `segformer_b3` as the next SegFormer capacity check after SegFormer-B2.
+- Host: `root@111.88.124.23`
+- Completed session: `tmux nornikel_segformer_b3_20260704_1814`
+- Output dir: `/root/2026_Nornikel_Hackaton_v2/outputs/train_segformer_b3_zelda_20260704_1814`
+- Command: SegFormer-B3, 30 epochs, batch 8, AMP, `lr=6e-5`, CUDA.
+- Pretrained encoder: `nvidia/mit-b3`; decode head initialized for binary sulfide segmentation.
+- zelda disk warning: root disk stayed tight but stable, about `2.5G` free after the run; only `best.pt` and `last.pt` were retained.
+- Final benchmark summary:
+  - best epoch: `26`
+  - best val sulfide IoU: `0.973350`
+  - val bg IoU at best: `0.969770`
+  - val pixel accuracy at best: `0.985633`
+  - sulfide F1 at best: `0.986495`
+  - sulfide AUC at best: `0.998784`
+  - Hausdorff mean on 512 sampled val tiles: `72.85 px`
+  - HD95 mean on 512 sampled val tiles: `25.20 px`
+  - final epoch 30 val sulfide IoU: `0.971052`
+  - total training seconds: `4242.40`
+  - average seconds per epoch: `141.41`
+  - checkpoint size: `541M`
+- Local mirror: `models/binary_sulfide/segformer_b3_dataset_v0_zelda_20260704_1814/`
+- Extended eval JSON: `outputs/evaluations/segformer_b3_best_eval_metrics.json`
+- Local checksum `best.pt`: `9eac553bb2e00b2bd2980809cd00e251e9acadb08788c8f36efdf3c1a2b53444`
+- Local checksum `last.pt`: `e76f81e7e1e8543658dc8777140ae93bc93dbd8be7e2e6240d05142b9d877005`
+- Conclusion: do not replace SegFormer-B2. SegFormer-B3 is larger and slower than B2 and is below B2 on IoU, F1, AUC, and HD95 mean. Its Hausdorff mean is marginally lower than B2, but not enough to justify switching defaults.
