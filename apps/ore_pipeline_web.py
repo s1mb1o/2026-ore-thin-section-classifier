@@ -144,6 +144,7 @@ BATCH_SCHEMA_VERSION = "ore-pipeline-batch-v0.1"
 BATCH_ITEM_SCHEMA_VERSION = "ore-pipeline-batch-item-v0.1"
 RUNTIME_PROVENANCE_SCHEMA_VERSION = "ore-pipeline-runtime-provenance-v0.1"
 TALC_CLUSTERIZATION_SCHEMA_VERSION = "ore-pipeline-talc-clusterization-v0.1"
+OPENAPI_DOCUMENT_VERSION = "0.1.0"
 AUTH_COOKIE_NAME = "ore_pipeline_session"
 AUTH_SESSION_SECONDS = 24 * 60 * 60
 AUTH_PASSWORD_ITERATIONS = 260_000
@@ -5768,6 +5769,516 @@ def render_login_page(next_path: str = "/workspace") -> str:
 </html>"""
 
 
+@lru_cache(maxsize=1)
+def build_openapi_document() -> dict[str, Any]:
+    """Return the OpenAPI 3.1 description of the ore-pipeline HTTP API.
+
+    Hand-authored from the route table in ``OrePipelineHandler`` (there is no
+    web framework to introspect — routing is explicit string matching). The
+    document is static, so it is cached; it is served verbatim at
+    ``GET /api/openapi.json``. When you add, remove, or rename an ``/api/*``
+    route, update the matching entry here (``tests/test_ore_pipeline_web.py``
+    guards that the documented path set stays in sync with the handlers).
+    """
+
+    obj = {"type": "object", "additionalProperties": True}
+
+    def json_content(schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {"application/json": {"schema": schema or obj}}
+
+    def binary_content(media_type: str) -> dict[str, Any]:
+        return {media_type: {"schema": {"type": "string", "format": "binary"}}}
+
+    def path_param(name: str, description: str) -> dict[str, Any]:
+        return {
+            "name": name,
+            "in": "path",
+            "required": True,
+            "schema": {"type": "string"},
+            "description": description,
+        }
+
+    def ok(description: str, content: dict[str, Any] | None = None) -> dict[str, Any]:
+        response: dict[str, Any] = {"description": description}
+        response["content"] = content if content is not None else json_content()
+        return response
+
+    # Reusable error responses referenced by every operation.
+    error_refs = {
+        "400": {"$ref": "#/components/responses/BadRequest"},
+        "401": {"$ref": "#/components/responses/Unauthorized"},
+        "404": {"$ref": "#/components/responses/NotFound"},
+        "500": {"$ref": "#/components/responses/ServerError"},
+    }
+
+    def operation(
+        *,
+        summary: str,
+        tag: str,
+        operation_id: str,
+        secured: bool = True,
+        parameters: list[dict[str, Any]] | None = None,
+        request_body: dict[str, Any] | None = None,
+        success: dict[str, Any] | None = None,
+        errors: tuple[str, ...] = ("401", "404", "500"),
+    ) -> dict[str, Any]:
+        op: dict[str, Any] = {
+            "summary": summary,
+            "operationId": operation_id,
+            "tags": [tag],
+            "responses": {"200": success or ok("Success.")},
+        }
+        if parameters:
+            op["parameters"] = parameters
+        if request_body is not None:
+            op["requestBody"] = request_body
+        for code in errors:
+            op["responses"][code] = error_refs[code]
+        # ``security: []`` opts an operation out of the (optional) cookie auth.
+        op["security"] = [{"cookieAuth": []}] if secured else []
+        return op
+
+    def json_body(schema: dict[str, Any] | None = None, *, required: bool = True) -> dict[str, Any]:
+        return {"required": required, "content": json_content(schema)}
+
+    batch_id = path_param("batchId", "Batch identifier.")
+    upload_id = path_param("uploadId", "Upload identifier.")
+    run_id = path_param("runId", "Run identifier.")
+    item_id = path_param("itemId", "Batch item identifier.")
+
+    run_start_body = json_body(
+        {
+            "type": "object",
+            "additionalProperties": True,
+            "required": ["upload_id"],
+            "properties": {
+                "upload_id": {"type": "string", "description": "Prepared upload to run."},
+                "preset": {"type": "object", "additionalProperties": True},
+                "curated_metadata": {"type": "object", "additionalProperties": True},
+                "augmentation": {"type": "object", "additionalProperties": True},
+                "talc_clusterization": {"type": "object", "additionalProperties": True},
+                "runtime": {"type": "object", "additionalProperties": True},
+            },
+        }
+    )
+
+    paths: dict[str, dict[str, Any]] = {
+        "/api/openapi.json": {
+            "get": operation(
+                summary="This OpenAPI document.",
+                tag="Meta",
+                operation_id="getOpenApiDocument",
+                secured=False,
+                success=ok("The OpenAPI 3.1 description of this API."),
+                errors=("500",),
+            )
+        },
+        "/api/auth/status": {
+            "get": operation(
+                summary="Authentication status and whether a password is required.",
+                tag="Auth",
+                operation_id="getAuthStatus",
+                secured=False,
+                success=ok(
+                    "Auth status.",
+                    json_content({"$ref": "#/components/schemas/AuthStatus"}),
+                ),
+                errors=("500",),
+            )
+        },
+        "/api/auth/login": {
+            "post": operation(
+                summary="Log in with the configured password; sets the session cookie.",
+                tag="Auth",
+                operation_id="login",
+                secured=False,
+                request_body=json_body(
+                    {
+                        "type": "object",
+                        "properties": {"password": {"type": "string"}},
+                        "required": ["password"],
+                    }
+                ),
+                errors=("400", "401", "500"),
+            )
+        },
+        "/api/auth/logout": {
+            "post": operation(
+                summary="Revoke the current session and clear the cookie.",
+                tag="Auth",
+                operation_id="logout",
+                secured=False,
+                errors=("500",),
+            )
+        },
+        "/api/status": {
+            "get": operation(
+                summary="Server, model backend, and active-operation status.",
+                tag="Meta",
+                operation_id="getStatus",
+            )
+        },
+        "/api/settings": {
+            "get": operation(
+                summary="Read public application settings.",
+                tag="Settings",
+                operation_id="getSettings",
+            ),
+            "put": operation(
+                summary="Update application settings (may set or clear the UI password).",
+                tag="Settings",
+                operation_id="updateSettings",
+                request_body=json_body(),
+                errors=("400", "401", "500"),
+            ),
+        },
+        "/api/runtime/test": {
+            "post": operation(
+                summary="Validate a runtime configuration without starting a run.",
+                tag="Runs",
+                operation_id="testRuntime",
+                request_body=json_body(),
+                errors=("400", "401", "500"),
+            )
+        },
+        "/api/uploads": {
+            "post": operation(
+                summary="Upload a source image (multipart/form-data, field 'file').",
+                tag="Uploads",
+                operation_id="createUpload",
+                request_body={
+                    "required": True,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "file": {"type": "string", "format": "binary"}
+                                },
+                                "required": ["file"],
+                            }
+                        }
+                    },
+                },
+                errors=("400", "401", "500"),
+            )
+        },
+        "/api/uploads/{uploadId}": {
+            "get": operation(
+                summary="Get an upload's status and derived artifacts.",
+                tag="Uploads",
+                operation_id="getUpload",
+                parameters=[upload_id],
+            )
+        },
+        "/api/uploads/{uploadId}/preprocess": {
+            "post": operation(
+                summary="Preprocess (tile/augment) an upload to prepare it for a run.",
+                tag="Uploads",
+                operation_id="preprocessUpload",
+                parameters=[upload_id],
+                request_body=json_body(required=False),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/uploads/{uploadId}/artifact-mask": {
+            "post": operation(
+                summary="Save a manual artifact (exclusion) mask for an upload.",
+                tag="Uploads",
+                operation_id="saveUploadArtifactMask",
+                parameters=[upload_id],
+                request_body=json_body(),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/batches": {
+            "get": operation(
+                summary="List batches.",
+                tag="Batches",
+                operation_id="listBatches",
+            ),
+            "post": operation(
+                summary="Create a batch.",
+                tag="Batches",
+                operation_id="createBatch",
+                request_body=json_body(),
+                errors=("400", "401", "500"),
+            ),
+        },
+        "/api/batches/{batchId}": {
+            "get": operation(
+                summary="Get a batch.",
+                tag="Batches",
+                operation_id="getBatch",
+                parameters=[batch_id],
+            ),
+            "delete": operation(
+                summary="Delete a batch.",
+                tag="Batches",
+                operation_id="deleteBatch",
+                parameters=[batch_id],
+            ),
+        },
+        "/api/batches/{batchId}/results.csv": {
+            "get": operation(
+                summary="Download the batch results as CSV.",
+                tag="Batches",
+                operation_id="getBatchResultsCsv",
+                parameters=[batch_id],
+                success=ok("CSV file.", binary_content("text/csv")),
+            )
+        },
+        "/api/batches/{batchId}/settings": {
+            "put": operation(
+                summary="Update batch-level settings.",
+                tag="Batches",
+                operation_id="updateBatchSettings",
+                parameters=[batch_id],
+                request_body=json_body(),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/batches/{batchId}/items": {
+            "post": operation(
+                summary="Add items to a batch.",
+                tag="Batches",
+                operation_id="addBatchItems",
+                parameters=[batch_id],
+                request_body=json_body(),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/batches/{batchId}/items/{itemId}": {
+            "delete": operation(
+                summary="Remove an item from a batch.",
+                tag="Batches",
+                operation_id="removeBatchItem",
+                parameters=[batch_id, item_id],
+            )
+        },
+        "/api/batches/{batchId}/items/{itemId}/metadata": {
+            "put": operation(
+                summary="Update curated metadata for a batch item.",
+                tag="Batches",
+                operation_id="updateBatchItemMetadata",
+                parameters=[batch_id, item_id],
+                request_body=json_body(),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/batches/{batchId}/run": {
+            "post": operation(
+                summary="Run a batch asynchronously.",
+                tag="Batches",
+                operation_id="runBatch",
+                parameters=[batch_id],
+                request_body=json_body(required=False),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/batches/{batchId}/cancel": {
+            "post": operation(
+                summary="Cancel a running batch.",
+                tag="Batches",
+                operation_id="cancelBatch",
+                parameters=[batch_id],
+            )
+        },
+        "/api/runs": {
+            "get": operation(
+                summary="List runs.",
+                tag="Runs",
+                operation_id="listRuns",
+            )
+        },
+        "/api/runs/start": {
+            "post": operation(
+                summary="Prepare and start a run for an upload.",
+                tag="Runs",
+                operation_id="startRun",
+                request_body=run_start_body,
+                errors=("400", "401", "500"),
+            )
+        },
+        "/api/runs/{runId}": {
+            "get": operation(
+                summary="Get a run.",
+                tag="Runs",
+                operation_id="getRun",
+                parameters=[run_id],
+            ),
+            "delete": operation(
+                summary="Delete a run.",
+                tag="Runs",
+                operation_id="deleteRun",
+                parameters=[run_id],
+            ),
+        },
+        "/api/runs/{runId}/prepare": {
+            "post": operation(
+                summary="Prepare a derived run from an existing run's applied changes.",
+                tag="Runs",
+                operation_id="prepareRun",
+                parameters=[run_id],
+                request_body=json_body(required=False),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/runs/{runId}/start": {
+            "post": operation(
+                summary="Start a previously prepared run.",
+                tag="Runs",
+                operation_id="startPreparedRun",
+                parameters=[run_id],
+                request_body=json_body(required=False),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/runs/{runId}/cancel": {
+            "post": operation(
+                summary="Cancel a running run.",
+                tag="Runs",
+                operation_id="cancelRun",
+                parameters=[run_id],
+            )
+        },
+        "/api/runs/{runId}/fix": {
+            "post": operation(
+                summary="Create an edited (fixed) run from an existing run.",
+                tag="Runs",
+                operation_id="createEditRun",
+                parameters=[run_id],
+                request_body=json_body(),
+                errors=("400", "401", "404", "500"),
+            )
+        },
+        "/api/runs/{runId}/files": {
+            "get": operation(
+                summary="List the artifact files produced by a run.",
+                tag="Runs",
+                operation_id="getRunFiles",
+                parameters=[run_id],
+            )
+        },
+        "/api/runs/{runId}/metrics.csv": {
+            "get": operation(
+                summary="Download a run's metrics as CSV.",
+                tag="Runs",
+                operation_id="getRunMetricsCsv",
+                parameters=[run_id],
+                success=ok("CSV file.", binary_content("text/csv")),
+            )
+        },
+        "/api/runs/{runId}/report.pdf": {
+            "get": operation(
+                summary="Download a run's PDF report.",
+                tag="Runs",
+                operation_id="getRunReportPdf",
+                parameters=[run_id],
+                success=ok("PDF file.", binary_content("application/pdf")),
+            )
+        },
+        "/api/runs/{runId}/artifacts.zip": {
+            "get": operation(
+                summary="Download all of a run's artifacts as a ZIP archive.",
+                tag="Runs",
+                operation_id="getRunArtifactsZip",
+                parameters=[run_id],
+                success=ok("ZIP archive.", binary_content("application/zip")),
+            )
+        },
+        "/api/history": {
+            "delete": operation(
+                summary="Delete all uploads, runs, and batches (clear history).",
+                tag="Meta",
+                operation_id="deleteHistory",
+                errors=("401", "500"),
+            )
+        },
+        "/artifacts/{artifactPath}": {
+            "get": operation(
+                summary="Serve a stored artifact file by relative path.",
+                tag="Artifacts",
+                operation_id="getArtifact",
+                parameters=[path_param("artifactPath", "Relative artifact path (may contain slashes).")],
+                success=ok("Artifact file.", binary_content("application/octet-stream")),
+            )
+        },
+    }
+
+    return {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Ore Pipeline API",
+            "version": OPENAPI_DOCUMENT_VERSION,
+            "description": (
+                "HTTP API of the 2026 Nornickel ore-pipeline web app "
+                "(optical-microscopy sulfide/talc classification). Endpoints cover "
+                "authentication, image uploads, single runs, batches, and artifact "
+                "downloads. Authentication via the session cookie is only enforced "
+                "when a UI password is configured (see GET /api/auth/status)."
+            ),
+        },
+        "tags": [
+            {"name": "Auth", "description": "Session authentication."},
+            {"name": "Meta", "description": "Server status, settings surface, and this document."},
+            {"name": "Uploads", "description": "Source-image uploads and preprocessing."},
+            {"name": "Batches", "description": "Multi-image batches."},
+            {"name": "Runs", "description": "Pipeline runs and their artifacts."},
+            {"name": "Artifacts", "description": "Stored artifact file downloads."},
+            {"name": "Settings", "description": "Application settings."},
+        ],
+        "components": {
+            "securitySchemes": {
+                "cookieAuth": {
+                    "type": "apiKey",
+                    "in": "cookie",
+                    "name": AUTH_COOKIE_NAME,
+                    "description": (
+                        "Session cookie issued by POST /api/auth/login. Only required "
+                        "when a UI password is configured."
+                    ),
+                }
+            },
+            "schemas": {
+                "Error": {
+                    "type": "object",
+                    "properties": {"error": {"type": "string"}},
+                    "required": ["error"],
+                },
+                "AuthStatus": {
+                    "type": "object",
+                    "properties": {
+                        "password_enabled": {"type": "boolean"},
+                        "authenticated": {"type": "boolean"},
+                        "session_max_age_seconds": {"type": "integer"},
+                    },
+                    "required": ["password_enabled", "authenticated"],
+                },
+            },
+            "responses": {
+                "BadRequest": {
+                    "description": "Invalid request.",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}},
+                },
+                "Unauthorized": {
+                    "description": "Authentication required.",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}},
+                },
+                "NotFound": {
+                    "description": "Resource not found.",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}},
+                },
+                "ServerError": {
+                    "description": "Unexpected server error.",
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}},
+                },
+            },
+        },
+        "paths": paths,
+    }
+
+
 class OrePipelineHandler(BaseHTTPRequestHandler):
     server: "OrePipelineHTTPServer"
 
@@ -5889,6 +6400,9 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
     def _handle_get(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/openapi.json":
+            self.send_json(build_openapi_document())
+            return
         if path == "/api/auth/status":
             self.send_json(self._auth_status_payload())
             return

@@ -266,6 +266,8 @@ The Status page shows health, CPU, GPU when available, RAM, Flash, history size,
 
 The API page documents service endpoints and provides live sandboxes for status, upload, preprocessing, runs, artifacts, Series, and settings. Binary downloads show status/content-type/size/disposition instead of raw bytes.
 
+A machine-readable OpenAPI 3.1 description of the whole API is served at `GET /api/openapi.json`. This route is unauthenticated (readable even when a UI password is set), so you can paste the document into any OpenAPI viewer or import it into Swagger UI, Postman, or Insomnia to explore and call the endpoints.
+
 ## Artifact Model
 
 Original upload artifacts live under:

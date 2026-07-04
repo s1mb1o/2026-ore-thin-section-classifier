@@ -5,6 +5,7 @@ import csv
 import http.client
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from apps.ore_pipeline_web import (  # noqa: E402
     OrePipelineHTTPServer,
     OrePipelineStore,
     RunCancelled,
+    build_openapi_document,
     build_pdf_report_pages,
     compute_talc_cluster_mask,
     gpu_status_payload,
@@ -2844,6 +2846,106 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn('value="dark"', html)
         self.assertIn(':root[data-theme="dark"]', html)
         self.assertIn("orePipelineTheme", html)
+
+
+class OrePipelineOpenApiTest(unittest.TestCase):
+    # Concrete non-templated segments that must still appear in the handler
+    # source, so a renamed route trips this test instead of silently drifting
+    # from the OpenAPI document.
+    ROUTE_TOKENS = {
+        "/api/auth/status",
+        "/api/auth/login",
+        "/api/auth/logout",
+        "/api/status",
+        "/api/settings",
+        "/api/runtime/test",
+        "/api/uploads",
+        "/preprocess",
+        "/artifact-mask",
+        "/api/batches",
+        "/results.csv",
+        "/items",
+        "/metadata",
+        "/run",
+        "/cancel",
+        "/api/runs",
+        "/api/runs/start",
+        "/prepare",
+        "/start",
+        "/fix",
+        "/files",
+        "/metrics.csv",
+        "/report.pdf",
+        "/artifacts.zip",
+        "/api/history",
+        "/artifacts/",
+    }
+
+    def _make_server(self) -> tuple[OrePipelineHTTPServer, threading.Thread, str, int]:
+        root = Path(tempfile.mkdtemp(prefix="test_ore_openapi_"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        store = OrePipelineStore(
+            workspace_dir=root / "workspace",
+            backend="heuristic",
+            checkpoint=None,
+            processing_max_side=256,
+            panorama_max_side=128,
+            preview_max_sides=(128, 256),
+        )
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        host, port = server.server_address[:2]
+        return server, thread, host, port
+
+    def test_document_is_valid_openapi_31_with_resolvable_refs(self) -> None:
+        doc = build_openapi_document()
+        self.assertEqual(doc["openapi"], "3.1.0")
+        self.assertIn("paths", doc)
+        self.assertTrue(doc["info"]["title"])
+        self.assertTrue(doc["info"]["version"])
+        text = json.dumps(doc)  # serializes cleanly for the wire
+        for ref in set(re.findall(r'"\$ref": "(#[^"]+)"', text)):
+            node: object = doc
+            for part in ref.lstrip("#/").split("/"):
+                self.assertIn(part, node, msg=f"unresolved $ref: {ref}")
+                node = node[part]
+
+    def test_document_passes_formal_openapi_spec_validation(self) -> None:
+        try:
+            from openapi_spec_validator import validate as validate_openapi
+        except ImportError:  # pragma: no cover - optional dev dependency.
+            self.skipTest("openapi-spec-validator not installed (see requirements-dev.txt)")
+        # Raises OpenAPIValidationError with a descriptive message on any schema
+        # violation, failing this test.
+        validate_openapi(build_openapi_document())
+
+    def test_documented_route_tokens_exist_in_handler_source(self) -> None:
+        source = Path(ore_pipeline_web.__file__).read_text(encoding="utf-8")
+        for token in self.ROUTE_TOKENS:
+            self.assertIn(token, source, msg=f"route token {token!r} not found in handler source")
+
+    def test_openapi_route_served_without_authentication(self) -> None:
+        server, _thread, host, port = self._make_server()
+        # Even with a UI password configured, the spec route must stay open so
+        # tooling can read it before logging in.
+        server.store.save_app_settings({"auth": {"password": "secret-pass"}})
+        self.assertTrue(server.store.auth_enabled())
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("GET", "/api/openapi.json")
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        content_type = response.getheader("Content-Type", "")
+        connection.close()
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertIn("application/json", content_type)
+        payload = json.loads(body)
+        self.assertEqual(payload["openapi"], "3.1.0")
+        self.assertIn("/api/openapi.json", payload["paths"])
+        self.assertEqual(payload, build_openapi_document())
 
 
 if __name__ == "__main__":

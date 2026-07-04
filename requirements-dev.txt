@@ -9,5 +9,10 @@
 pytest
 playwright
 
+# Validates the generated OpenAPI document served at GET /api/openapi.json
+# (tests/test_ore_pipeline_web.py::OrePipelineOpenApiTest). The test skips the
+# formal validation when this is missing, so it is not required to run the apps.
+openapi-spec-validator
+
 # Optional experiment tracking for training scripts (debug only; enable with --mlflow).
 mlflow
