@@ -24,6 +24,7 @@ shifts, and marked `done` (or pruned) when a session finishes or hands off.
 
 | Updated | Session | Doing now | Files / areas claimed | Status |
 | --- | --- | --- | --- | --- |
+| 2026-07-04T17:00:45+0300 | ore-settings-password-auth | Done: added Settings-managed password protection for the v2 ore pipeline UI, including spec/plan, server auth, UI controls, focused tests, docs handoff, and local service verification. | `apps/ore_pipeline_web.py`, `apps/static/ore_pipeline_ui.html`, `tests/test_ore_pipeline_web.py`, `docs/ui/v2/specs/ore-pipeline-password-auth-v0.1.md`, `docs/ui/v2/plans/47_ore-pipeline-password-auth.md`, `ChangeLog.md`, `docs/session-sync.md`, `docs/session-activity.md` | done |
 | 2026-07-04T15:33:47+0300 | presentation-video-artifacts | Moved generated video scripts/texts/videos into `presentation/videos`, regenerated MP4s there, updated generators/docs, and validated the new artifacts. | `presentation/videos/`, `scripts/generate_*video*.sh`, `ChangeLog.md`, `docs/session-sync.md`, `docs/session-activity.md` | done |
 | 2026-07-04T15:17:59+0300 | official-qna-qa3-additions | Done: added user-provided QA#3 clarifications to the official Q/A file. | `docs/official/QnA_sessions.md`, `docs/session-activity.md` | done |
 | 2026-07-04T15:09:22+0300 | official-qna-source-timestamps | Done: added source video URLs and approximate timestamps to each official Q/A entry. | `docs/official/QnA_sessions.md`, `docs/session-activity.md` | done |

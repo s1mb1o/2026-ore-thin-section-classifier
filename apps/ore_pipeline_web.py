@@ -5,11 +5,13 @@ import argparse
 import base64
 import csv
 import hashlib
+import hmac
 import io
 import json
 import math
 import mimetypes
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -24,6 +26,7 @@ from email.parser import BytesParser
 from email.policy import default as email_default_policy
 from functools import lru_cache
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -141,6 +144,9 @@ BATCH_SCHEMA_VERSION = "ore-pipeline-batch-v0.1"
 BATCH_ITEM_SCHEMA_VERSION = "ore-pipeline-batch-item-v0.1"
 RUNTIME_PROVENANCE_SCHEMA_VERSION = "ore-pipeline-runtime-provenance-v0.1"
 TALC_CLUSTERIZATION_SCHEMA_VERSION = "ore-pipeline-talc-clusterization-v0.1"
+AUTH_COOKIE_NAME = "ore_pipeline_session"
+AUTH_SESSION_SECONDS = 24 * 60 * 60
+AUTH_PASSWORD_ITERATIONS = 260_000
 ACTIVE_RUN_STATUSES = {"queued", "running", "canceling"}
 RUN_TERMINAL_STATUSES = {"complete", "failed", "canceled"}
 BATCH_ACTIVE_STATUSES = {"queued", "running", "canceling"}
@@ -184,6 +190,7 @@ DEFAULT_APP_SETTINGS = {
     },
     "talc_clusterization": DEFAULT_TALC_CLUSTERIZATION,
     "metadata_defaults": {},
+    "auth": {"password_enabled": False},
 }
 SETTINGS_METADATA_DEFAULT_FIELDS = {
     "project",
@@ -517,6 +524,75 @@ def settings_value(payload: dict[str, Any], key: str, fallback: Any, aliases: tu
     return fallback
 
 
+def public_auth_settings(auth: Any) -> dict[str, Any]:
+    return {"password_enabled": bool(isinstance(auth, dict) and auth.get("password_enabled"))}
+
+
+def public_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    payload = json.loads(json.dumps(settings))
+    payload["auth"] = public_auth_settings(payload.get("auth"))
+    return payload
+
+
+def _password_hash(password: str, salt_hex: str, iterations: int) -> str:
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations))
+    return base64.b64encode(digest).decode("ascii")
+
+
+def password_hash_settings(password: str) -> dict[str, Any]:
+    salt_hex = secrets.token_hex(16)
+    iterations = AUTH_PASSWORD_ITERATIONS
+    return {
+        "password_enabled": True,
+        "algorithm": "pbkdf2_sha256",
+        "iterations": iterations,
+        "salt": salt_hex,
+        "password_hash": _password_hash(password, salt_hex, iterations),
+    }
+
+
+def normalize_auth_settings(payload: Any, base: dict[str, Any] | None = None) -> dict[str, Any]:
+    fallback = base if isinstance(base, dict) else DEFAULT_APP_SETTINGS["auth"]
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "settings.auth must be an object")
+    if bool(payload.get("clear_password")):
+        return {"password_enabled": False}
+    if "password" in payload:
+        password = str(payload.get("password") or "")
+        if password:
+            if len(password.encode("utf-8")) > 1024:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "settings.auth.password is too long")
+            return password_hash_settings(password)
+    source = payload if payload.get("password_hash") and payload.get("salt") else fallback
+    if bool(source.get("password_enabled")):
+        preserved = {
+            "password_enabled": True,
+            "algorithm": str(source.get("algorithm") or "pbkdf2_sha256"),
+            "iterations": int(source.get("iterations") or AUTH_PASSWORD_ITERATIONS),
+            "salt": str(source.get("salt") or ""),
+            "password_hash": str(source.get("password_hash") or ""),
+        }
+        if preserved["algorithm"] == "pbkdf2_sha256" and preserved["salt"] and preserved["password_hash"]:
+            return preserved
+    return {"password_enabled": False}
+
+
+def verify_auth_password(password: str, auth: dict[str, Any]) -> bool:
+    if not bool(auth.get("password_enabled")):
+        return True
+    if str(auth.get("algorithm") or "") != "pbkdf2_sha256":
+        return False
+    salt_hex = str(auth.get("salt") or "")
+    expected = str(auth.get("password_hash") or "")
+    try:
+        actual = _password_hash(str(password or ""), salt_hex, int(auth.get("iterations") or AUTH_PASSWORD_ITERATIONS))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(actual, expected)
+
+
 def normalize_settings_preprocess(payload: Any, base: dict[str, Any] | None = None) -> dict[str, Any]:
     # Delegates the actual normalization to the shared ore_classifier.preprocessing
     # module so the UI and the offline harness stay byte-identical; only the
@@ -644,6 +720,8 @@ def normalize_app_settings_payload(
                 for key, value in base["metadata_defaults"].items()
                 if str(key) in SETTINGS_METADATA_DEFAULT_FIELDS and value not in (None, "")
             }
+        if isinstance(base.get("auth"), dict):
+            fallback["auth"] = normalize_auth_settings(base["auth"])
     language = str(payload.get("language", fallback["language"]) or fallback["language"])
     if language not in {"ru", "en"}:
         raise ApiError(HTTPStatus.BAD_REQUEST, "settings.language must be ru or en")
@@ -675,6 +753,7 @@ def normalize_app_settings_payload(
             for key, value in metadata_defaults.items()
             if str(key) in SETTINGS_METADATA_DEFAULT_FIELDS and value not in (None, "")
         },
+        "auth": normalize_auth_settings(payload.get("auth"), fallback["auth"]),
     }
 
 
@@ -1563,6 +1642,7 @@ class OrePipelineStore:
         self.artifacts: dict[str, Path] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
         self.batch_jobs: dict[str, dict[str, Any]] = {}
+        self.auth_sessions: dict[str, float] = {}
         self.foreground_operations: dict[str, dict[str, Any]] = {}
         self.system_log: deque[dict[str, Any]] = deque(maxlen=LOG_ENTRY_LIMIT)
         self.lock = threading.RLock()
@@ -2622,6 +2702,46 @@ class OrePipelineStore:
         except json.JSONDecodeError:
             return normalize_app_settings_payload({}, base=self._app_settings_base())
         return normalize_app_settings_payload(payload, base=self._app_settings_base())
+
+    def public_app_settings(self) -> dict[str, Any]:
+        return public_app_settings(self.app_settings())
+
+    def auth_enabled(self) -> bool:
+        return bool(self.app_settings().get("auth", {}).get("password_enabled"))
+
+    def authenticate_password(self, password: str) -> bool:
+        return verify_auth_password(password, self.app_settings().get("auth", {}))
+
+    def _auth_session_key(self, token: str) -> str:
+        return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+    def _prune_auth_sessions(self) -> None:
+        now = time.time()
+        expired = [key for key, expires_at in self.auth_sessions.items() if float(expires_at) <= now]
+        for key in expired:
+            self.auth_sessions.pop(key, None)
+
+    def issue_auth_session(self) -> str:
+        token = secrets.token_urlsafe(32)
+        with self.lock:
+            self._prune_auth_sessions()
+            self.auth_sessions[self._auth_session_key(token)] = time.time() + AUTH_SESSION_SECONDS
+        return token
+
+    def validate_auth_session(self, token: str | None) -> bool:
+        if not self.auth_enabled():
+            return True
+        if not token:
+            return False
+        with self.lock:
+            self._prune_auth_sessions()
+            return self._auth_session_key(token) in self.auth_sessions
+
+    def revoke_auth_session(self, token: str | None) -> None:
+        if not token:
+            return
+        with self.lock:
+            self.auth_sessions.pop(self._auth_session_key(token), None)
 
     def save_app_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         settings = normalize_app_settings_payload(payload, base=self.app_settings(), validate_runtime=True)
@@ -5588,6 +5708,57 @@ def build_pdf_report_pages(data: dict[str, Any], run_dir: Path) -> list[Image.Im
     return pages
 
 
+def render_login_page(next_path: str = "/workspace") -> str:
+    next_json = json.dumps(next_path if next_path.startswith("/") and not next_path.startswith("//") else "/workspace")
+    return f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login</title>
+  <style>
+    :root {{ color-scheme: dark light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f141d; color: #eef3f8; }}
+    form {{ width: min(420px, calc(100vw - 32px)); display: grid; gap: 14px; padding: 24px; border: 1px solid #2b3444; border-radius: 8px; background: #171e29; }}
+    h1 {{ margin: 0; font-size: 24px; }}
+    p {{ margin: 0; color: #aab5c4; line-height: 1.35; }}
+    label {{ display: grid; gap: 6px; color: #aab5c4; font-weight: 650; }}
+    input, button {{ font: inherit; border-radius: 7px; border: 1px solid #2b3444; padding: 10px 12px; }}
+    input {{ background: #101720; color: #eef3f8; }}
+    button {{ background: #20bfc0; color: #061012; font-weight: 800; cursor: pointer; }}
+    #status {{ min-height: 20px; color: #e05858; }}
+  </style>
+</head>
+<body>
+  <form id="loginForm">
+    <h1>Классификатор рудного шлифа</h1>
+    <p>Введите пароль для доступа к интерфейсу.</p>
+    <label>Пароль <input id="password" type="password" autocomplete="current-password" autofocus></label>
+    <button type="submit">Войти</button>
+    <p id="status"></p>
+  </form>
+  <script>
+    const nextPath = {next_json};
+    document.getElementById('loginForm').addEventListener('submit', async event => {{
+      event.preventDefault();
+      const status = document.getElementById('status');
+      status.textContent = '';
+      const response = await fetch('/api/auth/login', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{password: document.getElementById('password').value}})
+      }});
+      if (response.ok) {{
+        window.location.href = nextPath || '/workspace';
+      }} else {{
+        status.textContent = 'Неверный пароль.';
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+
+
 class OrePipelineHandler(BaseHTTPRequestHandler):
     server: "OrePipelineHTTPServer"
 
@@ -5614,6 +5785,57 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
             status=int(status),
             error=str(exc),
         )
+
+    def _session_token(self) -> str | None:
+        cookie_header = self.headers.get("Cookie") or ""
+        if not cookie_header:
+            return None
+        cookie = SimpleCookie()
+        try:
+            cookie.load(cookie_header)
+        except Exception:  # noqa: BLE001 - malformed cookies are treated as absent.
+            return None
+        morsel = cookie.get(AUTH_COOKIE_NAME)
+        return morsel.value if morsel else None
+
+    def _is_authenticated(self) -> bool:
+        return self.server.store.validate_auth_session(self._session_token())
+
+    def _auth_status_payload(self) -> dict[str, Any]:
+        return {
+            "password_enabled": self.server.store.auth_enabled(),
+            "authenticated": self._is_authenticated(),
+            "session_max_age_seconds": AUTH_SESSION_SECONDS,
+        }
+
+    def _auth_cookie_header(self, token: str) -> str:
+        return f"{AUTH_COOKIE_NAME}={token}; Path=/; Max-Age={AUTH_SESSION_SECONDS}; HttpOnly; SameSite=Lax"
+
+    def _clear_auth_cookie_header(self) -> str:
+        return f"{AUTH_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+
+    def _auth_open_path(self, method: str, path: str) -> bool:
+        if path == "/login" and method == "GET":
+            return True
+        if path == "/api/auth/status" and method == "GET":
+            return True
+        if path == "/api/auth/login" and method == "POST":
+            return True
+        if path == "/api/auth/logout" and method == "POST":
+            return True
+        return False
+
+    def _require_auth_or_respond(self, method: str, path: str) -> bool:
+        if not self.server.store.auth_enabled() or self._auth_open_path(method, path):
+            return True
+        if self._is_authenticated():
+            return True
+        if path.startswith("/api/") or path.startswith("/artifacts/"):
+            self.send_json({"error": "authentication required"}, status=HTTPStatus.UNAUTHORIZED)
+            return False
+        next_path = path if path.startswith("/") else "/workspace"
+        self.send_redirect(f"/login?next={urllib.parse.quote(next_path, safe='/')}")
+        return False
 
     def do_GET(self) -> None:  # noqa: N802
         try:
@@ -5658,6 +5880,21 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
     def _handle_get(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/auth/status":
+            self.send_json(self._auth_status_payload())
+            return
+        if path == "/login":
+            if not self.server.store.auth_enabled() or self._is_authenticated():
+                self.send_redirect("/workspace")
+                return
+            query = urllib.parse.parse_qs(parsed.query)
+            next_path = str((query.get("next") or ["/workspace"])[0] or "/workspace")
+            if not next_path.startswith("/") or next_path.startswith("//"):
+                next_path = "/workspace"
+            self.send_html(render_login_page(next_path))
+            return
+        if not self._require_auth_or_respond("GET", path):
+            return
         if path == "/":
             self.send_redirect("/workspace")
             return
@@ -5665,7 +5902,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
             self.send_html(render_html_page())
             return
         if path == "/api/settings":
-            self.send_json(self.server.store.app_settings())
+            self.send_json(self.server.store.public_app_settings())
             return
         if path == "/api/status":
             self.send_json(self.server.status_payload())
@@ -5735,6 +5972,25 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
     def _handle_post(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/api/auth/login":
+            payload = self.read_json_payload()
+            if not self.server.store.auth_enabled():
+                self.send_json({"ok": True, "authenticated": True, "password_enabled": False})
+                return
+            if not self.server.store.authenticate_password(str(payload.get("password") or "")):
+                raise ApiError(HTTPStatus.UNAUTHORIZED, "invalid password")
+            token = self.server.store.issue_auth_session()
+            self.send_json(
+                {"ok": True, "authenticated": True, "password_enabled": True},
+                headers={"Set-Cookie": self._auth_cookie_header(token)},
+            )
+            return
+        if path == "/api/auth/logout":
+            self.server.store.revoke_auth_session(self._session_token())
+            self.send_json({"ok": True}, headers={"Set-Cookie": self._clear_auth_cookie_header()})
+            return
+        if not self._require_auth_or_respond("POST", path):
+            return
         if path == "/api/uploads":
             operation_id = self.server.store.begin_foreground_operation("upload", "receiving upload", path=path)
             try:
@@ -5848,9 +6104,19 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
     def _handle_put(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if not self._require_auth_or_respond("PUT", path):
+            return
         payload = self.read_json_payload()
         if path == "/api/settings":
-            self.send_json(self.server.store.save_app_settings(payload))
+            self.server.store.save_app_settings(payload)
+            headers = None
+            auth_payload = payload.get("auth") if isinstance(payload.get("auth"), dict) else {}
+            if auth_payload.get("clear_password"):
+                self.server.store.revoke_auth_session(self._session_token())
+                headers = {"Set-Cookie": self._clear_auth_cookie_header()}
+            elif auth_payload.get("password") and self.server.store.auth_enabled():
+                headers = {"Set-Cookie": self._auth_cookie_header(self.server.store.issue_auth_session())}
+            self.send_json(self.server.store.public_app_settings(), headers=headers)
             return
         if path.startswith("/api/batches/") and path.endswith("/settings"):
             batch_id = urllib.parse.unquote(path.removeprefix("/api/batches/").removesuffix("/settings"))
@@ -5866,6 +6132,8 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
     def _handle_delete(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if not self._require_auth_or_respond("DELETE", path):
+            return
         if path == "/api/history":
             self.send_json(self.server.store.delete_history())
             return
@@ -5925,12 +6193,14 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
             raise ApiError(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
         return payload
 
-    def send_json(self, payload: Any, status: int = HTTPStatus.OK) -> None:
+    def send_json(self, payload: Any, status: int = HTTPStatus.OK, headers: dict[str, str] | None = None) -> None:
         body = json_response(payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 

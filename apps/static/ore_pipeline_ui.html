@@ -657,6 +657,15 @@
             </div>
           </div>
           <div class="panel">
+            <h2 data-i18n="settingsSecurity">Безопасность</h2>
+            <p class="muted" data-i18n="settingsSecurityIntro">Если пароль задан, доступ к интерфейсу и API потребует входа.</p>
+            <div class="settings-grid">
+              <label class="settings-field full"><span data-i18n="settingsPassword">Пароль</span><input id="settingsPassword" type="password" autocomplete="new-password"></label>
+              <label class="check settings-field"><input type="checkbox" id="settingsClearPassword"> <span data-i18n="settingsClearPassword">убрать пароль</span></label>
+              <div class="settings-field full"><span id="settingsPasswordState" class="muted"></span></div>
+            </div>
+          </div>
+          <div class="panel">
             <h2 data-i18n="settingsRuntime">Runtime</h2>
             <p class="muted" data-i18n="settingsRuntimeIntro">Переключение применяется сразу для новых запусков. Уже созданные run остаются с записанным backend/checkpoint.</p>
             <div class="settings-grid">
@@ -1205,7 +1214,8 @@
       },
       preprocess: {...DEFAULT_PREPROCESS_PRESET},
       talc_clusterization: {...DEFAULT_TALC_CLUSTERIZATION},
-      metadata_defaults: {}
+      metadata_defaults: {},
+      auth: {password_enabled: false}
     };
     const API_REFERENCE = [
       {
@@ -1219,6 +1229,42 @@
         summaryRu: 'Возвращает backend, путь чекпойнта, проверки здоровья, CPU/GPU/RAM/flash, активные задания и размер workspace.',
         body: null,
         response: {schema_version: 'ore-pipeline-status-v0.1', health: {overall: 'ok'}, app: {backend: 'heuristic'}}
+      },
+      {
+        id: 'auth-status',
+        group: 'Service',
+        method: 'GET',
+        path: '/api/auth/status',
+        title: 'Auth status',
+        titleRu: 'Статус входа',
+        summary: 'Read whether password protection is enabled and whether the current browser session is authenticated.',
+        summaryRu: 'Показывает, включена ли парольная защита и авторизована ли текущая сессия браузера.',
+        body: null,
+        response: {password_enabled: true, authenticated: true}
+      },
+      {
+        id: 'auth-login',
+        group: 'Service',
+        method: 'POST',
+        path: '/api/auth/login',
+        title: 'Login',
+        titleRu: 'Вход',
+        summary: 'Authenticate with the Settings password and receive an HttpOnly session cookie.',
+        summaryRu: 'Выполняет вход по паролю из настроек и выдает HttpOnly cookie сессии.',
+        body: {password: 'secret'},
+        response: {ok: true, authenticated: true}
+      },
+      {
+        id: 'auth-logout',
+        group: 'Service',
+        method: 'POST',
+        path: '/api/auth/logout',
+        title: 'Logout',
+        titleRu: 'Выход',
+        summary: 'Clear the current auth session cookie.',
+        summaryRu: 'Очищает cookie текущей авторизованной сессии.',
+        body: {},
+        response: {ok: true}
       },
       {
         id: 'upload',
@@ -1592,6 +1638,12 @@
         settingsIntro: 'Эти настройки сохраняются на сервере приложения и применяются для всех браузеров, открывающих этот рабочий каталог.',
         settingsUiDefaults: 'Интерфейс',
         settingsShowTilingDefault: 'показывать тайлы по умолчанию',
+        settingsSecurity: 'Безопасность',
+        settingsSecurityIntro: 'Если пароль задан, доступ к интерфейсу и API потребует входа.',
+        settingsPassword: 'Пароль',
+        settingsClearPassword: 'убрать пароль',
+        settingsPasswordEnabled: 'Пароль задан. Оставьте поле пустым, чтобы не менять его.',
+        settingsPasswordDisabled: 'Пароль не задан. Введите пароль и сохраните настройки, чтобы включить защиту.',
         settingsRuntime: 'Runtime',
         settingsRuntimeIntro: 'Переключение применяется сразу для новых запусков. Уже созданные run остаются с записанным backend/checkpoint.',
         settingsBackend: 'Backend',
@@ -2120,6 +2172,12 @@
         settingsIntro: 'These settings are saved by the app server and apply to every browser that opens this workspace.',
         settingsUiDefaults: 'Interface',
         settingsShowTilingDefault: 'show tiling by default',
+        settingsSecurity: 'Security',
+        settingsSecurityIntro: 'If a password is set, opening the UI and API requires login.',
+        settingsPassword: 'Password',
+        settingsClearPassword: 'remove password',
+        settingsPasswordEnabled: 'Password is set. Leave the field empty to keep it unchanged.',
+        settingsPasswordDisabled: 'No password is set. Enter a password and save settings to enable protection.',
         settingsRuntime: 'Runtime',
         settingsRuntimeIntro: 'The switch is applied immediately for new runs. Existing runs keep their recorded backend/checkpoint.',
         settingsBackend: 'Backend',
@@ -3211,6 +3269,7 @@
       const language = I18N[values.language] ? values.language : DEFAULT_APP_SETTINGS.language;
       const theme = ['system', 'light', 'dark'].includes(values.theme) ? values.theme : DEFAULT_APP_SETTINGS.theme;
       const metadataDefaults = values.metadata_defaults && typeof values.metadata_defaults === 'object' ? values.metadata_defaults : {};
+      const authValues = values.auth && typeof values.auth === 'object' ? values.auth : {};
       return {
         schema_version: 'ore-pipeline-app-settings-v0.1',
         language,
@@ -3219,7 +3278,8 @@
         runtime: normalizedRuntimeSettings(values.runtime || {}, DEFAULT_APP_SETTINGS.runtime),
         preprocess: normalizedPreprocessPreset(values.preprocess || {}, DEFAULT_APP_SETTINGS.preprocess),
         talc_clusterization: normalizedTalcClusterization(values.talc_clusterization || {}, DEFAULT_APP_SETTINGS.talc_clusterization),
-        metadata_defaults: {...metadataDefaults}
+        metadata_defaults: {...metadataDefaults},
+        auth: {password_enabled: Boolean(authValues.password_enabled)}
       };
     }
     function currentAppSettings() {
@@ -3239,7 +3299,8 @@
           : DEFAULT_APP_SETTINGS.runtime,
         preprocess: storedPreprocessPreset(),
         talc_clusterization: DEFAULT_APP_SETTINGS.talc_clusterization,
-        metadata_defaults: metadataDefaultsFromLocalStorage()
+        metadata_defaults: metadataDefaultsFromLocalStorage(),
+        auth: DEFAULT_APP_SETTINGS.auth
       });
     }
     function persistSettingsLocally(settings) {
@@ -3484,6 +3545,9 @@
       $('settingsLanguage').value = normalized.language;
       $('settingsTheme').value = normalized.theme;
       $('settingsShowTiling').checked = normalized.show_tiling;
+      $('settingsPassword').value = '';
+      $('settingsClearPassword').checked = false;
+      $('settingsPasswordState').textContent = t(normalized.auth.password_enabled ? 'settingsPasswordEnabled' : 'settingsPasswordDisabled');
       $('settingsBackend').value = normalized.runtime.backend;
       $('settingsCheckpoint').value = normalized.runtime.checkpoint || '';
       $('settingsTalcBackend').value = normalized.runtime.talc_backend;
@@ -3523,7 +3587,7 @@
       return Object.fromEntries(Object.entries(defaults).filter(([, value]) => value !== '' && value != null));
     }
     function collectSettingsForm() {
-      return normalizedAppSettings({
+      const settings = normalizedAppSettings({
         language: $('settingsLanguage').value,
         theme: $('settingsTheme').value,
         show_tiling: $('settingsShowTiling').checked,
@@ -3551,6 +3615,16 @@
         }, currentAppSettings().talc_clusterization),
         metadata_defaults: collectSettingsMetadataDefaults()
       });
+      const password = $('settingsPassword').value;
+      const clearPassword = $('settingsClearPassword').checked;
+      if (password || clearPassword) {
+        settings.auth = {
+          password_enabled: currentAppSettings().auth.password_enabled,
+          password,
+          clear_password: clearPassword
+        };
+      }
+      return settings;
     }
     function defaultRunConfiguration() {
       return {talc_clusterization: normalizedTalcClusterization(currentAppSettings().talc_clusterization)};

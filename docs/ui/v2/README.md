@@ -20,6 +20,8 @@ Root-level `docs/plans/`, `docs/specs/`, and `docs/notes/` are reserved for non-
 - `plans/30_ore-pipeline-metadata-editor.md`
 - `specs/ore-pipeline-system-settings-v0.1.md`
 - `plans/31_ore-pipeline-system-settings.md`
+- `specs/ore-pipeline-password-auth-v0.1.md`
+- `plans/47_ore-pipeline-password-auth.md`
 - `specs/ore-pipeline-batch-v0.1.md`
 - `plans/32_ore-pipeline-batch-ui.md`
 - `specs/ore-pipeline-scale-metrics-v0.1.md`

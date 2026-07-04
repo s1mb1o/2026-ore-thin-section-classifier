@@ -1476,6 +1476,142 @@ class OrePipelineWebTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_password_auth_settings_are_hashed_public_and_enforced(self) -> None:
+        settings = self.store.save_app_settings({"auth": {"password": "secret-pass"}})
+        auth = settings["auth"]
+        self.assertTrue(auth["password_enabled"])
+        self.assertEqual(auth["algorithm"], "pbkdf2_sha256")
+        self.assertNotIn("secret-pass", json.dumps(auth))
+        self.assertNotIn("password_hash", self.store.public_app_settings()["auth"])
+        self.assertEqual(self.store.public_app_settings()["auth"], {"password_enabled": True})
+        self.assertTrue(self.store.authenticate_password("secret-pass"))
+        self.assertFalse(self.store.authenticate_password("wrong-pass"))
+
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/workspace")
+            response = connection.getresponse()
+            response.read()
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.FOUND)
+            self.assertTrue((response.getheader("Location") or "").startswith("/login?next=/workspace"))
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/api/settings")
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.UNAUTHORIZED)
+            self.assertIn("authentication", payload["error"])
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/api/auth/status")
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.OK)
+            self.assertTrue(payload["password_enabled"])
+            self.assertFalse(payload["authenticated"])
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            bad_body = json.dumps({"password": "wrong-pass"}).encode("utf-8")
+            connection.request("POST", "/api/auth/login", body=bad_body, headers={"Content-Type": "application/json", "Content-Length": str(len(bad_body))})
+            response = connection.getresponse()
+            response.read()
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.UNAUTHORIZED)
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            good_body = json.dumps({"password": "secret-pass"}).encode("utf-8")
+            connection.request("POST", "/api/auth/login", body=good_body, headers={"Content-Type": "application/json", "Content-Length": str(len(good_body))})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            set_cookie = response.getheader("Set-Cookie") or ""
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.OK)
+            self.assertTrue(payload["authenticated"])
+            self.assertIn("HttpOnly", set_cookie)
+            cookie_header = set_cookie.split(";", 1)[0]
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/api/settings", headers={"Cookie": cookie_header})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.OK)
+            self.assertEqual(payload["auth"], {"password_enabled": True})
+            self.assertNotIn("password_hash", json.dumps(payload))
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            clear_body = json.dumps({"auth": {"clear_password": True}}).encode("utf-8")
+            connection.request(
+                "PUT",
+                "/api/settings",
+                body=clear_body,
+                headers={"Content-Type": "application/json", "Content-Length": str(len(clear_body)), "Cookie": cookie_header},
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            cleared_cookie = response.getheader("Set-Cookie") or ""
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.OK)
+            self.assertEqual(payload["auth"], {"password_enabled": False})
+            self.assertIn("Max-Age=0", cleared_cookie)
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/workspace")
+            response = connection.getresponse()
+            body = response.read().decode("utf-8")
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.OK)
+            self.assertIn("Классификатор рудного шлифа", body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_setting_first_password_over_http_returns_authenticated_session(self) -> None:
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            body = json.dumps({"auth": {"password": "new-pass"}}).encode("utf-8")
+            connection.request("PUT", "/api/settings", body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            set_cookie = response.getheader("Set-Cookie") or ""
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.OK)
+            self.assertEqual(payload["auth"], {"password_enabled": True})
+            self.assertNotIn("password_hash", json.dumps(payload))
+            self.assertIn("HttpOnly", set_cookie)
+            cookie_header = set_cookie.split(";", 1)[0]
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/api/settings")
+            response = connection.getresponse()
+            response.read()
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.UNAUTHORIZED)
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            connection.request("GET", "/api/settings", headers={"Cookie": cookie_header})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, HTTPStatus.OK)
+            self.assertEqual(payload["auth"], {"password_enabled": True})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_runtime_test_endpoint_checks_heuristic_and_ml_probe(self) -> None:
         fake_checkpoint = self.root / "fake_checkpoint.pt"
         fake_checkpoint.write_bytes(b"fake checkpoint")
@@ -2126,6 +2262,9 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn('id="settingsLanguage"', html)
         self.assertIn('id="settingsTheme"', html)
         self.assertIn('id="settingsShowTiling"', html)
+        self.assertIn('id="settingsPassword"', html)
+        self.assertIn('id="settingsClearPassword"', html)
+        self.assertIn('id="settingsPasswordState"', html)
         self.assertIn('id="settingsBackend"', html)
         self.assertIn('id="settingsCheckpoint"', html)
         self.assertIn('id="settingsTalcBackend"', html)
@@ -2140,6 +2279,9 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn('id="resetSettingsBtn"', html)
         self.assertIn("/api/settings", html)
         self.assertIn("/api/status", html)
+        self.assertIn("/api/auth/status", html)
+        self.assertIn("/api/auth/login", html)
+        self.assertIn("/api/auth/logout", html)
         self.assertIn("/api/runtime/test", html)
         self.assertIn("function loadAppSettings()", html)
         self.assertIn("function testRuntimeFromPage()", html)
@@ -2151,6 +2293,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("settingsRuntimeTestOkModels", html)
         self.assertIn("function renderStatusLogs(logs)", html)
         self.assertIn("function saveSettingsObject(settings", html)
+        self.assertIn("settingsPasswordEnabled", html)
+        self.assertIn("settingsPasswordDisabled", html)
         self.assertIn("settingsRemoveAllHistory", html)
         self.assertIn("settingsHistoryRemoved", html)
         self.assertIn("ore-pipeline-app-settings-v0.1", html)

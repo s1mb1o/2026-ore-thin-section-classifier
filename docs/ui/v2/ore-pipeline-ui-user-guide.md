@@ -247,6 +247,8 @@ The Settings page controls:
 
 Runtime changes apply to new runs, validate checkpoint paths, and are blocked while a run or Series job is active. The Runtime `Test` button probes unsaved settings without saving them or creating a run.
 
+The Security section can set a password for the UI. When a password is set, opening UI pages, API endpoints, or run artifacts requires login through `/login`. The app stores only a salted PBKDF2 password hash and `/api/settings` exposes only whether password protection is enabled. Leaving the password field empty keeps the current password unchanged; checking `remove password` disables protection.
+
 `Remove all history` deletes persisted run and Series artifact folders while preserving uploads and app settings; it rejects active jobs.
 
 ## Status And API
