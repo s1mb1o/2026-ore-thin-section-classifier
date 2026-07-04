@@ -160,6 +160,24 @@ python3 apps/talc_review_web.py \
 The app prints the selected local URL. It edits `current_talc_mask.png` directly
 and saves final reviewed artifacts under each sample's `reviewed/` directory.
 
+## Generate Talc UI Demo Video
+
+The generated Talc UI video folder contains the renderer and captured scene
+screenshots. Use the repo-level wrapper to regenerate the MP4, validate the
+codec/duration, rebuild the contact sheet, and optionally rerun Whisper STT:
+
+```bash
+scripts/generate_talc_ui_video.sh
+```
+
+Useful variants:
+
+```bash
+CHECK_ONLY=1 RUN_STT=0 scripts/generate_talc_ui_video.sh
+RUN_STT=0 scripts/generate_talc_ui_video.sh outputs/demo_video_talc_ui_20260704
+PYTHON_BIN=/tmp/nornikel_demo_tts_venv/bin/python scripts/generate_talc_ui_video.sh
+```
+
 ## Legacy Streamlit Talc Review UI
 
 ```bash

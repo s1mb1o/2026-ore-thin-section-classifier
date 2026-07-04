@@ -503,4 +503,9 @@ python3 apps/ore_pipeline_web.py --host 127.0.0.1 --port 0
 - `docs/cards/*` — карты моделей, данных и запусков;
 - `docs/notes/2026-07-03-pipeline-improvement-proposals.md` — карта улучшений.
 
+Репозитории проекта:
+
+- <https://github.com/s1mb1o/2026-ore-thin-section-classifier> — основной репозиторий (GitHub);
+- <https://sourcecraft.dev/s1mb1o/2026-ore-thin-section-classifier> — зеркало (auto-sync).
+
 *Идея: показать, что каждое число прослеживается до документа в репозитории. Это часть истории про воспроизводимость.*

@@ -81,6 +81,7 @@ DEFAULT_TALC_BACKEND = "ml" if DEFAULT_TALC_CHECKPOINT.exists() else "heuristic"
 DEFAULT_GRADE_CHECKPOINT = ROOT / "models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 220 * 1024 * 1024
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 LOG_ENTRY_LIMIT = 300
 STATUS_LOG_LIMIT = 80
 RUNTIME_TEST_TIMEOUT_SECONDS = 90
@@ -932,6 +933,7 @@ def compute_talc_cluster_mask(
     talc_mask: np.ndarray,
     analyzed_mask: np.ndarray | None,
     settings: dict[str, Any],
+    exclude_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     normalized = normalize_talc_clusterization_payload(settings)
     talc = (talc_mask > 0).astype(np.float32)
@@ -941,6 +943,13 @@ def compute_talc_cluster_mask(
         if analyzed_mask.shape != talc.shape:
             analyzed_mask = read_binary_mask_from_array((analyzed_mask > 0).astype(np.uint8) * 255, talc.shape)
         analyzed = (analyzed_mask > 0).astype(np.float32)
+    excluded_area = 0
+    if exclude_mask is not None:
+        if exclude_mask.shape != talc.shape:
+            exclude_mask = read_binary_mask_from_array((exclude_mask > 0).astype(np.uint8) * 255, talc.shape)
+        excluded = exclude_mask > 0
+        excluded_area = int((excluded & (analyzed > 0)).sum())
+        analyzed[excluded] = 0
     talc *= analyzed
     radius = int(normalized["radius_px"])
     kernel = (radius * 2 + 1, radius * 2 + 1)
@@ -956,6 +965,7 @@ def compute_talc_cluster_mask(
         **normalized,
         "source_talc_area_px": talc_area,
         "analysis_area_px": analyzed_area,
+        "excluded_area_px": excluded_area,
         "area_px": cluster_area,
         "fraction": cluster_area / max(analyzed_area, 1),
         "fraction_image": cluster_area / max(int(talc.size), 1),
@@ -1892,7 +1902,7 @@ class OrePipelineStore:
         return runtime
 
     def _ensure_runtime_provenance(self, run_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        run_dir = self.runs_dir / run_id
+        run_dir = self._existing_run_dir(run_id)
         runtime = data.get("runtime")
         runtime_report_path = run_dir / "reports/runtime.json"
         if isinstance(runtime, dict) and runtime.get("schema_version") == RUNTIME_PROVENANCE_SCHEMA_VERSION and runtime_report_path.exists():
@@ -1993,7 +2003,7 @@ class OrePipelineStore:
         return payload
 
     def save_upload_artifact_mask(self, upload_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        upload_dir = self.uploads_dir / upload_id
+        upload_dir = self._existing_upload_dir(upload_id)
         metadata = self._read_upload(upload_id)
         preprocess = metadata.get("preprocess") if isinstance(metadata.get("preprocess"), dict) else None
         if not preprocess:
@@ -2021,7 +2031,7 @@ class OrePipelineStore:
         preset: dict[str, Any],
         augmentation_settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        upload_dir = self.uploads_dir / upload_id
+        upload_dir = self._existing_upload_dir(upload_id)
         metadata = self._read_upload(upload_id)
         original_path = resolve_path(metadata["original_path"])
         augmentation = normalize_augmentation_settings(augmentation_settings or default_augmentation_settings())
@@ -2237,6 +2247,7 @@ class OrePipelineStore:
         if changed_step not in {"augmentation", "preprocess"}:
             raise ApiError(HTTPStatus.BAD_REQUEST, "changed_step must be augmentation or preprocess")
         parent = self._read_run(run_id)
+        parent_dir = self._existing_run_dir(run_id)
         status = str(parent.get("status") or "").lower()
         if status not in {"complete", "prepared"}:
             raise ApiError(HTTPStatus.CONFLICT, "run must be complete or prepared before applying pipeline settings")
@@ -2255,7 +2266,7 @@ class OrePipelineStore:
             parent_run_id = run_id
         else:
             target_run_id = run_id
-            target_run_dir = self.runs_dir / target_run_id
+            target_run_dir = self._existing_run_dir(target_run_id)
             parent_run_id = str((parent.get("derivation") or {}).get("parent_run_id") or run_id)
             for relative in ("input", "display", "masks", "reports", "ml_pipeline"):
                 shutil.rmtree(target_run_dir / relative, ignore_errors=True)
@@ -2277,7 +2288,7 @@ class OrePipelineStore:
         metadata["eta_seconds"] = None
         metadata["backend"] = parent.get("backend", self.backend)
         metadata["checkpoint"] = parent.get("checkpoint", str(self.checkpoint) if self.checkpoint else None)
-        metadata["runtime"] = self._runtime_provenance_from_metadata(parent, self.runs_dir / str(parent.get("run_id") or run_id))
+        metadata["runtime"] = self._runtime_provenance_from_metadata(parent, parent_dir)
         metadata["derivation"] = {
             "type": "apply_pipeline_settings",
             "parent_run_id": parent_run_id,
@@ -2310,7 +2321,7 @@ class OrePipelineStore:
         curated_metadata: Any = None,
         talc_clusterization: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        run_dir = self.runs_dir / run_id
+        run_dir = self._existing_run_dir(run_id)
         metadata = self._read_run(run_id)
         if str(metadata.get("status") or "").lower() != "prepared":
             raise ApiError(HTTPStatus.CONFLICT, "run is not prepared")
@@ -2358,7 +2369,7 @@ class OrePipelineStore:
 
     def create_edit_run(self, parent_run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         parent = self._read_run(parent_run_id)
-        parent_dir = self.runs_dir / parent_run_id
+        parent_dir = self._existing_run_dir(parent_run_id)
         edit_layer = str(payload.get("edit_layer") or "")
         if edit_layer not in {"artifact", "sulfide", "final"}:
             raise ApiError(HTTPStatus.BAD_REQUEST, "edit_layer must be artifact, sulfide, or final")
@@ -3116,12 +3127,7 @@ print(json.dumps({
         }
 
     def delete_run(self, run_id: str) -> dict[str, Any]:
-        run_dir = (self.runs_dir / run_id).resolve()
-        runs_root = self.runs_dir.resolve()
-        if run_dir == runs_root or not is_relative_to(run_dir, runs_root):
-            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid run id")
-        if not (run_dir / "run.json").exists():
-            raise ApiError(HTTPStatus.NOT_FOUND, f"unknown run: {run_id}")
+        run_dir = self._existing_run_dir(run_id)
         with self.lock:
             job_status = self.jobs.get(run_id, {}).get("status")
             if job_status in {"queued", "running", "canceling"}:
@@ -3131,10 +3137,8 @@ print(json.dumps({
         return {"removed_run_id": run_id, "history": self.list_runs()["runs"]}
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
-        run_dir = self.runs_dir / run_id
+        run_dir = self._existing_run_dir(run_id)
         run_path = run_dir / "run.json"
-        if not run_path.exists():
-            raise ApiError(HTTPStatus.NOT_FOUND, f"unknown run: {run_id}")
         data = json.loads(run_path.read_text(encoding="utf-8"))
         if data.get("status") in {"complete", "failed", "canceled"}:
             return self.run_payload(run_id)
@@ -3394,7 +3398,7 @@ print(json.dumps({
         display = data.get("display") if isinstance(data.get("display"), dict) else {}
         if display.get("non_sulfide_base") and display.get("talc_cluster_overlay"):
             return data
-        run_dir = self.runs_dir / run_id
+        run_dir = self._existing_run_dir(run_id)
         required = [run_dir / "input/preprocessed.png", run_dir / "masks/sulfide_mask.png", run_dir / "masks/final_mask.png"]
         if not all(path.exists() for path in required):
             return data
@@ -3456,13 +3460,22 @@ print(json.dumps({
         return zip_path
 
     def _existing_run_dir(self, run_id: str) -> Path:
-        run_dir = (self.runs_dir / run_id).resolve()
-        runs_root = self.runs_dir.resolve()
-        if run_dir == runs_root or not is_relative_to(run_dir, runs_root):
-            raise ApiError(HTTPStatus.BAD_REQUEST, "invalid run id")
-        if not (run_dir / "run.json").exists():
-            raise ApiError(HTTPStatus.NOT_FOUND, f"unknown run: {run_id}")
-        return run_dir
+        return self._existing_persisted_dir(self.runs_dir, run_id, "run.json", "run")
+
+    def _existing_upload_dir(self, upload_id: str) -> Path:
+        return self._existing_persisted_dir(self.uploads_dir, upload_id, "upload.json", "upload")
+
+    def _existing_persisted_dir(self, root: Path, item_id: str, marker_name: str, item_label: str) -> Path:
+        value = str(item_id or "")
+        if not value or Path(value).is_absolute() or Path(value).name != value or "/" in value or "\\" in value:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"invalid {item_label} id")
+        item_dir = (root / value).resolve()
+        root_dir = root.resolve()
+        if item_dir == root_dir or not is_relative_to(item_dir, root_dir):
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"invalid {item_label} id")
+        if not (item_dir / marker_name).exists():
+            raise ApiError(HTTPStatus.NOT_FOUND, f"unknown {item_label}: {item_id}")
+        return item_dir
 
     def _run_file_entry(self, path: Path, relative_path: str) -> dict[str, Any]:
         stat = path.stat()
@@ -3490,7 +3503,8 @@ print(json.dumps({
         return entry
 
     def _artifact_mask_for_summary(self, run_id: str) -> np.ndarray | None:
-        mask_path = self.runs_dir / run_id / "masks/artifact_mask.png"
+        run_dir = self._existing_run_dir(run_id)
+        mask_path = run_dir / "masks/artifact_mask.png"
         if not mask_path.exists():
             return None
         return np.asarray(Image.open(mask_path).convert("L"))
@@ -3520,7 +3534,8 @@ print(json.dumps({
 
     def metrics_csv_path(self, run_id: str) -> Path:
         data = self._read_run(run_id)
-        path = self.runs_dir / run_id / "reports/metrics.csv"
+        run_dir = self._existing_run_dir(run_id)
+        path = run_dir / "reports/metrics.csv"
         path.parent.mkdir(parents=True, exist_ok=True)
         scale = data.get("scale") or {}
         with path.open("w", encoding="utf-8", newline="") as handle:
@@ -3572,8 +3587,8 @@ print(json.dumps({
 
     def pdf_report_path(self, run_id: str) -> Path:
         data = self._read_run(run_id)
-        run_dir = self.runs_dir / run_id
-        path = self.runs_dir / run_id / "reports/ore_report.pdf"
+        run_dir = self._existing_run_dir(run_id)
+        path = run_dir / "reports/ore_report.pdf"
         path.parent.mkdir(parents=True, exist_ok=True)
         pages = build_pdf_report_pages(data, run_dir)
         pages[0].save(path, "PDF", resolution=150.0, save_all=True, append_images=pages[1:])
@@ -4126,7 +4141,7 @@ print(json.dumps({
             final_mask=final_mask,
         )
         cluster_settings = self._run_talc_clusterization(run_dir, talc_clusterization)
-        talc_cluster_mask, talc_cluster_stats = compute_talc_cluster_mask(talc_mask, analyzed_mask, cluster_settings)
+        talc_cluster_mask, talc_cluster_stats = compute_talc_cluster_mask(talc_mask, analyzed_mask, cluster_settings, exclude_mask=sulfide_mask)
         summary = {
             **summary,
             "talc_clusterization": cluster_settings,
@@ -4168,12 +4183,25 @@ print(json.dumps({
         artifact_path = run_dir / "masks/artifact_mask.png"
         artifact_mask = np.asarray(Image.open(artifact_path).convert("L")) if artifact_path.exists() else None
         talc_cluster_path = run_dir / "masks/talc_cluster_mask.png"
+        cluster_settings = self._run_talc_clusterization(run_dir)
+        talc_cluster_stats: dict[str, Any] | None = None
+        rebuild_talc_cluster = True
         if talc_cluster_path.exists():
             talc_cluster_mask = np.asarray(Image.open(talc_cluster_path).convert("L"))
+            if talc_cluster_mask.shape != sulfide.shape:
+                talc_cluster_mask = read_binary_mask_from_array((talc_cluster_mask > 0).astype(np.uint8) * 255, sulfide.shape)
+            rebuild_talc_cluster = bool(np.any((talc_cluster_mask > 0) & (sulfide > 0)))
         else:
-            cluster_settings = self._run_talc_clusterization(run_dir)
-            talc_cluster_mask, talc_cluster_stats = compute_talc_cluster_mask((final_mask == 3).astype(np.uint8) * 255, analyzed_mask, cluster_settings)
+            rebuild_talc_cluster = True
+        if rebuild_talc_cluster:
+            talc_cluster_mask, talc_cluster_stats = compute_talc_cluster_mask(
+                (final_mask == 3).astype(np.uint8) * 255,
+                analyzed_mask,
+                cluster_settings,
+                exclude_mask=sulfide,
+            )
             Image.fromarray(talc_cluster_mask, mode="L").save(talc_cluster_path)
+        if talc_cluster_stats is not None:
             summary_path = run_dir / "reports/ore_summary.json"
             if summary_path.exists():
                 try:
@@ -4837,15 +4865,11 @@ print(json.dumps({
         self._write_json(self._batch_summary_path(str(summary["batch_id"])), summary)
 
     def _read_upload(self, upload_id: str) -> dict[str, Any]:
-        path = self.uploads_dir / upload_id / "upload.json"
-        if not path.exists():
-            raise ApiError(HTTPStatus.NOT_FOUND, f"unknown upload: {upload_id}")
+        path = self._existing_upload_dir(upload_id) / "upload.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _read_run(self, run_id: str) -> dict[str, Any]:
-        path = self.runs_dir / run_id / "run.json"
-        if not path.exists():
-            raise ApiError(HTTPStatus.NOT_FOUND, f"unknown run: {run_id}")
+        path = self._existing_run_dir(run_id) / "run.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
@@ -5927,16 +5951,24 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
 
     def send_file(self, path: Path, content_type: str | None = None, download_name: str | None = None) -> None:
         content_type = content_type or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        body = path.read_bytes()
+        size = path.stat().st_size
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(size))
         self.send_header("Cache-Control", "no-store")
         if download_name:
             quoted = urllib.parse.quote(download_name)
             self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quoted}")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            with path.open("rb") as handle:
+                while True:
+                    chunk = handle.read(DOWNLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
 
 class OrePipelineHTTPServer(ThreadingHTTPServer):

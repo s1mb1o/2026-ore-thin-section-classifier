@@ -1,0 +1,7 @@
+numpy
+Pillow>=10,<13
+opencv-python-headless>=4.9,<5
+rawpy>=0.21,<0.26
+transformers>=5.5.4,<6
+safetensors
+scikit-learn

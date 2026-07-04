@@ -255,18 +255,27 @@ button:
 
 - Positive bag.
 - Talc.
+- Not Talc.
 
 The same widget also has a separated display-only `Talc cluster areas` row with
 a visibility checkbox and percentage. It mirrors the right-panel cluster overlay
-toggle and reports highlighted cluster pixels as a percentage of image pixels;
-it has no edit-target radio because cluster areas are derived display evidence,
-not a saved segmentation class.
+toggle and reports highlighted non-sulfide cluster pixels as a percentage of
+image pixels. Cluster areas must never be painted over sulfide-mask pixels and
+must not use sulfide pixels as local-density source evidence. It has no
+edit-target radio because cluster areas are derived display evidence, not a
+saved segmentation class.
 
 The edit-target radio controls Brush, Fill, Rectangle, and Polygon. Selecting
 `Positive bag` writes those tools into `current_positive_bag_mask`; selecting
-`Talc` writes those tools into `current_talc_node_mask`. Similar always
-writes Talc, and SAM2 remains a Positive bag assist unless explicitly changed
-later.
+`Talc` writes those tools into `current_talc_node_mask`; selecting `Not Talc`
+writes those tools into `current_not_talc_mask`. `Not Talc` is a hard-negative
+class for dark non-talc objects such as pores, scratches, dark matrix, and other
+false positives. It is saved separately, never participates in
+`current_talc_mask` / `reviewed_talc_mask`, and must exclude confirmed `Talc`
+pixels at save time. `Positive bag` may overlap `Not Talc`, because the bag is a
+weak container rather than a pixel-accurate talc class. Similar always writes
+Talc, excludes `Not Talc`, and SAM2 remains a Positive bag assist unless
+explicitly changed later.
 
 Because the source folder `Оталькованные руды/Области оталькования` is treated
 as a talcose source where confirmed talc should be at least `10%` of visible
@@ -275,6 +284,36 @@ image pixels, the widget also shows live visible-pixel percentages for
 The target status is based on confirmed `Talc` pixels, not the rough
 `Positive bag`: below `10%` it shows how many percentage points are missing; at
 or above `10%` it reports the target as met.
+
+### Model-vs-Human Review
+
+The right panel includes a `Model/Human QA` display block. It is read-only and
+must not change masks. The app may load an optional trained talc-model
+prediction mask from `--talc-model-mask-dir`, from well-known files in the
+sample directory such as `model_talc_mask.png` / `predicted_talc_mask.png`, or
+from manifest paths when present. When enabled, the canvas highlights the model
+prediction against the current human `Talc` class:
+
+- `agreement`: model and current human both mark talc;
+- `model only`: model marks talc, current human does not;
+- `human only`: current human marks talc, model does not;
+- `sulfide conflict`: either model or human talc overlaps sulfide pixels.
+
+The same block supports multiple human annotations. Optional
+`--human-review-dir` arguments point to additional talc-review workspaces or
+folders; the app matches masks by sample id or image filename and loads
+`reviewed_talc_node_mask.png` first, falling back to `reviewed_talc_mask.png`.
+The multi-human overlay compares the current human mask plus all loaded
+additional human masks:
+
+- `human agreement`: at least two human masks mark the same pixel;
+- `human disagreement`: at least one but not all loaded human masks mark the
+  pixel.
+
+The UI reports counts/percentages for model-only, human-only, agreement,
+sulfide conflict, human agreement, and human disagreement. If no model or
+additional human mask is available, the corresponding toggles stay harmless and
+show an unavailable status.
 
 Additional display-only layer toggles:
 
@@ -342,22 +381,29 @@ pixels. Fill writes the selected edit class.
 
 ### Similar Tool
 
-Similar helps turn a known dark talc flake/grain into additional
-candidates based on intensity and color, not object shape. The reviewer clicks
-a confirmed talc seed; the app samples the original photo around that seed as
-the anchor. `positive_bag` means a rough region that may contain talc segments,
-not confirmed talc pixels. If the seed is already inside the current
-`positive_bag`, nearby bag pixels may refine the calibration only after they
-pass luma/color similarity checks against the seed patch. Broad matrix-heavy
-positive bags must not be averaged wholesale, because that makes the preview
-too permissive. The app then previews luma/color-similar pixels across the image
-while excluding sulfide-mask pixels, existing talc-node pixels, and isolated
-single pixel noise. Preview and applied talc nodes may overlap positive-bag
-pixels.
+Similar helps turn a known dark talc flake/grain into additional candidates
+based on intensity, color, and local texture, not object shape. The reviewer can
+add positive and negative seeds. Positive seeds mean "this is talc"; negative
+seeds mean "this dark object is not talc". The app samples the original photo
+around each seed as anchors. `positive_bag` means a rough region that may
+contain talc segments, not confirmed talc pixels. If a positive seed is already
+inside the current `positive_bag`, nearby bag pixels may refine the positive
+calibration only after they pass luma/color/texture similarity checks against
+the seed patch. Broad matrix-heavy positive bags must not be averaged
+wholesale, because that makes the preview too permissive. The app then previews
+luma/color/texture-similar pixels across the image while excluding sulfide-mask
+pixels, existing talc-node pixels, existing `Not Talc` pixels, pixels close to
+negative seeds, and isolated single pixel noise. Preview and applied talc nodes
+may overlap positive-bag pixels.
 
 Behavior:
 
-- Left-click creates or refreshes a non-destructive yellow preview.
+- The Similar toolbar exposes `+ seed` and `- seed` modes.
+- In `+ seed` mode, left-click adds a positive seed and creates or refreshes a
+  non-destructive yellow preview.
+- In `- seed` mode, left-click adds a negative seed and refreshes the preview;
+  negative seeds are also useful when the reviewer has not yet drawn a
+  permanent `Not Talc` region.
 - Right-click clears the preview.
 - `Strictness` controls how narrowly luma/color similarity must match the seed;
   higher values produce smaller candidate masks.
@@ -373,6 +419,8 @@ Behavior:
   the positive bag remains as the rough containing region.
 - The preview is rejected if it would cover an implausibly large portion of the
   image, preventing a whole-screen assist result from being merged.
+- `Not Talc` regions and negative seeds are stored in the audit trail so they
+  can be exported later as hard negatives for model training.
 
 ### Polygon Tool
 
@@ -474,6 +522,9 @@ Optional fields:
 - `reviewed_talc_mask`
 - `reviewed_positive_bag_mask`
 - `reviewed_talc_node_mask`
+- `reviewed_not_talc_mask`
+- `model_talc_mask`
+- `human_review_masks`
 - `review_patch`
 
 ### Mask Semantics
@@ -482,18 +533,26 @@ Optional fields:
 - `positive_bag`: original blue-line-derived region that can contain talc
   segments, plus manual Brush, Fill, Rectangle, Polygon, and SAM2 edits.
 - `talc_node`: talc pixels created by the Similar intensity assist.
+- `not_talc`: explicit hard-negative pixels. These are visually dark or
+  otherwise talc-like false positives that the reviewer says are not talc.
 - `current_positive_bag_mask`: editable working `positive_bag` class mask.
 - `current_talc_node_mask`: editable working `talc_node` class mask.
+- `current_not_talc_mask`: editable working `not_talc` hard-negative class.
 - `current_talc_mask`: compatibility union of `positive_bag | talc_node`.
-  `talc_node` may overlap `positive_bag`.
+  `talc_node` may overlap `positive_bag`; `not_talc` is excluded from
+  `talc_node` and not included in this union.
 - `reviewed_positive_bag_mask`: final saved `positive_bag` class.
 - `reviewed_talc_node_mask`: final saved `talc_node` class.
+- `reviewed_not_talc_mask`: final saved hard-negative class.
 - `reviewed_talc_mask`: final saved union mask for existing training/review
   export code.
+- `model_talc_mask`: optional read-only trained model prediction for QA.
+- `human_review_masks`: optional read-only masks from teammate review
+  workspaces for agreement/disagreement QA.
 - `sulfide_overlap_mask`, `silicate_support_mask`, and related masks:
   display-only evidence layers for review; they are not edited by this app.
-- `not_talc`: implicit background outside the reviewed talc mask. Any uncertainty
-  handling for training manifests is downstream of this app.
+- Unlabeled background outside the reviewed talc/not-talc masks remains unknown
+  for training unless downstream exporters explicitly treat it as negative.
 
 ## Patch Format
 
@@ -512,11 +571,15 @@ Every save writes both raster masks and an auditable patch.
     "autodetected_talc_mask": "final_talc_mask.png",
     "base_working_talc_mask": "current_talc_mask.png",
     "working_positive_bag_mask": "current_positive_bag_mask.png",
-    "working_talc_node_mask": "current_talc_node_mask.png"
+    "working_talc_node_mask": "current_talc_node_mask.png",
+    "working_not_talc_mask": "current_not_talc_mask.png",
+    "model_talc_mask": "model_talc_mask.png",
+    "human_review_masks": ["teammate/reviewed_talc_node_mask.png"]
   },
   "class_definitions": {
     "positive_bag": "blue-line/manual/SAM2 talc bag",
-    "talc_node": "Similar intensity-assist talc pixels"
+    "talc_node": "confirmed talc pixels",
+    "not_talc": "explicit dark non-talc hard-negative pixels"
   },
   "edits": [
     {
@@ -535,6 +598,7 @@ Every save writes both raster masks and an auditable patch.
     "reviewed_talc_mask": "reviewed/reviewed_talc_mask.png",
     "reviewed_positive_bag_mask": "reviewed/reviewed_positive_bag_mask.png",
     "reviewed_talc_node_mask": "reviewed/reviewed_talc_node_mask.png",
+    "reviewed_not_talc_mask": "reviewed/reviewed_not_talc_mask.png",
     "reviewed_overlay": "reviewed/reviewed_overlay.png",
     "review_summary": "reviewed/review_summary.json"
   }
@@ -672,6 +736,15 @@ and update it if a new persistent default is reserved.
 - Fill, polygon, rectangle, brush, and SAM2 mask previews convert to expected
   `positive_bag` rasters; Similar converts to expected `talc_node`
   rasters on synthetic inputs.
+- Brush, Fill, Polygon, and Rectangle can write `not_talc`, and saved review
+  outputs include `reviewed_not_talc_mask` without adding it to
+  `reviewed_talc_mask`.
+- Model-vs-human QA overlays report agreement, model-only, human-only, and
+  sulfide-conflict counts when a model mask is available.
+- Multi-human QA overlays report agreement/disagreement counts when teammate
+  masks are available.
+- Similar positive/negative seeds and `not_talc` masks constrain preview
+  candidates and are recorded in edit metadata.
 - Save-review rejects wrong-size masks.
 - Artifact serving rejects paths outside the configured conversion directory.
 
@@ -702,9 +775,14 @@ Required checks:
 - Fill adds a bounded region without crossing blue strokes, sulfide pixels,
   current selected-class regions, or image edges, and writes the selected edit
   class.
-- Similar previews intensity/color-similar non-sulfide pixels from a
-  clicked talc seed, can be tightened with Strictness, and is non-destructive
-  until `Apply Similar`, `Save`, or `Save & Next` is pressed.
+- Similar previews intensity/color/texture-similar non-sulfide pixels from
+  positive talc seeds, can be constrained with negative seeds / `Not Talc`
+  hard negatives, can be tightened with Strictness, and is non-destructive until
+  `Apply Similar`, `Save`, or `Save & Next` is pressed.
+- Model/Human QA overlay highlights model-only, human-only, agreement, and
+  sulfide conflict without mutating masks.
+- Multi-human QA overlay highlights where current and teammate masks agree or
+  disagree without mutating masks.
 - Undo restores prior mask state.
 - Completing or editing a shape updates/autosaves `current_talc_mask`.
 - With sulfide protection enabled, brush/polygon/rectangle/SAM2 additions over
@@ -773,17 +851,25 @@ Required checks:
   geometry or saved mask pixels.
 - Talc cluster overlay is available as a separated row in the Segmentation
   classes widget, tunable by source/radius/density/opacity in the right panel,
-  reports highlighted-area percentage, and does not change mask geometry or
-  saved mask pixels.
+  reports highlighted-area percentage, excludes sulfide pixels from source and
+  highlight regions, and does not change mask geometry or saved mask pixels.
 - Brush left mouse draws the selected edit class; Brush right mouse erases it.
 - `B` selects Brush and `F` selects Fill without hijacking focused text inputs.
 - Fill, polygon, and rectangle are direct filled-area tools for drawing the
   selected edit class; SAM2 is a direct filled-area tool for positive bag;
   Similar is a direct filled-area tool for adding talc nodes.
+- `Not Talc` is an editable hard-negative class with its own visible overlay,
+  live percentage, save output, and audit metadata; it does not enter the
+  compatibility `reviewed_talc_mask`.
 - Fill can add a bounded region without crossing blue strokes, sulfide pixels,
   current talc mask regions, or image edges.
-- Similar can preview and apply luma/color-similar non-sulfide talc-node
-  candidates from a clicked seed without changing the mask before Apply.
+- Similar can preview and apply luma/color/texture-similar non-sulfide talc-node
+  candidates from positive seeds, while excluding negative seeds and `Not Talc`,
+  without changing the mask before Apply.
+- Optional model-vs-human QA mode highlights `model only`, `human only`,
+  `agreement`, and `sulfide conflict`.
+- Optional multi-human QA mode highlights where current and teammate masks agree
+  or disagree.
 - Selected completed polygon and rectangle regions can be deleted with
   Delete/Backspace.
 - Sulfide protection is enabled by default; additive tools cannot add new talc

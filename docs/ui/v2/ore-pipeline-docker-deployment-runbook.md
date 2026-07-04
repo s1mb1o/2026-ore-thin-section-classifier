@@ -7,7 +7,7 @@ This runbook deploys the v2 ore pipeline browser UI (`apps/ore_pipeline_web.py`)
 - Nornickel VM: `team123@111.88.145.15`, public URL `http://111.88.145.15:8080/workspace`, `linux/amd64`.
 - gx10: `ashmelev@192.168.86.14`, LAN URL `http://192.168.86.14:8210/workspace`, `linux/arm64`.
 
-The image is heuristic-first and does not bundle the official dataset, generated outputs, or model checkpoints.
+The default Compose image is heuristic-first and does not bundle the official dataset, generated outputs, or model checkpoints. gx10 also has a verified ML-capable image based on `nvcr.io/nvidia/pytorch:25.11-py3` for the current SOTA checkpoints.
 
 ## Preflight
 
@@ -161,6 +161,7 @@ REPO=/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2
 GX10=ashmelev@192.168.86.14
 BUILD_DIR=/home/ashmelev/Projects/nornikel-v2-ore-pipeline-ui-build
 IMAGE=nornikel/ore-pipeline-ui:v2-arm64
+IMAGE_ML=nornikel/ore-pipeline-ui:v2-gx10-ml
 
 ssh "$GX10" "rm -rf '$BUILD_DIR' && mkdir -p '$BUILD_DIR'"
 rsync -az --delete \
@@ -171,7 +172,9 @@ rsync -az --delete \
   "$REPO/" "$GX10:$BUILD_DIR/"
 
 ssh "$GX10" "cd '$BUILD_DIR' && docker build --platform linux/arm64 --pull=false -f docker/ore-pipeline-ui/Dockerfile -t '$IMAGE' ."
-ssh "$GX10" "docker image inspect '$IMAGE' --format 'arch={{.Architecture}} os={{.Os}} size={{.Size}} id={{.Id}}'"
+ssh "$GX10" "cd '$BUILD_DIR' && docker build --platform linux/arm64 --pull=false -f docker/ore-pipeline-ui/Dockerfile.gx10-ml -t '$IMAGE_ML' ."
+ssh "$GX10" "docker image inspect '$IMAGE' --format 'heuristic arch={{.Architecture}} os={{.Os}} size={{.Size}} id={{.Id}}'"
+ssh "$GX10" "docker image inspect '$IMAGE_ML' --format 'ml arch={{.Architecture}} os={{.Os}} size={{.Size}} id={{.Id}}'"
 ```
 
 Verified image from the first gx10 deployment:
@@ -182,6 +185,14 @@ linux/arm64
 sha256:a55f381707f584b8cbceb94e073603fb2988cdf1a947166b23d5242d4e0c22be
 ```
 
+Verified SOTA ML image from the 2026-07-04 gx10 deployment:
+
+```text
+nornikel/ore-pipeline-ui:v2-gx10-ml
+linux/arm64
+sha256:3406de0bdbc3a3a7c3e528b53f0fbe19315bb188d96d4d73903fb7c0c7e0ad7b
+```
+
 ### 2. Run On gx10
 
 ```bash
@@ -189,33 +200,49 @@ ssh "$GX10" '
 set -e
 CONTAINER=nornikel-ore-pipeline-ui-v2
 RUNTIME=$HOME/nornikel-ore-pipeline-ui
+REPO=$HOME/Projects/2026_Nornikel_Hackaton_v2
+BINARY=/app/models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt
+TALC=/app/outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt
+GRADE=/app/models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt
 mkdir -p "$RUNTIME/outputs/ore_pipeline_ui" "$RUNTIME/models"
 docker rm -f "$CONTAINER" 2>/dev/null || true
 docker run -d \
   --name "$CONTAINER" \
   --restart unless-stopped \
   --gpus all \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
   --pull=never \
   -p 8210:8080 \
   -e ORE_UI_HOST=0.0.0.0 \
   -e ORE_UI_PORT=8080 \
   -e ORE_UI_WORKSPACE=/data/ore_pipeline_ui \
-  -e ORE_UI_BACKEND=heuristic \
+  -e ORE_UI_BACKEND=ml \
+  -e ORE_UI_CHECKPOINT="$BINARY" \
+  -e ORE_UI_TALC_BACKEND=ml \
+  -e ORE_UI_TALC_CHECKPOINT="$TALC" \
+  -e ORE_UI_TALC_THRESHOLD=0.50 \
+  -e ORE_UI_GRADE_CHECKPOINT="$GRADE" \
   -e ORE_UI_PROCESSING_MAX_SIDE=2600 \
   -e ORE_UI_PANORAMA_MAX_SIDE=1800 \
   -e ORE_UI_PREVIEW_MAX_SIDES=1024,2048,4096 \
   -v "$RUNTIME/outputs/ore_pipeline_ui:/data/ore_pipeline_ui" \
-  -v "$RUNTIME/models:/app/models:ro" \
-  nornikel/ore-pipeline-ui:v2-arm64
+  -v "$REPO/models:/app/models:ro" \
+  -v "$REPO/outputs/talc_segformer_folds:/app/outputs/talc_segformer_folds:ro" \
+  nornikel/ore-pipeline-ui:v2-gx10-ml
 docker ps --filter name="$CONTAINER" --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 '
 ```
+
+To fall back to the lightweight heuristic image, use `nornikel/ore-pipeline-ui:v2-arm64`, set `ORE_UI_BACKEND=heuristic`, omit the talc/grade env vars, and mount only the persistent workspace plus any optional model directory.
 
 ### 3. Smoke gx10
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code} %{time_total}\n' http://192.168.86.14:8210/workspace
 curl -sS http://192.168.86.14:8210/api/status | jq '{overall:.health.overall, gpu:.gpu, history:.history}'
+curl -sS -H 'Content-Type: application/json' -d '{}' http://192.168.86.14:8210/api/runtime/test | jq '{ok, status, backend, talc_backend, models}'
 ssh "$GX10" 'docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}" nornikel-ore-pipeline-ui-v2'
 ```
 
@@ -223,6 +250,8 @@ Expected gx10 status details:
 
 - `/api/status` returns `200`.
 - `gpu.available` is `true`, device name is `NVIDIA GB10`.
+- For the SOTA ML deployment, `/api/status` reports `app.backend=ml`, the SegFormer-B2 binary checkpoint, `app.talc_backend=ml`, and the SegFormer-B0 talc checkpoint.
+- `POST /api/runtime/test` returns `ok=true` and loads both segmentation checkpoints on `cuda`.
 - GB10 memory values may be `null` because gx10's `nvidia-smi` reports memory as `[N/A]`.
 - Health may be `warning` if gx10 flash free space is still around `9%`.
 
@@ -287,3 +316,4 @@ Do not remove mounted workspace directories unless explicitly clearing demo stat
 
 - VM smoke: `docs/ui/v2/notes/2026-07-03-ore-pipeline-docker-vm-smoke.md`
 - gx10 smoke: `docs/ui/v2/notes/2026-07-03-ore-pipeline-docker-gx10-arm64-smoke.md`
+- gx10 SOTA ML deploy: `docs/ui/v2/notes/2026-07-04-ore-pipeline-docker-gx10-sota-ml-deploy.md`

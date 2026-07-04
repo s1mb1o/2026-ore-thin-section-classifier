@@ -108,6 +108,41 @@ def sanitize_view_settings(payload: dict[str, Any]) -> dict[str, Any]:
         value = settings.get(key)
         if isinstance(value, str) and value:
             sanitized[key] = value[:500]
+    for key in ("similar_talc_strictness", "similar_positive_seed_count", "similar_negative_seed_count"):
+        value = settings.get(key)
+        if value is not None:
+            try:
+                sanitized[key] = max(0, int(value))
+            except (TypeError, ValueError):
+                pass
+    qa = settings.get("model_human_qa")
+    if isinstance(qa, dict):
+        qa_sanitized: dict[str, Any] = {
+            "model_vs_current_enabled": bool(qa.get("model_vs_current_enabled")),
+            "human_agreement_enabled": bool(qa.get("human_agreement_enabled")),
+        }
+        stats = qa.get("stats")
+        if isinstance(stats, dict):
+            allowed_stats = {}
+            for key in (
+                "agreement",
+                "model_only",
+                "human_only",
+                "sulfide_conflict",
+                "human_agreement",
+                "human_disagreement",
+                "image_pixels",
+                "human_mask_count",
+            ):
+                value = stats.get(key)
+                if value is not None:
+                    try:
+                        allowed_stats[key] = max(0, int(value))
+                    except (TypeError, ValueError):
+                        pass
+            allowed_stats["model_available"] = bool(stats.get("model_available"))
+            qa_sanitized["stats"] = allowed_stats
+        sanitized["model_human_qa"] = qa_sanitized
     return sanitized
 
 
@@ -176,15 +211,18 @@ def make_two_class_overlay(
     *,
     positive_bag_mask: np.ndarray,
     talc_node_mask: np.ndarray,
+    not_talc_mask: np.ndarray,
     ignore_mask: np.ndarray,
 ) -> np.ndarray:
     overlay = image_rgb.astype(np.float32).copy()
     positive = positive_bag_mask > 0
     talc_node = talc_node_mask > 0
-    ignore = (ignore_mask > 0) & ~(positive | talc_node)
+    not_talc = not_talc_mask > 0
+    ignore = (ignore_mask > 0) & ~(positive | talc_node | not_talc)
     for mask, color, alpha in [
         (positive, np.array([0, 163, 216], dtype=np.float32), 0.46),
         (talc_node, np.array([255, 196, 0], dtype=np.float32), 0.52),
+        (not_talc, np.array([220, 38, 38], dtype=np.float32), 0.48),
         (ignore, np.array([255, 214, 10], dtype=np.float32), 0.36),
     ]:
         overlay[mask] = overlay[mask] * (1.0 - alpha) + color * alpha
@@ -205,6 +243,8 @@ class TalcReviewStore:
         limit: int | None,
         sam2_model_id: str,
         sam2_device: str | None,
+        talc_model_mask_dir: Path | None = None,
+        human_review_dirs: list[Path] | None = None,
     ) -> None:
         self.lock = threading.RLock()
         self.annotated_dir = resolve_path(annotated_dir) if annotated_dir else None
@@ -212,6 +252,8 @@ class TalcReviewStore:
         self.workspace_dir = resolve_path(conversion_dir or workspace_dir)
         self.sulfide_mask_dir = resolve_path(sulfide_mask_dir) if sulfide_mask_dir else None
         self.silicate_mask_dir = resolve_path(silicate_mask_dir) if silicate_mask_dir else None
+        self.talc_model_mask_dir = resolve_path(talc_model_mask_dir) if talc_model_mask_dir else None
+        self.human_review_dirs = [resolve_path(path) for path in (human_review_dirs or [])]
         self.sam2_model_id = sam2_model_id
         self.sam2_device = sam2_device
         self.manifest: dict[str, Any] = {}
@@ -247,7 +289,14 @@ class TalcReviewStore:
         if self.original_dir is None:
             self.original_dir = self.annotated_dir.parent
 
-        for root in [self.annotated_dir, self.original_dir, self.sulfide_mask_dir, self.silicate_mask_dir]:
+        for root in [
+            self.annotated_dir,
+            self.original_dir,
+            self.sulfide_mask_dir,
+            self.silicate_mask_dir,
+            self.talc_model_mask_dir,
+            *self.human_review_dirs,
+        ]:
             if root is not None:
                 self.allowed_roots.append(root.resolve())
         self.refresh_samples()
@@ -327,31 +376,136 @@ class TalcReviewStore:
     def current_talc_node_mask_path(self, sample: ReviewSample) -> Path:
         return sample.sample_dir / "current_talc_node_mask.png"
 
+    def current_not_talc_mask_path(self, sample: ReviewSample) -> Path:
+        return sample.sample_dir / "current_not_talc_mask.png"
+
     def working_state_path(self, sample: ReviewSample) -> Path:
         return sample.sample_dir / "working_state.json"
+
+    def _existing_mask_candidate(self, candidates: list[Path]) -> Path | None:
+        for candidate in candidates:
+            resolved = resolve_path(candidate)
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        return None
+
+    def _model_mask_path(self, sample: ReviewSample) -> Path | None:
+        paths = sample.summary.get("paths", {})
+        manifest_candidates = [
+            paths.get("model_talc_mask"),
+            paths.get("talc_model_mask"),
+            paths.get("predicted_talc_mask"),
+        ]
+        candidates = [Path(path) for path in manifest_candidates if path]
+        candidates.extend(
+            [
+                sample.sample_dir / "model_talc_mask.png",
+                sample.sample_dir / "talc_model_mask.png",
+                sample.sample_dir / "predicted_talc_mask.png",
+                sample.sample_dir / "model_prediction_talc_mask.png",
+                sample.sample_dir / "talc_mask.png",
+            ]
+        )
+        if self.talc_model_mask_dir:
+            stem = Path(sample.image_name).stem
+            names = {
+                f"{sample.sample_id}.png",
+                f"{sample.sample_id}.jpg",
+                f"{sample.sample_id}.jpeg",
+                f"{stem}.png",
+                sample.image_name,
+                "model_talc_mask.png",
+                "predicted_talc_mask.png",
+                "talc_mask.png",
+            }
+            candidates.extend(self.talc_model_mask_dir / name for name in names)
+            for key in {sample.sample_id, stem, sample.image_name}:
+                candidates.extend(
+                    [
+                        self.talc_model_mask_dir / key / "model_talc_mask.png",
+                        self.talc_model_mask_dir / key / "predicted_talc_mask.png",
+                        self.talc_model_mask_dir / key / "talc_mask.png",
+                        self.talc_model_mask_dir / "samples" / key / "model_talc_mask.png",
+                        self.talc_model_mask_dir / "samples" / key / "predicted_talc_mask.png",
+                        self.talc_model_mask_dir / "samples" / key / "talc_mask.png",
+                    ]
+                )
+        return self._existing_mask_candidate(candidates)
+
+    def _human_review_masks(self, sample: ReviewSample) -> list[dict[str, str]]:
+        masks: list[dict[str, str]] = []
+        seen: set[Path] = set()
+
+        def add_candidate(label: str, candidates: list[Path]) -> None:
+            path = self._existing_mask_candidate(candidates)
+            if path is None or path in seen:
+                return
+            seen.add(path)
+            masks.append({"label": label, "path": str(path), "url": self.artifact_url(path) or ""})
+
+        for local_root in [sample.sample_dir / "human_reviews", sample.sample_dir / "reviewers"]:
+            if local_root.exists():
+                for reviewer_dir in sorted([item for item in local_root.iterdir() if item.is_dir()], key=lambda item: item.name.lower()):
+                    add_candidate(
+                        reviewer_dir.name,
+                        [
+                            reviewer_dir / "reviewed_talc_node_mask.png",
+                            reviewer_dir / "reviewed_talc_mask.png",
+                            reviewer_dir / "reviewed" / "reviewed_talc_node_mask.png",
+                            reviewer_dir / "reviewed" / "reviewed_talc_mask.png",
+                        ],
+                    )
+
+        stem = Path(sample.image_name).stem
+        for root in self.human_review_dirs:
+            label = root.name
+            for key in [sample.sample_id, stem, sample.image_name]:
+                add_candidate(
+                    label,
+                    [
+                        root / "samples" / key / "reviewed" / "reviewed_talc_node_mask.png",
+                        root / "samples" / key / "reviewed" / "reviewed_talc_mask.png",
+                        root / key / "reviewed" / "reviewed_talc_node_mask.png",
+                        root / key / "reviewed" / "reviewed_talc_mask.png",
+                        root / key / "reviewed_talc_node_mask.png",
+                        root / key / "reviewed_talc_mask.png",
+                        root / f"{key}.png",
+                    ],
+                )
+        return [item for item in masks if item.get("url")]
 
     def write_current_class_masks(
         self,
         sample: ReviewSample,
         positive_bag_mask: np.ndarray,
         talc_node_mask: np.ndarray,
+        not_talc_mask: np.ndarray | None = None,
     ) -> dict[str, Any]:
         positive_bag_mask = ensure_uint8_mask(positive_bag_mask)
         talc_node_mask = ensure_uint8_mask(talc_node_mask)
+        not_talc_mask = empty_mask(positive_bag_mask.shape[:2]) if not_talc_mask is None else ensure_uint8_mask(not_talc_mask)
+        if talc_node_mask.shape[:2] != positive_bag_mask.shape[:2] or not_talc_mask.shape[:2] != positive_bag_mask.shape[:2]:
+            raise ValueError("class masks must have matching dimensions")
+        talc_node_mask = talc_node_mask.copy()
+        talc_node_mask[not_talc_mask > 0] = 0
         talc_mask = union_masks(positive_bag_mask, talc_node_mask)
         current_path = self.current_mask_path(sample)
         positive_path = self.current_positive_bag_mask_path(sample)
         node_path = self.current_talc_node_mask_path(sample)
+        not_talc_path = self.current_not_talc_mask_path(sample)
         current_path.parent.mkdir(parents=True, exist_ok=True)
         write_mask(positive_path, positive_bag_mask)
         write_mask(node_path, talc_node_mask)
+        write_mask(not_talc_path, not_talc_mask)
         write_mask(current_path, talc_mask)
         return {
             "current_talc_mask": current_path,
             "current_positive_bag_mask": positive_path,
             "current_talc_node_mask": node_path,
+            "current_not_talc_mask": not_talc_path,
             "positive_bag_pixels": mask_pixels(positive_bag_mask),
             "talc_node_pixels": mask_pixels(talc_node_mask),
+            "not_talc_pixels": mask_pixels(not_talc_mask),
             "current_talc_pixels": mask_pixels(talc_mask),
         }
 
@@ -360,22 +514,27 @@ class TalcReviewStore:
             current_path = self.current_mask_path(sample)
             positive_path = self.current_positive_bag_mask_path(sample)
             node_path = self.current_talc_node_mask_path(sample)
+            not_talc_path = self.current_not_talc_mask_path(sample)
             expected_shape = (int(sample.summary["height"]), int(sample.summary["width"]))
             positive_mask = read_optional_mask(positive_path, expected_shape)
             node_mask = read_optional_mask(node_path, expected_shape)
+            not_talc_mask = read_optional_mask(not_talc_path, expected_shape)
             current_mask = read_optional_mask(current_path, expected_shape)
             if current_mask is not None:
                 if positive_mask is not None and node_mask is not None:
-                    expected_union = union_masks(positive_mask, node_mask)
-                    if np.array_equal((current_mask > 0), (expected_union > 0)):
+                    if not_talc_mask is None:
+                        not_talc_mask = empty_mask(expected_shape)
+                    expected_union = union_masks(positive_mask, np.where(not_talc_mask > 0, 0, node_mask).astype(np.uint8))
+                    if np.array_equal((current_mask > 0), (expected_union > 0)) and not_talc_path.exists():
                         return current_path
-                    self.write_current_class_masks(sample, positive_mask, node_mask)
+                    self.write_current_class_masks(sample, positive_mask, node_mask, not_talc_mask)
                     return current_path
                 positive_mask = current_mask
                 node_mask = empty_mask(expected_shape)
-                self.write_current_class_masks(sample, positive_mask, node_mask)
+                not_talc_mask = empty_mask(expected_shape)
+                paths = self.write_current_class_masks(sample, positive_mask, node_mask, not_talc_mask)
                 state = {
-                    "schema_version": "talc-current-mask-state-v0.2",
+                    "schema_version": "talc-current-mask-state-v0.3",
                     "sample_id": sample.sample_id,
                     "created_at": self._existing_state_created_at(sample),
                     "updated_at": utc_now_iso(),
@@ -383,9 +542,11 @@ class TalcReviewStore:
                     "current_talc_mask": str(current_path),
                     "current_positive_bag_mask": str(positive_path),
                     "current_talc_node_mask": str(node_path),
+                    "current_not_talc_mask": str(paths["current_not_talc_mask"]),
                     "current_talc_pixels": mask_pixels(current_mask),
                     "positive_bag_pixels": mask_pixels(positive_mask),
                     "talc_node_pixels": 0,
+                    "not_talc_pixels": 0,
                     "edits": [],
                 }
                 self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -393,6 +554,8 @@ class TalcReviewStore:
                 return current_path
 
             if positive_mask is not None and node_mask is not None:
+                if not_talc_mask is None:
+                    not_talc_mask = empty_mask(expected_shape)
                 recovery_reason = "created"
                 recovered_path = None
                 if current_path.exists():
@@ -406,9 +569,9 @@ class TalcReviewStore:
                         shutil.move(current_path, recovered_path)
                     except OSError:
                         recovered_path = None
-                paths = self.write_current_class_masks(sample, positive_mask, node_mask)
+                paths = self.write_current_class_masks(sample, positive_mask, node_mask, not_talc_mask)
                 state = {
-                    "schema_version": "talc-current-mask-state-v0.2",
+                    "schema_version": "talc-current-mask-state-v0.3",
                     "sample_id": sample.sample_id,
                     "created_at": self._existing_state_created_at(sample),
                     "updated_at": utc_now_iso(),
@@ -418,9 +581,11 @@ class TalcReviewStore:
                     "current_talc_mask": str(paths["current_talc_mask"]),
                     "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
                     "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+                    "current_not_talc_mask": str(paths["current_not_talc_mask"]),
                     "current_talc_pixels": paths["current_talc_pixels"],
                     "positive_bag_pixels": paths["positive_bag_pixels"],
                     "talc_node_pixels": paths["talc_node_pixels"],
+                    "not_talc_pixels": paths["not_talc_pixels"],
                     "edits": [],
                 }
                 self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -448,23 +613,28 @@ class TalcReviewStore:
             reviewed_path = sample.sample_dir / "reviewed/reviewed_talc_mask.png"
             reviewed_positive_bag_path = sample.sample_dir / "reviewed/reviewed_positive_bag_mask.png"
             reviewed_talc_node_path = sample.sample_dir / "reviewed/reviewed_talc_node_mask.png"
+            reviewed_not_talc_path = sample.sample_dir / "reviewed/reviewed_not_talc_mask.png"
             final_path = resolve_path(sample.summary["paths"]["final_talc_mask"])
             if reviewed_positive_bag_path.exists() or reviewed_talc_node_path.exists():
                 positive_mask = read_optional_mask(reviewed_positive_bag_path, expected_shape)
                 node_mask = read_optional_mask(reviewed_talc_node_path, expected_shape)
+                not_talc_mask = read_optional_mask(reviewed_not_talc_path, expected_shape)
                 if positive_mask is None:
                     positive_mask = empty_mask(expected_shape)
                 if node_mask is None:
                     node_mask = empty_mask(expected_shape)
+                if not_talc_mask is None:
+                    not_talc_mask = empty_mask(expected_shape)
                 source_label = "reviewed_classes"
             else:
                 source_path = reviewed_path if reviewed_path.exists() else final_path
                 source_label = "reviewed" if source_path == reviewed_path else "autodetected"
                 positive_mask = read_mask(source_path, expected_shape)
                 node_mask = empty_mask(expected_shape)
-            paths = self.write_current_class_masks(sample, positive_mask, node_mask)
+                not_talc_mask = empty_mask(expected_shape)
+            paths = self.write_current_class_masks(sample, positive_mask, node_mask, not_talc_mask)
             state = {
-                "schema_version": "talc-current-mask-state-v0.2",
+                "schema_version": "talc-current-mask-state-v0.3",
                 "sample_id": sample.sample_id,
                 "created_at": utc_now_iso(),
                 "updated_at": utc_now_iso(),
@@ -474,9 +644,11 @@ class TalcReviewStore:
                 "current_talc_mask": str(current_path),
                 "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
                 "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+                "current_not_talc_mask": str(paths["current_not_talc_mask"]),
                 "current_talc_pixels": paths["current_talc_pixels"],
                 "positive_bag_pixels": paths["positive_bag_pixels"],
                 "talc_node_pixels": paths["talc_node_pixels"],
+                "not_talc_pixels": paths["not_talc_pixels"],
                 "edits": [],
             }
             self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -488,9 +660,10 @@ class TalcReviewStore:
         final_path = resolve_path(sample.summary["paths"]["final_talc_mask"])
         positive_mask = read_mask(final_path, (int(sample.summary["height"]), int(sample.summary["width"])))
         node_mask = empty_mask(positive_mask.shape[:2])
-        paths = self.write_current_class_masks(sample, positive_mask, node_mask)
+        not_talc_mask = empty_mask(positive_mask.shape[:2])
+        paths = self.write_current_class_masks(sample, positive_mask, node_mask, not_talc_mask)
         state = {
-            "schema_version": "talc-current-mask-state-v0.2",
+            "schema_version": "talc-current-mask-state-v0.3",
             "sample_id": sample.sample_id,
             "created_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
@@ -498,9 +671,11 @@ class TalcReviewStore:
             "current_talc_mask": str(paths["current_talc_mask"]),
             "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
             "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+            "current_not_talc_mask": str(paths["current_not_talc_mask"]),
             "current_talc_pixels": paths["current_talc_pixels"],
             "positive_bag_pixels": paths["positive_bag_pixels"],
             "talc_node_pixels": paths["talc_node_pixels"],
+            "not_talc_pixels": paths["not_talc_pixels"],
             "edits": [],
         }
         self.working_state_path(sample).write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -542,6 +717,7 @@ class TalcReviewStore:
         current_path = self.ensure_current_mask(sample)
         positive_path = self.current_positive_bag_mask_path(sample)
         node_path = self.current_talc_node_mask_path(sample)
+        not_talc_path = self.current_not_talc_mask_path(sample)
         # Refresh after first-open state creation so review_state is current.
         sample = self.get_sample(sample_id)
         summary = sample.summary
@@ -549,9 +725,12 @@ class TalcReviewStore:
         current_mask = read_mask(current_path)
         positive_mask = read_mask(positive_path, current_mask.shape[:2]) if positive_path.exists() else current_mask
         node_mask = read_mask(node_path, current_mask.shape[:2]) if node_path.exists() else np.zeros_like(current_mask)
+        not_talc_mask = read_mask(not_talc_path, current_mask.shape[:2]) if not_talc_path.exists() else np.zeros_like(current_mask)
         final_mask = read_mask(resolve_path(paths["final_talc_mask"]), current_mask.shape[:2])
         ignore_path = resolve_path(paths["ignore_mask"]) if paths.get("ignore_mask") else None
         ignore_mask = read_mask(ignore_path, current_mask.shape[:2]) if ignore_path and ignore_path.exists() else np.zeros_like(current_mask)
+        model_mask_path = self._model_mask_path(sample)
+        human_review_masks = self._human_review_masks(sample)
         urls = {
             "original": self.artifact_url(sample.original_path),
             "annotated": self.artifact_url(sample.annotated_path),
@@ -560,6 +739,7 @@ class TalcReviewStore:
             "current_mask": self.artifact_url(current_path),
             "current_positive_bag_mask": self.artifact_url(positive_path),
             "current_talc_node_mask": self.artifact_url(node_path),
+            "current_not_talc_mask": self.artifact_url(not_talc_path),
             "autodetected_mask": self.artifact_url(paths.get("final_talc_mask")),
             "candidate_mask": self.artifact_url(paths.get("candidate_talc_mask")),
             "filled_talc_region": self.artifact_url(paths.get("filled_talc_region")),
@@ -571,7 +751,10 @@ class TalcReviewStore:
             "reviewed_talc_mask": self.artifact_url(sample.sample_dir / "reviewed/reviewed_talc_mask.png"),
             "reviewed_positive_bag_mask": self.artifact_url(sample.sample_dir / "reviewed/reviewed_positive_bag_mask.png"),
             "reviewed_talc_node_mask": self.artifact_url(sample.sample_dir / "reviewed/reviewed_talc_node_mask.png"),
+            "reviewed_not_talc_mask": self.artifact_url(sample.sample_dir / "reviewed/reviewed_not_talc_mask.png"),
             "reviewed_overlay": self.artifact_url(sample.sample_dir / "reviewed/reviewed_overlay.png"),
+            "model_talc_mask": self.artifact_url(model_mask_path),
+            "human_review_masks": human_review_masks,
         }
         return {
             "schema_version": "talc-review-web-sample-v0.1",
@@ -588,10 +771,13 @@ class TalcReviewStore:
                 "current_talc_pixels": mask_pixels(current_mask),
                 "positive_bag_pixels": mask_pixels(positive_mask),
                 "talc_node_pixels": mask_pixels(node_mask),
+                "not_talc_pixels": mask_pixels(not_talc_mask),
                 "autodetected_talc_pixels": mask_pixels(final_mask),
                 "ignore_pixels": mask_pixels(ignore_mask),
                 "candidate_talc_pixels": int(summary.get("candidate_talc_pixels") or 0),
                 "overlap_pixels": int(summary.get("overlap_pixels") or 0),
+                "human_review_mask_count": len(human_review_masks),
+                "has_model_talc_mask": model_mask_path is not None,
             },
             "urls": urls,
             "editable": sample.original_path is not None,
@@ -603,6 +789,7 @@ class TalcReviewStore:
         expected_shape = (int(sample.summary["height"]), int(sample.summary["width"]))
         positive_bag_mask = decode_optional_mask_data_url(payload.get("positive_bag_mask_png"), expected_shape)
         talc_node_mask = decode_optional_mask_data_url(payload.get("talc_node_mask_png"), expected_shape)
+        not_talc_mask = decode_optional_mask_data_url(payload.get("not_talc_mask_png"), expected_shape)
         legacy_mask = decode_optional_mask_data_url(payload.get("mask_png"), expected_shape)
         if positive_bag_mask is None:
             if legacy_mask is None:
@@ -610,7 +797,11 @@ class TalcReviewStore:
             positive_bag_mask = legacy_mask
         if talc_node_mask is None:
             talc_node_mask = empty_mask(expected_shape)
-        paths = self.write_current_class_masks(sample, positive_bag_mask, talc_node_mask)
+        if not_talc_mask is None:
+            not_talc_mask = empty_mask(expected_shape)
+        paths = self.write_current_class_masks(sample, positive_bag_mask, talc_node_mask, not_talc_mask)
+        talc_node_mask = read_mask(paths["current_talc_node_mask"], expected_shape)
+        not_talc_mask = read_mask(paths["current_not_talc_mask"], expected_shape)
         mask = read_mask(paths["current_talc_mask"])
         current_path = paths["current_talc_mask"]
         edits = payload.get("edits")
@@ -618,7 +809,7 @@ class TalcReviewStore:
             edits = []
         view_settings = sanitize_view_settings(payload)
         state = {
-            "schema_version": "talc-current-mask-state-v0.2",
+            "schema_version": "talc-current-mask-state-v0.3",
             "sample_id": sample.sample_id,
             "created_at": self._existing_state_created_at(sample),
             "updated_at": utc_now_iso(),
@@ -626,9 +817,11 @@ class TalcReviewStore:
             "current_talc_mask": str(current_path),
             "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
             "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+            "current_not_talc_mask": str(paths["current_not_talc_mask"]),
             "current_talc_pixels": paths["current_talc_pixels"],
             "positive_bag_pixels": paths["positive_bag_pixels"],
             "talc_node_pixels": paths["talc_node_pixels"],
+            "not_talc_pixels": paths["not_talc_pixels"],
             "edits": edits,
             "view_settings": view_settings,
         }
@@ -640,14 +833,24 @@ class TalcReviewStore:
             "current_talc_mask": str(current_path),
             "current_positive_bag_mask": str(paths["current_positive_bag_mask"]),
             "current_talc_node_mask": str(paths["current_talc_node_mask"]),
+            "current_not_talc_mask": str(paths["current_not_talc_mask"]),
             "current_talc_pixels": paths["current_talc_pixels"],
             "positive_bag_pixels": paths["positive_bag_pixels"],
             "talc_node_pixels": paths["talc_node_pixels"],
+            "not_talc_pixels": paths["not_talc_pixels"],
             "reviewed": False,
         }
         if reviewed:
             result["reviewed"] = True
-            result["review_summary"] = self._write_reviewed_outputs(sample, positive_bag_mask, talc_node_mask, mask, edits, payload)
+            result["review_summary"] = self._write_reviewed_outputs(
+                sample,
+                positive_bag_mask,
+                talc_node_mask,
+                not_talc_mask,
+                mask,
+                edits,
+                payload,
+            )
         self.refresh_samples()
         result["sample"] = self.sample_card(self.get_sample(sample_id))
         return result
@@ -667,6 +870,7 @@ class TalcReviewStore:
         sample: ReviewSample,
         positive_bag_mask: np.ndarray,
         talc_node_mask: np.ndarray,
+        not_talc_mask: np.ndarray,
         talc_mask: np.ndarray,
         edits: list[dict[str, Any]],
         payload: dict[str, Any],
@@ -686,14 +890,19 @@ class TalcReviewStore:
         reviewed_talc_path = reviewed_dir / "reviewed_talc_mask.png"
         reviewed_positive_bag_path = reviewed_dir / "reviewed_positive_bag_mask.png"
         reviewed_talc_node_path = reviewed_dir / "reviewed_talc_node_mask.png"
+        reviewed_not_talc_path = reviewed_dir / "reviewed_not_talc_mask.png"
         reviewed_ignore_path = reviewed_dir / "reviewed_ignore_mask.png"
         reviewed_overlay_path = reviewed_dir / "reviewed_overlay.png"
         patch_path = reviewed_dir / "review_patch.json"
         summary_path = reviewed_dir / "review_summary.json"
+        talc_node_mask = ensure_uint8_mask(talc_node_mask).copy()
+        not_talc_mask = ensure_uint8_mask(not_talc_mask)
+        talc_node_mask[not_talc_mask > 0] = 0
         talc_mask = union_masks(positive_bag_mask, talc_node_mask)
         write_mask(reviewed_talc_path, talc_mask)
         write_mask(reviewed_positive_bag_path, positive_bag_mask)
         write_mask(reviewed_talc_node_path, talc_node_mask)
+        write_mask(reviewed_not_talc_path, not_talc_mask)
         write_mask(reviewed_ignore_path, ignore_mask)
         write_image_rgb(
             reviewed_overlay_path,
@@ -701,12 +910,15 @@ class TalcReviewStore:
                 image_rgb,
                 positive_bag_mask=positive_bag_mask,
                 talc_node_mask=talc_node_mask,
+                not_talc_mask=not_talc_mask,
                 ignore_mask=ignore_mask,
             ),
         )
         saved_at = utc_now_iso()
+        model_mask_path = self._model_mask_path(sample)
+        human_review_masks = self._human_review_masks(sample)
         patch = {
-            "schema_version": "talc-review-web-patch-v0.2",
+            "schema_version": "talc-review-web-patch-v0.3",
             "sample_id": sample.sample_id,
             "image_name": sample.image_name,
             "saved_at": saved_at,
@@ -715,27 +927,32 @@ class TalcReviewStore:
             "view_settings": sanitize_view_settings(payload),
             "class_definitions": {
                 "positive_bag": "Original blue-line-derived region that can contain talc segments, plus manual brush/fill/rectangle/polygon/SAM2 edits.",
-                "talc_node": "Talc pixels added by Similar intensity matching.",
+                "talc_node": "Confirmed talc pixels from manual edits and Similar positive/negative seed matching.",
+                "not_talc": "Explicit hard-negative pixels: dark or talc-like objects that are not talc.",
             },
             "base_conversion_summary": str(sample.sample_dir / "conversion_summary.json"),
             "annotated_image_path": str(sample.annotated_path),
             "original_image_path": str(sample.original_path) if sample.original_path else None,
+            "model_talc_mask_path": str(model_mask_path) if model_mask_path else None,
+            "human_review_masks": human_review_masks,
             "edits": edits,
         }
         patch_path.write_text(json.dumps(patch, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         review_summary = {
-            "schema_version": "talc-review-web-summary-v0.2",
+            "schema_version": "talc-review-web-summary-v0.3",
             "sample_id": sample.sample_id,
             "image_name": sample.image_name,
             "saved_at": saved_at,
             "reviewed_talc_pixels": mask_pixels(talc_mask),
             "reviewed_positive_bag_pixels": mask_pixels(positive_bag_mask),
             "reviewed_talc_node_pixels": mask_pixels(talc_node_mask),
+            "reviewed_not_talc_pixels": mask_pixels(not_talc_mask),
             "reviewed_ignore_pixels": mask_pixels(ignore_mask),
             "paths": {
                 "reviewed_talc_mask": str(reviewed_talc_path),
                 "reviewed_positive_bag_mask": str(reviewed_positive_bag_path),
                 "reviewed_talc_node_mask": str(reviewed_talc_node_path),
+                "reviewed_not_talc_mask": str(reviewed_not_talc_path),
                 "reviewed_ignore_mask": str(reviewed_ignore_path),
                 "reviewed_overlay": str(reviewed_overlay_path),
                 "review_patch": str(patch_path),
@@ -944,7 +1161,7 @@ def render_html_page() -> str:
         <div class="toolbar">
           <button type="button" data-tool="brush" class="tool-button active" aria-pressed="true" aria-keyshortcuts="B" title="Brush (B): left mouse draws the selected class, right mouse erases it">Brush</button>
           <button type="button" data-tool="fill" class="tool-button" aria-pressed="false" aria-keyshortcuts="F" title="Fill (F): click an area bounded by blue lines, sulfides, existing selected-class regions, or image edges">Fill</button>
-          <button type="button" data-tool="similar" class="tool-button" aria-pressed="false" title="Similar: click a known talc grain to preview intensity-similar talc-node pixels">Similar</button>
+          <button type="button" data-tool="similar" class="tool-button" aria-pressed="false" title="Similar: add positive talc seeds and negative non-talc seeds to preview luma/color/texture-similar talc pixels">Similar</button>
           <button type="button" data-tool="rectangle" class="tool-button" aria-pressed="false" title="Rectangle: drag or click two corners, then edit handles">Rectangle</button>
           <button type="button" data-tool="polygon" class="tool-button" aria-pressed="false" title="Polygon: place points, close on the first point, right-click a point to remove">Polygon</button>
           <button type="button" data-tool="sam2" class="tool-button" aria-pressed="false" title="SAM2: draw a box or hold still over a point for preview">SAM2</button>
@@ -966,6 +1183,8 @@ def render_html_page() -> str:
               <label for="similarStrictness">Strictness</label>
               <input id="similarStrictness" type="range" min="1" max="100" value="55" aria-label="Similar strictness">
               <span id="similarStrictnessValue">55</span>
+              <button type="button" id="similarPositiveSeedBtn" class="small-button seed-button active" aria-pressed="true" title="Similar positive seed: clicked object is talc">+ seed</button>
+              <button type="button" id="similarNegativeSeedBtn" class="small-button seed-button" aria-pressed="false" title="Similar negative seed: clicked object is not talc">- seed</button>
               <button type="button" id="similarApplyBtn" class="small-button" disabled>Apply Similar</button>
               <button type="button" id="similarClearBtn" class="small-button" disabled>Clear Preview</button>
             </div>
@@ -1002,6 +1221,12 @@ def render_html_page() -> str:
           <span class="class-name"><span class="class-swatch talc"></span>Talc</span>
           <span id="talcNodePct" class="class-percent">0.00%</span>
           <input type="radio" name="editTargetClass" id="editTargetTalcNode" value="talc_node" aria-label="Edit Talc">
+        </div>
+        <div class="segmentation-class-row">
+          <input type="checkbox" id="layerNotTalc" checked aria-label="Show Not Talc">
+          <span class="class-name"><span class="class-swatch not-talc"></span>Not Talc</span>
+          <span id="notTalcPct" class="class-percent">0.00%</span>
+          <input type="radio" name="editTargetClass" id="editTargetNotTalc" value="not_talc" aria-label="Edit Not Talc">
         </div>
         <div class="segmentation-class-row cluster-row">
           <input type="checkbox" id="layerClusterAreas" aria-label="Show Talc cluster areas">
@@ -1069,6 +1294,19 @@ def render_html_page() -> str:
       <input id="clusterOpacity" type="range" min="10" max="90" step="5" value="45" aria-label="Talc cluster overlay opacity">
       <div id="clusterStats" class="filter-hint">Cluster overlay is off.</div>
     </div>
+    <div class="model-human-controls">
+      <div class="control-title">Model/Human QA</div>
+      <label><input type="checkbox" id="modelHumanToggle"> Model vs current human</label>
+      <label><input type="checkbox" id="humanAgreementToggle"> Human agreement</label>
+      <div class="qa-legend">
+        <span><span class="qa-swatch qa-agreement"></span>agreement</span>
+        <span><span class="qa-swatch qa-model-only"></span>model only</span>
+        <span><span class="qa-swatch qa-human-only"></span>human only</span>
+        <span><span class="qa-swatch qa-conflict"></span>sulfide conflict</span>
+        <span><span class="qa-swatch qa-human-disagree"></span>human disagreement</span>
+      </div>
+      <div id="modelQaStats" class="filter-hint">QA layers are off.</div>
+    </div>
     <div id="assetWarnings" class="asset-warnings hidden" role="status" aria-live="polite"></div>
     <div class="layers">
       <label><input type="checkbox" id="layerAuto"> Autodetected mask</label>
@@ -1089,10 +1327,10 @@ def render_html_page() -> str:
     <details class="advanced-box">
       <summary>Interaction help</summary>
       <ul>
-        <li>Select the Edit radio in Segmentation classes to choose whether Brush, Fill, Rectangle, and Polygon edit Positive bag or Talc.</li>
+        <li>Select the Edit radio in Segmentation classes to choose whether Brush, Fill, Rectangle, and Polygon edit Positive bag, Talc, or Not Talc.</li>
         <li>Brush: left mouse adds the selected class, right mouse erases it.</li>
         <li>Fill: click an empty area bounded by blue lines, sulfides, existing selected-class regions, or the image edge.</li>
-        <li>Similar: click a confirmed talc grain to preview luma/color-similar non-sulfide pixels, tune Strictness, then press Apply Similar to add talc nodes.</li>
+        <li>Similar: add + seeds for confirmed talc and - seeds for dark non-talc, tune Strictness, then press Apply Similar to add talc nodes.</li>
         <li>Polygon: click to place points, click the first point to close, drag points/edges to edit, right-click a polygon point to remove it, and right-click elsewhere to cancel the current polygon.</li>
         <li>Rectangle: drag a box or click one corner then click the opposite corner; right-click cancels the current rectangle. Completed rectangles can be resized by corners or edges.</li>
         <li>Press Delete to remove the selected completed polygon or rectangle.</li>
@@ -1236,6 +1474,7 @@ button, input, select, textarea { font: inherit; }
 .tool-button:disabled, .small-button:disabled, .icon-button:disabled, .primary-button:disabled, .danger-button:disabled, .plain-button:disabled { opacity: 0.48; cursor: not-allowed; }
 .tool-button.active { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .tool-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+.seed-button.active, .seed-button[aria-pressed="true"] { background: var(--accent-weak); border-color: var(--accent); color: var(--text); }
 .icon-button { min-width: 54px; }
 .primary-button, .danger-button, .plain-button { font-weight: 700; }
 .details-pane .primary-button, .details-pane .danger-button { width: 100%; margin-top: 8px; }
@@ -1283,6 +1522,7 @@ button, input, select, textarea { font: inherit; }
 .class-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(15, 23, 42, 0.25); }
 .class-swatch.positive-bag { background: #05a3d8; }
 .class-swatch.talc { background: #ffc400; }
+.class-swatch.not-talc { background: #dc2626; }
 .class-swatch.cluster { background: #ec4899; }
 .segmentation-threshold { border-top: 1px solid var(--line); padding-top: 7px; color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1.3; }
 .segmentation-threshold.under-target { color: var(--status-error); }
@@ -1297,6 +1537,17 @@ button, input, select, textarea { font: inherit; }
 .cluster-controls { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; }
 .cluster-controls input[type="range"] { width: 100%; }
 .cluster-toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
+.model-human-controls { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; font-size: 13px; }
+.model-human-controls label { display: flex; align-items: center; gap: 7px; }
+.control-title { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; }
+.qa-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; color: var(--muted); font-size: 11px; line-height: 1.25; }
+.qa-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.qa-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(15, 23, 42, 0.25); }
+.qa-swatch.qa-agreement { background: #22c55e; }
+.qa-swatch.qa-model-only { background: #8b5cf6; }
+.qa-swatch.qa-human-only { background: #06b6d4; }
+.qa-swatch.qa-conflict { background: #ef4444; }
+.qa-swatch.qa-human-disagree { background: #f97316; }
 .range-header, .range-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .range-actions { justify-content: flex-start; }
 .range-value { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
@@ -1423,6 +1674,14 @@ const state = {
     maskCanvas: null,
     tint: null,
     seed: null,
+    stats: null,
+    positiveSeeds: [],
+    negativeSeeds: [],
+    seedMode: 'positive'
+  },
+  modelHumanQa: {
+    key: null,
+    canvas: null,
     stats: null
   }
 };
@@ -1437,12 +1696,20 @@ const talcNodeCanvas = document.createElement('canvas');
 const talcNodeCtx = talcNodeCanvas.getContext('2d', { willReadFrequently: true });
 const baseTalcNodeCanvas = document.createElement('canvas');
 const baseTalcNodeCtx = baseTalcNodeCanvas.getContext('2d', { willReadFrequently: true });
+const notTalcCanvas = document.createElement('canvas');
+const notTalcCtx = notTalcCanvas.getContext('2d', { willReadFrequently: true });
+const baseNotTalcCanvas = document.createElement('canvas');
+const baseNotTalcCtx = baseNotTalcCanvas.getContext('2d', { willReadFrequently: true });
 const sulfideGuardCanvas = document.createElement('canvas');
 const sulfideGuardCtx = sulfideGuardCanvas.getContext('2d', { willReadFrequently: true });
 const currentTintCanvas = document.createElement('canvas');
 const currentTintCtx = currentTintCanvas.getContext('2d', { willReadFrequently: true });
 const talcNodeTintCanvas = document.createElement('canvas');
 const talcNodeTintCtx = talcNodeTintCanvas.getContext('2d', { willReadFrequently: true });
+const notTalcTintCanvas = document.createElement('canvas');
+const notTalcTintCtx = notTalcTintCanvas.getContext('2d', { willReadFrequently: true });
+const modelTalcCanvas = document.createElement('canvas');
+const modelTalcCtx = modelTalcCanvas.getContext('2d', { willReadFrequently: true });
 const brightnessSourceCanvas = document.createElement('canvas');
 const brightnessSourceCtx = brightnessSourceCanvas.getContext('2d', { willReadFrequently: true });
 const brightnessPreviewCanvas = document.createElement('canvas');
@@ -1463,6 +1730,7 @@ const els = {
   statusLine: document.getElementById('statusLine'),
   positiveBagPct: document.getElementById('positiveBagPct'),
   talcNodePct: document.getElementById('talcNodePct'),
+  notTalcPct: document.getElementById('notTalcPct'),
   clusterAreaPct: document.getElementById('clusterAreaPct'),
   clusterLayerToggle: document.getElementById('layerClusterAreas'),
   talcThresholdStatus: document.getElementById('talcThresholdStatus'),
@@ -1472,6 +1740,8 @@ const els = {
   similarParams: document.getElementById('similarParams'),
   similarStrictness: document.getElementById('similarStrictness'),
   similarStrictnessValue: document.getElementById('similarStrictnessValue'),
+  similarPositiveSeedBtn: document.getElementById('similarPositiveSeedBtn'),
+  similarNegativeSeedBtn: document.getElementById('similarNegativeSeedBtn'),
   similarApplyBtn: document.getElementById('similarApplyBtn'),
   similarClearBtn: document.getElementById('similarClearBtn'),
   sam2Params: document.getElementById('sam2Params'),
@@ -1495,6 +1765,9 @@ const els = {
   clusterOpacity: document.getElementById('clusterOpacity'),
   clusterOpacityValue: document.getElementById('clusterOpacityValue'),
   clusterStats: document.getElementById('clusterStats'),
+  modelHumanToggle: document.getElementById('modelHumanToggle'),
+  humanAgreementToggle: document.getElementById('humanAgreementToggle'),
+  modelQaStats: document.getElementById('modelQaStats'),
   assetWarnings: document.getElementById('assetWarnings'),
   metricsBox: document.getElementById('metricsBox'),
   reviewerInput: document.getElementById('reviewerInput'),
@@ -1512,6 +1785,7 @@ const els = {
   layers: {
     current: document.getElementById('layerCurrent'),
     talcNode: document.getElementById('layerTalcNode'),
+    notTalc: document.getElementById('layerNotTalc'),
     auto: document.getElementById('layerAuto'),
     lines: document.getElementById('layerLines'),
     overlap: document.getElementById('layerOverlap'),
@@ -1546,7 +1820,8 @@ const SAVE_STATE_LABELS = {
 
 const EDIT_CLASS_LABELS = {
   positive_bag: 'Positive bag',
-  talc_node: 'Talc'
+  talc_node: 'Talc',
+  not_talc: 'Not Talc'
 };
 
 function cssVar(name, fallback) {
@@ -1798,10 +2073,15 @@ function clearSam2Preview(options = {}) {
 
 function clearSimilarTalcPreview(options = {}) {
   const redraw = options.redraw !== false;
+  const clearSeeds = options.clearSeeds !== false;
   state.similarTalcPreview.maskCanvas = null;
   state.similarTalcPreview.tint = null;
   state.similarTalcPreview.seed = null;
   state.similarTalcPreview.stats = null;
+  if (clearSeeds) {
+    state.similarTalcPreview.positiveSeeds = [];
+    state.similarTalcPreview.negativeSeeds = [];
+  }
   updateSimilarTalcApplyButton();
   if (redraw) draw();
 }
@@ -1811,19 +2091,34 @@ function updateSimilarStrictnessUi() {
   els.similarStrictnessValue.textContent = String(els.similarStrictness.value);
 }
 
+function setSimilarSeedMode(mode) {
+  const normalized = mode === 'negative' ? 'negative' : 'positive';
+  state.similarTalcPreview.seedMode = normalized;
+  if (els.similarPositiveSeedBtn) {
+    const active = normalized === 'positive';
+    els.similarPositiveSeedBtn.classList.toggle('active', active);
+    els.similarPositiveSeedBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+  if (els.similarNegativeSeedBtn) {
+    const active = normalized === 'negative';
+    els.similarNegativeSeedBtn.classList.toggle('active', active);
+    els.similarNegativeSeedBtn.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+}
+
 function updateSimilarTalcApplyButton() {
   if (!els.similarApplyBtn || !els.similarClearBtn) return;
   const hasPreview = Boolean(state.similarTalcPreview.maskCanvas);
   els.similarApplyBtn.disabled = state.tool !== 'similar' || !hasPreview;
   els.similarClearBtn.disabled = state.tool !== 'similar' || !hasPreview;
   if (state.tool !== 'similar') {
-    els.similarApplyBtn.title = 'Switch to Similar and click a confirmed talc grain first.';
+    els.similarApplyBtn.title = 'Switch to Similar and add a positive talc seed first.';
     els.similarClearBtn.title = 'Switch to Similar to clear its preview.';
   } else if (hasPreview) {
     els.similarApplyBtn.title = 'Apply the visible Similar preview to the talc-node class.';
     els.similarClearBtn.title = 'Discard the current Similar preview.';
   } else {
-    els.similarApplyBtn.title = 'Click a confirmed talc grain to create a preview.';
+    els.similarApplyBtn.title = 'Add at least one + seed to create a preview.';
     els.similarClearBtn.title = 'No Similar preview is active.';
   }
 }
@@ -2005,16 +2300,22 @@ function buildTintFromCanvas(sourceCanvas, rgba) {
 function refreshCurrentTint() {
   state.maskVersion += 1;
   invalidateClusterOverlay();
+  invalidateModelHumanQa();
   currentTintCanvas.width = state.imageW;
   currentTintCanvas.height = state.imageH;
   talcNodeTintCanvas.width = state.imageW;
   talcNodeTintCanvas.height = state.imageH;
+  notTalcTintCanvas.width = state.imageW;
+  notTalcTintCanvas.height = state.imageH;
   const tint = buildTintFromCanvas(maskCanvas, [0, 163, 216, 112]);
   const nodeTint = buildTintFromCanvas(talcNodeCanvas, [255, 196, 0, 128]);
+  const notTalcTint = buildTintFromCanvas(notTalcCanvas, [220, 38, 38, 128]);
   currentTintCtx.clearRect(0, 0, state.imageW, state.imageH);
   talcNodeTintCtx.clearRect(0, 0, state.imageW, state.imageH);
+  notTalcTintCtx.clearRect(0, 0, state.imageW, state.imageH);
   if (tint) currentTintCtx.drawImage(tint, 0, 0);
   if (nodeTint) talcNodeTintCtx.drawImage(nodeTint, 0, 0);
+  if (notTalcTint) notTalcTintCtx.drawImage(notTalcTint, 0, 0);
 }
 
 function countMaskPixelsFromCtx(sourceCtx) {
@@ -2050,6 +2351,10 @@ function countTalcNodePixels() {
   return countMaskPixelsFromCtx(talcNodeCtx);
 }
 
+function countNotTalcPixels() {
+  return countMaskPixelsFromCtx(notTalcCtx);
+}
+
 function countCurrentMaskPixels() {
   const data = captureCombinedMaskData().data;
   let count = 0;
@@ -2075,8 +2380,17 @@ function captureBaseTalcNodeData() {
   return baseTalcNodeCtx.getImageData(0, 0, state.imageW, state.imageH);
 }
 
+function captureNotTalcData() {
+  return notTalcCtx.getImageData(0, 0, state.imageW, state.imageH);
+}
+
+function captureBaseNotTalcData() {
+  return baseNotTalcCtx.getImageData(0, 0, state.imageW, state.imageH);
+}
+
 function normalizeEditClass(targetClass) {
-  return targetClass === 'talc_node' ? 'talc_node' : 'positive_bag';
+  if (targetClass === 'talc_node' || targetClass === 'not_talc') return targetClass;
+  return 'positive_bag';
 }
 
 function activeEditClass() {
@@ -2088,8 +2402,12 @@ function editClassLabel(targetClass = activeEditClass()) {
 }
 
 function editClassContexts(targetClass = activeEditClass()) {
-  if (normalizeEditClass(targetClass) === 'talc_node') {
+  const normalized = normalizeEditClass(targetClass);
+  if (normalized === 'talc_node') {
     return { targetClass: 'talc_node', canvas: talcNodeCanvas, ctx: talcNodeCtx, baseCanvas: baseTalcNodeCanvas, baseCtx: baseTalcNodeCtx };
+  }
+  if (normalized === 'not_talc') {
+    return { targetClass: 'not_talc', canvas: notTalcCanvas, ctx: notTalcCtx, baseCanvas: baseNotTalcCanvas, baseCtx: baseNotTalcCtx };
   }
   return { targetClass: 'positive_bag', canvas: maskCanvas, ctx: maskCtx, baseCanvas: baseMaskCanvas, baseCtx: baseMaskCtx };
 }
@@ -2109,6 +2427,7 @@ function setEditClass(targetClass, options = {}) {
     input.checked = input.value === normalized;
   });
   if (normalized === 'talc_node') els.layers.talcNode.checked = true;
+  else if (normalized === 'not_talc') els.layers.notTalc.checked = true;
   else els.layers.current.checked = true;
   draw();
   if (options.announce) setStatus(`Brush, Fill, Rectangle, and Polygon now edit ${editClassLabel(normalized)}.`);
@@ -2211,8 +2530,25 @@ function syncTalcNodeLayer(options = {}) {
   for (const shape of state.shapes) {
     if (normalizeEditClass(shape.targetClass) === 'talc_node') rasterizeShape(talcNodeCtx, shape);
   }
+  const removedNotTalc = enforceNotTalcExclusion(recordProtection, reason, nodeBaseline);
   if (els.protectSulfides.checked) removeSulfidePixelsFromCanvas(talcNodeCtx);
-  return { removedPositive, protectedPixels };
+  return { removedPositive, protectedPixels, removedNotTalc };
+}
+
+function removeNotTalcPixelsFromTalcNode(targetCtx = talcNodeCtx, baselineData = null, blockerCtx = notTalcCtx) {
+  const notData = blockerCtx.getImageData(0, 0, state.imageW, state.imageH).data;
+  return removeActivePixelsFromCanvas(targetCtx, notData, baselineData);
+}
+
+function enforceNotTalcExclusion(record = false, reason = 'not_talc_exclusion', baselineData = null) {
+  void baselineData;
+  const removedBase = removeNotTalcPixelsFromTalcNode(baseTalcNodeCtx, null, baseNotTalcCtx);
+  const removedLive = removeNotTalcPixelsFromTalcNode(talcNodeCtx, null, notTalcCtx);
+  const removed = Math.max(removedBase, removedLive);
+  if (record && removed > 0) {
+    state.edits.push({ type: 'exclude_not_talc_from_talc', tool: reason, target_class: 'talc_node', removed_pixels: removed, at: new Date().toISOString() });
+  }
+  return removed;
 }
 
 function rasterizeShape(targetCtx, shape) {
@@ -2249,26 +2585,32 @@ function rebuildMaskFromBase(options = {}) {
   maskCtx.drawImage(baseMaskCanvas, 0, 0, state.imageW, state.imageH);
   talcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
   talcNodeCtx.drawImage(baseTalcNodeCanvas, 0, 0, state.imageW, state.imageH);
+  notTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
+  notTalcCtx.drawImage(baseNotTalcCanvas, 0, 0, state.imageW, state.imageH);
   for (const shape of state.shapes) {
-    const targetCtx = normalizeEditClass(shape.targetClass) === 'talc_node' ? talcNodeCtx : maskCtx;
-    rasterizeShape(targetCtx, shape);
+    rasterizeShape(editClassContexts(shape.targetClass).ctx, shape);
   }
+  const removedNotTalcFromTalc = enforceNotTalcExclusion(recordProtection, reason, talcBaselineData);
   let protectedPixels = 0;
   if (els.protectSulfides.checked) {
     const protectedPositive = removeSulfidePixelsFromCanvas(maskCtx, positiveBaselineData);
     const protectedTalc = removeSulfidePixelsFromCanvas(talcNodeCtx, talcBaselineData);
-    protectedPixels = protectedPositive + protectedTalc;
+    const protectedNotTalc = removeSulfidePixelsFromCanvas(notTalcCtx);
+    protectedPixels = protectedPositive + protectedTalc + protectedNotTalc;
     if (recordProtection && protectedPositive > 0) {
       state.edits.push({ type: 'protect_sulfides', tool: reason, target_class: 'positive_bag', removed_pixels: protectedPositive, at: new Date().toISOString() });
     }
     if (recordProtection && protectedTalc > 0) {
       state.edits.push({ type: 'protect_sulfides', tool: reason, target_class: 'talc_node', removed_pixels: protectedTalc, at: new Date().toISOString() });
     }
+    if (recordProtection && protectedNotTalc > 0) {
+      state.edits.push({ type: 'protect_sulfides', tool: reason, target_class: 'not_talc', removed_pixels: protectedNotTalc, at: new Date().toISOString() });
+    }
   }
   refreshCurrentTint();
   updateMetrics();
   draw();
-  return protectedPixels;
+  return protectedPixels + removedNotTalcFromTalc;
 }
 
 function flattenShapesToBase(record = false) {
@@ -2276,17 +2618,21 @@ function flattenShapesToBase(record = false) {
   const positiveBaselineData = captureBaseMaskData();
   const talcBaselineData = captureBaseTalcNodeData();
   for (const shape of state.shapes) {
-    const targetBaseCtx = normalizeEditClass(shape.targetClass) === 'talc_node' ? baseTalcNodeCtx : baseMaskCtx;
-    rasterizeShape(targetBaseCtx, shape);
+    rasterizeShape(editClassContexts(shape.targetClass).baseCtx, shape);
   }
+  const removedNotTalcFromTalc = enforceNotTalcExclusion(record, 'flatten_shapes', talcBaselineData);
   if (els.protectSulfides.checked) {
     const protectedPositive = removeSulfidePixelsFromCanvas(baseMaskCtx, positiveBaselineData);
     const protectedTalc = removeSulfidePixelsFromCanvas(baseTalcNodeCtx, talcBaselineData);
+    const protectedNotTalc = removeSulfidePixelsFromCanvas(baseNotTalcCtx);
     if (protectedPositive > 0 && record) {
       state.edits.push({ type: 'protect_sulfides', tool: 'flatten_shapes', target_class: 'positive_bag', removed_pixels: protectedPositive, at: new Date().toISOString() });
     }
     if (protectedTalc > 0 && record) {
       state.edits.push({ type: 'protect_sulfides', tool: 'flatten_shapes', target_class: 'talc_node', removed_pixels: protectedTalc, at: new Date().toISOString() });
+    }
+    if (protectedNotTalc > 0 && record) {
+      state.edits.push({ type: 'protect_sulfides', tool: 'flatten_shapes', target_class: 'not_talc', removed_pixels: protectedNotTalc, at: new Date().toISOString() });
     }
   }
   state.shapes = [];
@@ -2297,9 +2643,10 @@ function flattenShapesToBase(record = false) {
   return true;
 }
 
-function updateSegmentationClassWidgetMetrics(positiveBagPixels, talcNodePixels, totalPixels) {
+function updateSegmentationClassWidgetMetrics(positiveBagPixels, talcNodePixels, notTalcPixels, totalPixels) {
   if (els.positiveBagPct) els.positiveBagPct.textContent = formatPct(positiveBagPixels, totalPixels);
   if (els.talcNodePct) els.talcNodePct.textContent = formatPct(talcNodePixels, totalPixels);
+  if (els.notTalcPct) els.notTalcPct.textContent = formatPct(notTalcPixels, totalPixels);
   updateClusterLayerWidget();
   if (!els.talcThresholdStatus) return;
   const thresholdPct = TALC_VISIBLE_THRESHOLD_FRACTION * 100;
@@ -2320,15 +2667,18 @@ function updateMetrics() {
   const currentPixels = countCurrentMaskPixels();
   const positiveBagPixels = countPositiveBagPixels();
   const talcNodePixels = countTalcNodePixels();
+  const notTalcPixels = countNotTalcPixels();
   const currentSulfidePixels = countCurrentSulfideOverlapPixels();
   const totalPixels = state.imageW * state.imageH;
-  updateSegmentationClassWidgetMetrics(positiveBagPixels, talcNodePixels, totalPixels);
+  updateSegmentationClassWidgetMetrics(positiveBagPixels, talcNodePixels, notTalcPixels, totalPixels);
+  updateModelHumanQaStats();
   const saveLabel = SAVE_STATE_LABELS[state.saveState] || SAVE_STATE_LABELS.saved;
   const reviewLabel = reviewStateLabel(state.sample.sample.review_state);
   els.metricsBox.innerHTML = `
     <div class="metric-row"><span>Current talc union</span><strong>${pxWithPct(currentPixels, totalPixels)}</strong></div>
     <div class="metric-row"><span>Positive bag</span><strong>${pxWithPct(positiveBagPixels, totalPixels)}</strong></div>
     <div class="metric-row"><span>Talc node</span><strong>${pxWithPct(talcNodePixels, totalPixels)}</strong></div>
+    <div class="metric-row"><span>Not Talc hard negatives</span><strong>${pxWithPct(notTalcPixels, totalPixels)}</strong></div>
     <div class="metric-row"><span>Autodetected talc</span><strong>${pxWithPct(metrics.autodetected_talc_pixels, totalPixels)}</strong></div>
     <div class="metric-row"><span>Blue-line candidate</span><strong>${pxWithPct(metrics.candidate_talc_pixels, totalPixels)}</strong></div>
     <div class="metric-row"><span>Original candidate on sulfide</span><strong>${pxWithPct(metrics.overlap_pixels, totalPixels)}</strong></div>
@@ -2478,6 +2828,8 @@ function clusterOverlayStatsPayload() {
     min_density_percent: stats.minDensityPercent,
     opacity_percent: stats.opacityPercent,
     source_talc_pixels: stats.sourcePixels,
+    sulfide_excluded_pixels: stats.sulfideExcludedPixels || 0,
+    non_sulfide_pixels: stats.nonSulfidePixels || stats.imagePixels,
     highlighted_pixels: stats.highlightedPixels,
     highlighted_fraction: stats.imagePixels > 0 ? stats.highlightedPixels / stats.imagePixels : 0
   };
@@ -2490,6 +2842,7 @@ function clusterOverlayRebuildDeferred() {
 function viewSettingsPayload() {
   const clusterSettings = readClusterSettingsFromControls();
   const clusterStats = clusterSettings.enabled ? clusterOverlayStatsPayload() : null;
+  const qaStats = state.modelHumanQa.stats;
   return {
     brightness_threshold_luma: currentBrightnessThreshold(),
     brightness_threshold_formula: BRIGHTNESS_THRESHOLD_FORMULA,
@@ -2503,6 +2856,13 @@ function viewSettingsPayload() {
       stats: clusterStats
     },
     similar_talc_strictness: clampSimilarStrictness(),
+    similar_positive_seed_count: state.similarTalcPreview.positiveSeeds.length,
+    similar_negative_seed_count: state.similarTalcPreview.negativeSeeds.length,
+    model_human_qa: {
+      model_vs_current_enabled: modelHumanQaEnabled(),
+      human_agreement_enabled: humanAgreementQaEnabled(),
+      stats: qaStats
+    },
     background_mode: els.baseMode ? els.baseMode.value : null
   };
 }
@@ -2588,7 +2948,8 @@ function updateClusterStatsText(stats, settings) {
     els.clusterStats.textContent = `No pixels in ${clusterSourceLabel(stats.source)}.`;
     return;
   }
-  els.clusterStats.textContent = `Highlighted ${formatInt(stats.highlightedPixels)} px (${formatPct(stats.highlightedPixels, stats.imagePixels)}) from ${formatInt(stats.sourcePixels)} source px.`;
+  const sulfideNote = stats.sulfideExcludedPixels ? `; ${formatInt(stats.sulfideExcludedPixels)} sulfide px excluded` : '';
+  els.clusterStats.textContent = `Highlighted ${formatInt(stats.highlightedPixels)} non-sulfide px (${formatPct(stats.highlightedPixels, stats.imagePixels)}) from ${formatInt(stats.sourcePixels)} source px${sulfideNote}.`;
 }
 
 function updateClusterLayerWidget(settings = readClusterSettingsFromControls(), stats = state.clusterOverlay.stats) {
@@ -2633,9 +2994,11 @@ function clusterOverlayCanvasForCurrentSettings() {
   const minDensity = settings.minDensityPercent / 100;
   const opacity = settings.opacityPercent / 100;
   const sourceData = clusterMaskData(settings);
+  const sulfideData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
   const stride = width + 1;
   const integral = new Uint32Array((width + 1) * (height + 1));
   let sourcePixels = 0;
+  let sulfideExcludedPixels = 0;
 
   for (let y = 0; y < height; y += 1) {
     let rowCount = 0;
@@ -2643,7 +3006,10 @@ function clusterOverlayCanvasForCurrentSettings() {
     const previousIntegralRow = y * stride;
     const pixelRow = y * width;
     for (let x = 0; x < width; x += 1) {
-      if (activeMaskPixelFromImageData(sourceData, pixelRow + x)) {
+      const pixel = pixelRow + x;
+      if (sulfideData && isMaskDataActive(sulfideData, pixel, 0)) {
+        sulfideExcludedPixels += 1;
+      } else if (activeMaskPixelFromImageData(sourceData, pixel)) {
         rowCount += 1;
         sourcePixels += 1;
       }
@@ -2666,13 +3032,15 @@ function clusterOverlayCanvasForCurrentSettings() {
       const windowH = y2 - y1;
       const pixelRow = y * width;
       for (let x = 0; x < width; x += 1) {
+        const pixel = pixelRow + x;
+        if (sulfideData && isMaskDataActive(sulfideData, pixel, 0)) continue;
         const x1 = Math.max(0, x - radius);
         const x2 = Math.min(width, x + radius + 1);
         const count = integral[y2 * stride + x2] - integral[y1 * stride + x2] - integral[y2 * stride + x1] + integral[y1 * stride + x1];
         const area = (x2 - x1) * windowH;
         const density = area > 0 ? count / area : 0;
         if (density >= minDensity) {
-          const outIndex = (pixelRow + x) * 4;
+          const outIndex = pixel * 4;
           const densityGain = Math.min(1, (density - minDensity) / Math.max(minDensity, 0.01));
           out[outIndex] = 236;
           out[outIndex + 1] = 72;
@@ -2693,6 +3061,8 @@ function clusterOverlayCanvasForCurrentSettings() {
     minDensityPercent: settings.minDensityPercent,
     opacityPercent: settings.opacityPercent,
     sourcePixels,
+    sulfideExcludedPixels,
+    nonSulfidePixels: imagePixels - sulfideExcludedPixels,
     highlightedPixels,
     imagePixels
   };
@@ -2704,6 +3074,170 @@ function drawClusterOverlay() {
   const overlay = clusterOverlayCanvasForCurrentSettings();
   if (!overlay) return;
   ctx.drawImage(overlay, 0, 0);
+}
+
+function invalidateModelHumanQa() {
+  state.modelHumanQa.key = null;
+  state.modelHumanQa.canvas = null;
+  state.modelHumanQa.stats = null;
+}
+
+function modelMaskAvailable() {
+  return Boolean(state.images.modelMask) && modelTalcCanvas.width === state.imageW && modelTalcCanvas.height === state.imageH;
+}
+
+function modelHumanQaEnabled() {
+  return Boolean(els.modelHumanToggle && els.modelHumanToggle.checked);
+}
+
+function humanAgreementQaEnabled() {
+  return Boolean(els.humanAgreementToggle && els.humanAgreementToggle.checked);
+}
+
+function modelHumanQaCanvasForCurrentState() {
+  if (!state.sample || (!modelHumanQaEnabled() && !humanAgreementQaEnabled())) {
+    state.modelHumanQa.stats = null;
+    return null;
+  }
+  const humanCount = (state.images.humanReviewMasks || []).length + 1;
+  const key = [
+    state.maskVersion,
+    state.imageW,
+    state.imageH,
+    modelHumanQaEnabled() ? 'model' : 'model-off',
+    humanAgreementQaEnabled() ? 'human' : 'human-off',
+    modelMaskAvailable() ? 'model-yes' : 'model-no',
+    humanCount
+  ].join(':');
+  if (state.modelHumanQa.key === key && state.modelHumanQa.canvas) return state.modelHumanQa.canvas;
+
+  const width = state.imageW;
+  const height = state.imageH;
+  const total = width * height;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const canvasCtx = canvas.getContext('2d', { willReadFrequently: true });
+  const imageData = canvasCtx.createImageData(width, height);
+  const out = imageData.data;
+  const humanData = talcNodeCtx.getImageData(0, 0, width, height).data;
+  const modelData = modelMaskAvailable() ? modelTalcCtx.getImageData(0, 0, width, height).data : null;
+  const sulfideData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
+  const teammateMasks = state.images.humanReviewMasks || [];
+  const teammateData = teammateMasks.map((canvasItem) => canvasItem.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, width, height).data);
+  const stats = {
+    model_available: Boolean(modelData),
+    human_mask_count: humanCount,
+    agreement: 0,
+    model_only: 0,
+    human_only: 0,
+    sulfide_conflict: 0,
+    human_agreement: 0,
+    human_disagreement: 0,
+    image_pixels: total
+  };
+
+  for (let pixel = 0; pixel < total; pixel += 1) {
+    const i = pixel * 4;
+    const humanActive = isMaskDataActive(humanData, pixel, 0);
+    const modelActive = modelData ? isMaskDataActive(modelData, pixel, 0) : false;
+    const sulfideActive = sulfideData ? isMaskDataActive(sulfideData, pixel, 0) : false;
+    let alpha = 0;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+
+    if (modelHumanQaEnabled() && modelData) {
+      if ((modelActive || humanActive) && sulfideActive) {
+        stats.sulfide_conflict += 1;
+        r = 239; g = 68; b = 68; alpha = 178;
+      } else if (modelActive && humanActive) {
+        stats.agreement += 1;
+        r = 34; g = 197; b = 94; alpha = 138;
+      } else if (modelActive) {
+        stats.model_only += 1;
+        r = 139; g = 92; b = 246; alpha = 150;
+      } else if (humanActive) {
+        stats.human_only += 1;
+        r = 6; g = 182; b = 212; alpha = 150;
+      }
+    }
+
+    if (humanAgreementQaEnabled() && humanCount > 1) {
+      let votes = humanActive ? 1 : 0;
+      for (const data of teammateData) {
+        if (isMaskDataActive(data, pixel, 0)) votes += 1;
+      }
+      if (votes > 0 && votes < humanCount) {
+        stats.human_disagreement += 1;
+        if (alpha === 0) {
+          r = 249; g = 115; b = 22; alpha = 150;
+        }
+      } else if (votes >= 2) {
+        stats.human_agreement += 1;
+        if (alpha === 0) {
+          r = 34; g = 197; b = 94; alpha = 118;
+        }
+      }
+    }
+
+    if (alpha > 0) {
+      out[i] = r;
+      out[i + 1] = g;
+      out[i + 2] = b;
+      out[i + 3] = alpha;
+    }
+  }
+
+  canvasCtx.putImageData(imageData, 0, 0);
+  state.modelHumanQa.key = key;
+  state.modelHumanQa.canvas = canvas;
+  state.modelHumanQa.stats = stats;
+  return canvas;
+}
+
+function updateModelHumanQaStats() {
+  if (!els.modelQaStats) return;
+  const enabled = modelHumanQaEnabled() || humanAgreementQaEnabled();
+  if (!state.sample || !enabled) {
+    els.modelQaStats.textContent = 'QA layers are off.';
+    return;
+  }
+  if (modelHumanQaEnabled() && !modelMaskAvailable()) {
+    els.modelQaStats.textContent = 'Model mask is not available for this sample.';
+    return;
+  }
+  if (humanAgreementQaEnabled() && (!state.images.humanReviewMasks || state.images.humanReviewMasks.length === 0)) {
+    els.modelQaStats.textContent = 'No teammate human masks are available for this sample.';
+    return;
+  }
+  const stats = state.modelHumanQa.stats;
+  if (!stats) {
+    els.modelQaStats.textContent = 'QA overlay will update after redraw.';
+    return;
+  }
+  const parts = [];
+  if (modelHumanQaEnabled() && stats.model_available) {
+    parts.push(`agreement ${formatPct(stats.agreement, stats.image_pixels)}`);
+    parts.push(`model only ${formatPct(stats.model_only, stats.image_pixels)}`);
+    parts.push(`human only ${formatPct(stats.human_only, stats.image_pixels)}`);
+    parts.push(`sulfide conflict ${formatPct(stats.sulfide_conflict, stats.image_pixels)}`);
+  }
+  if (humanAgreementQaEnabled() && stats.human_mask_count > 1) {
+    parts.push(`human agreement ${formatPct(stats.human_agreement, stats.image_pixels)}`);
+    parts.push(`human disagreement ${formatPct(stats.human_disagreement, stats.image_pixels)}`);
+  }
+  els.modelQaStats.textContent = parts.length ? parts.join(' · ') : 'QA layer has no comparable masks.';
+}
+
+function drawModelHumanQaOverlay() {
+  const overlay = modelHumanQaCanvasForCurrentState();
+  if (!overlay) {
+    updateModelHumanQaStats();
+    return;
+  }
+  ctx.drawImage(overlay, 0, 0);
+  updateModelHumanQaStats();
 }
 
 function draw() {
@@ -2733,6 +3267,8 @@ function draw() {
   if (els.layers.ignore.checked && state.staticTints.ignore) ctx.drawImage(state.staticTints.ignore, 0, 0);
   if (els.layers.current.checked) ctx.drawImage(currentTintCanvas, 0, 0);
   if (els.layers.talcNode.checked) ctx.drawImage(talcNodeTintCanvas, 0, 0);
+  if (els.layers.notTalc.checked) ctx.drawImage(notTalcTintCanvas, 0, 0);
+  drawModelHumanQaOverlay();
   drawClusterOverlay();
   drawSimilarTalcPreview();
   drawSam2ResultPreview();
@@ -2763,6 +3299,7 @@ function selectedUnavailableLayerMessages() {
   if (els.layers.ignore.checked && !state.staticTints.ignore) messages.push('Ignore/uncertain layer is not available.');
   if (els.layers.current.checked && !currentTintCanvas.width) messages.push('Positive bag layer is not available.');
   if (els.layers.talcNode.checked && !talcNodeTintCanvas.width) messages.push('Talc node layer is not available.');
+  if (els.layers.notTalc.checked && !notTalcTintCanvas.width) messages.push('Not Talc layer is not available.');
   return messages;
 }
 
@@ -2891,10 +3428,9 @@ function drawSimilarTalcPreview() {
   if (state.tool !== 'similar' || !state.similarTalcPreview.tint) return;
   ctx.save();
   ctx.drawImage(state.similarTalcPreview.tint, 0, 0);
-  const seed = state.similarTalcPreview.seed;
-  if (seed) {
+  const drawSeed = (seed, color, label) => {
     const radius = Math.max(10, 10 / state.zoom);
-    ctx.strokeStyle = '#ffc400';
+    ctx.strokeStyle = color;
     ctx.lineWidth = Math.max(2, 2 / state.zoom);
     ctx.setLineDash([Math.max(5, 5 / state.zoom), Math.max(4, 4 / state.zoom)]);
     ctx.beginPath();
@@ -2907,7 +3443,12 @@ function drawSimilarTalcPreview() {
     ctx.moveTo(seed.x, seed.y - radius * 0.55);
     ctx.lineTo(seed.x, seed.y + radius * 0.55);
     ctx.stroke();
-  }
+    ctx.fillStyle = color;
+    ctx.font = `${Math.max(11, 11 / state.zoom)}px sans-serif`;
+    ctx.fillText(label, seed.x + radius * 0.7, seed.y - radius * 0.7);
+  };
+  (state.similarTalcPreview.positiveSeeds || []).forEach((seed) => drawSeed(seed, '#ffc400', '+'));
+  (state.similarTalcPreview.negativeSeeds || []).forEach((seed) => drawSeed(seed, '#ef4444', '-'));
   ctx.restore();
 }
 
@@ -2960,13 +3501,13 @@ function drawBrushCursor() {
   ctx.save();
   ctx.beginPath();
   ctx.arc(state.hoverPoint.x, state.hoverPoint.y, radius, 0, Math.PI * 2);
-  ctx.fillStyle = targetClass === 'talc_node' ? 'rgba(255, 196, 0, 0.14)' : 'rgba(0, 163, 216, 0.10)';
+  ctx.fillStyle = targetClass === 'not_talc' ? 'rgba(220, 38, 38, 0.14)' : (targetClass === 'talc_node' ? 'rgba(255, 196, 0, 0.14)' : 'rgba(0, 163, 216, 0.10)');
   ctx.fill();
   ctx.lineWidth = Math.max(3, 3 / state.zoom);
   ctx.strokeStyle = 'rgba(15, 23, 42, 0.88)';
   ctx.stroke();
   ctx.lineWidth = Math.max(1.5, 1.5 / state.zoom);
-  ctx.strokeStyle = targetClass === 'talc_node' ? 'rgba(255, 196, 0, 0.96)' : 'rgba(255, 255, 255, 0.96)';
+  ctx.strokeStyle = targetClass === 'not_talc' ? 'rgba(248, 113, 113, 0.96)' : (targetClass === 'talc_node' ? 'rgba(255, 196, 0, 0.96)' : 'rgba(255, 255, 255, 0.96)');
   ctx.stroke();
   ctx.restore();
 }
@@ -3017,6 +3558,8 @@ function pushUndo() {
       base: baseMaskCanvas.toDataURL('image/png'),
       talcNode: talcNodeCanvas.toDataURL('image/png'),
       baseTalcNode: baseTalcNodeCanvas.toDataURL('image/png'),
+      notTalc: notTalcCanvas.toDataURL('image/png'),
+      baseNotTalc: baseNotTalcCanvas.toDataURL('image/png'),
       shapes: cloneShapes(),
       activeShapeId: state.activeShapeId,
       polygonPoints: state.polygon.points.map((p) => ({ x: p.x, y: p.y })),
@@ -3060,6 +3603,8 @@ async function undo() {
   }
   baseTalcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
   talcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
+  baseNotTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
+  notTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
   if (snapshot.baseTalcNode) {
     const baseNodeImg = await loadImage(snapshot.baseTalcNode);
     if (baseNodeImg) baseTalcNodeCtx.drawImage(baseNodeImg, 0, 0, state.imageW, state.imageH);
@@ -3069,6 +3614,16 @@ async function undo() {
     if (nodeImg) talcNodeCtx.drawImage(nodeImg, 0, 0, state.imageW, state.imageH);
   } else {
     talcNodeCtx.drawImage(baseTalcNodeCanvas, 0, 0, state.imageW, state.imageH);
+  }
+  if (snapshot.baseNotTalc) {
+    const baseNotTalcImg = await loadImage(snapshot.baseNotTalc);
+    if (baseNotTalcImg) baseNotTalcCtx.drawImage(baseNotTalcImg, 0, 0, state.imageW, state.imageH);
+  }
+  if (snapshot.notTalc) {
+    const notTalcImg = await loadImage(snapshot.notTalc);
+    if (notTalcImg) notTalcCtx.drawImage(notTalcImg, 0, 0, state.imageW, state.imageH);
+  } else {
+    notTalcCtx.drawImage(baseNotTalcCanvas, 0, 0, state.imageW, state.imageH);
   }
   if (snapshot.shapes) rebuildMaskFromBase({ recordProtection: false, reason: 'undo' });
   state.edits.push({ type: 'undo', at: new Date().toISOString() });
@@ -3093,12 +3648,37 @@ function clampSimilarStrictness() {
   return Math.max(1, Math.min(100, Math.round(raw)));
 }
 
+function lumaAtPixel(sourceData, pixelIndex) {
+  const i = pixelIndex * 4;
+  return 0.299 * sourceData[i] + 0.587 * sourceData[i + 1] + 0.114 * sourceData[i + 2];
+}
+
+function localTextureAtPixel(sourceData, pixelIndex) {
+  const width = state.imageW;
+  const height = state.imageH;
+  const x = pixelIndex % width;
+  const y = Math.floor(pixelIndex / width);
+  const center = lumaAtPixel(sourceData, pixelIndex);
+  let total = 0;
+  let count = 0;
+  for (let yy = Math.max(0, y - 1); yy <= Math.min(height - 1, y + 1); yy += 1) {
+    const row = yy * width;
+    for (let xx = Math.max(0, x - 1); xx <= Math.min(width - 1, x + 1); xx += 1) {
+      const neighbor = row + xx;
+      if (neighbor === pixelIndex) continue;
+      total += Math.abs(lumaAtPixel(sourceData, neighbor) - center);
+      count += 1;
+    }
+  }
+  return count > 0 ? total / count : 0;
+}
+
 function similarFeatureFromData(sourceData, pixelIndex) {
   const i = pixelIndex * 4;
   const r = sourceData[i];
   const g = sourceData[i + 1];
   const b = sourceData[i + 2];
-  return { r, g, b, luma: 0.299 * r + 0.587 * g + 0.114 * b };
+  return { r, g, b, luma: lumaAtPixel(sourceData, pixelIndex), texture: localTextureAtPixel(sourceData, pixelIndex) };
 }
 
 function pushSimilarFeature(samples, sourceData, pixelIndex) {
@@ -3110,7 +3690,8 @@ function similarFeatureDistanceToStats(item, stats) {
   const dg = item.g - stats.g;
   const db = item.b - stats.b;
   const lumaDelta = item.luma - stats.luma;
-  return Math.sqrt(dr * dr + dg * dg + db * db + lumaDelta * lumaDelta * 2.5);
+  const textureDelta = (item.texture || 0) - (stats.texture || 0);
+  return Math.sqrt(dr * dr + dg * dg + db * db + lumaDelta * lumaDelta * 2.5 + textureDelta * textureDelta * 3.5);
 }
 
 function collectSeedPatchSamples(seedX, seedY, sourceData, sulfideData) {
@@ -3178,7 +3759,7 @@ function collectSimilarSeedSamples(point, sourceData, currentData, sulfideData) 
     positiveBagKept = Math.min(512, bagSamples.length);
     if (positiveBagKept >= 24) {
       samples = patchSamples.concat(
-        bagSamples.slice(0, positiveBagKept).map((item) => ({ r: item.r, g: item.g, b: item.b, luma: item.luma }))
+        bagSamples.slice(0, positiveBagKept).map((item) => ({ r: item.r, g: item.g, b: item.b, luma: item.luma, texture: item.texture }))
       );
       sourceKind = 'seed patch + filtered positive bag';
     }
@@ -3201,19 +3782,23 @@ function similarStats(samples) {
     acc.g += item.g;
     acc.b += item.b;
     acc.luma += item.luma;
+    acc.texture += item.texture || 0;
     return acc;
-  }, { r: 0, g: 0, b: 0, luma: 0 });
+  }, { r: 0, g: 0, b: 0, luma: 0, texture: 0 });
   const count = samples.length;
   const mean = {
     r: sums.r / count,
     g: sums.g / count,
     b: sums.b / count,
-    luma: sums.luma / count
+    luma: sums.luma / count,
+    texture: sums.texture / count
   };
   let lumaVariance = 0;
   let colorVariance = 0;
+  let textureVariance = 0;
   for (const item of samples) {
     lumaVariance += (item.luma - mean.luma) * (item.luma - mean.luma);
+    textureVariance += ((item.texture || 0) - mean.texture) * ((item.texture || 0) - mean.texture);
     const dr = item.r - mean.r;
     const dg = item.g - mean.g;
     const db = item.b - mean.b;
@@ -3223,7 +3808,8 @@ function similarStats(samples) {
     ...mean,
     sampleCount: count,
     lumaStd: Math.sqrt(lumaVariance / count),
-    colorStd: Math.sqrt(colorVariance / count)
+    colorStd: Math.sqrt(colorVariance / count),
+    textureStd: Math.sqrt(textureVariance / count)
   };
 }
 
@@ -3271,8 +3857,68 @@ function binaryMaskCanvasFromArray(binary, width, height) {
   return canvas;
 }
 
-function computeSimilarTalcPreview(point) {
+function collectSimilarSamplesFromSeeds(points, sourceData, currentData, sulfideData) {
+  const allSamples = [];
+  const seedSummaries = [];
+  let sourceKind = 'positive seed patches';
+  let seedInCurrentMask = false;
+  let patchSampleCount = 0;
+  let positiveBagCandidates = 0;
+  let positiveBagKept = 0;
+  for (const point of points) {
+    const collected = collectSimilarSeedSamples(point, sourceData, currentData, sulfideData);
+    allSamples.push(...collected.samples);
+    seedSummaries.push(collected.seed);
+    seedInCurrentMask = seedInCurrentMask || collected.seedInCurrentMask;
+    patchSampleCount += collected.patchSampleCount;
+    positiveBagCandidates += collected.positiveBagCandidates;
+    positiveBagKept += collected.positiveBagKept;
+    if (collected.sourceKind === 'seed patch + filtered positive bag') sourceKind = 'seed patches + filtered positive bag';
+  }
+  return { samples: allSamples, seedSummaries, seedInCurrentMask, sourceKind, patchSampleCount, positiveBagCandidates, positiveBagKept };
+}
+
+function collectNegativeSeedSamples(points, sourceData, sulfideData) {
+  const samples = [];
+  for (const point of points) {
+    const seedX = Math.max(0, Math.min(state.imageW - 1, Math.floor(point.x)));
+    const seedY = Math.max(0, Math.min(state.imageH - 1, Math.floor(point.y)));
+    samples.push(...collectSeedPatchSamples(seedX, seedY, sourceData, sulfideData));
+  }
+  return samples;
+}
+
+function collectNotTalcMaskSamples(sourceData, notTalcData, sulfideData) {
+  if (!notTalcData) return [];
+  const samples = [];
+  const total = state.imageW * state.imageH;
+  const stride = Math.max(1, Math.floor(total / 1500));
+  for (let pixel = 0; pixel < total; pixel += stride) {
+    if (!isMaskDataActive(notTalcData, pixel, 0)) continue;
+    if (sulfideData && isMaskDataActive(sulfideData, pixel, 0)) continue;
+    samples.push(similarFeatureFromData(sourceData, pixel));
+    if (samples.length >= 1500) break;
+  }
+  return samples;
+}
+
+function addSimilarSeed(point, mode = state.similarTalcPreview.seedMode) {
+  const seed = {
+    x: Math.max(0, Math.min(state.imageW - 1, Math.floor(point.x))),
+    y: Math.max(0, Math.min(state.imageH - 1, Math.floor(point.y)))
+  };
+  if (mode === 'negative') {
+    state.similarTalcPreview.negativeSeeds.push(seed);
+  } else {
+    state.similarTalcPreview.positiveSeeds.push(seed);
+  }
+  state.similarTalcPreview.seed = seed;
+  return seed;
+}
+
+function computeSimilarTalcPreview(point = null) {
   if (!state.sampleId || !state.sample || !state.sample.editable) return;
+  if (point) addSimilarSeed(point);
   const source = sourceImageForSimilarTalc();
   if (!source) {
     setStatus('Similar needs an original or annotated image for intensity matching.', true);
@@ -3288,33 +3934,48 @@ function computeSimilarTalcPreview(point) {
   const sourceData = similarSourceCtx.getImageData(0, 0, width, height).data;
   const currentData = maskCtx.getImageData(0, 0, width, height).data;
   const talcNodeData = talcNodeCtx.getImageData(0, 0, width, height).data;
+  const notTalcData = notTalcCtx.getImageData(0, 0, width, height).data;
   const sulfideData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
+  const positiveSeeds = state.similarTalcPreview.positiveSeeds || [];
+  const negativeSeeds = state.similarTalcPreview.negativeSeeds || [];
+  if (!positiveSeeds.length) {
+    clearSimilarTalcPreview({ redraw: true, clearSeeds: false });
+    setStatus('Similar needs at least one + seed. Select + seed and click confirmed talc.', true);
+    return;
+  }
   const {
     samples,
-    seed,
+    seedSummaries,
     seedInCurrentMask,
     sourceKind,
     patchSampleCount,
     positiveBagCandidates,
     positiveBagKept
-  } = collectSimilarSeedSamples(point, sourceData, currentData, sulfideData);
+  } = collectSimilarSamplesFromSeeds(positiveSeeds, sourceData, currentData, sulfideData);
   const stats = similarStats(samples);
   if (!stats) {
-    clearSimilarTalcPreview({ redraw: true });
+    clearSimilarTalcPreview({ redraw: true, clearSeeds: false });
     setStatus('Similar could not sample non-sulfide pixels at this point.', true);
     return;
   }
+  const explicitNegativeSamples = collectNegativeSeedSamples(negativeSeeds, sourceData, sulfideData);
+  const notTalcNegativeSamples = collectNotTalcMaskSamples(sourceData, notTalcData, sulfideData);
+  const negativeSamples = explicitNegativeSamples.concat(notTalcNegativeSamples);
+  const negativeStats = negativeSamples.length ? similarStats(negativeSamples) : null;
 
   const strictness = clampSimilarStrictness();
   const strictnessLooseness = (100 - strictness) / 99;
   const lumaTolerance = Math.max(4, 5 + strictnessLooseness * 38 + stats.lumaStd * (0.45 + strictnessLooseness * 0.55));
   const colorTolerance = Math.max(12, 14 + strictnessLooseness * 86 + stats.colorStd * (0.25 + strictnessLooseness * 0.35));
+  const textureTolerance = Math.max(3, 4 + strictnessLooseness * 28 + (stats.textureStd || 0) * (0.55 + strictnessLooseness * 0.65));
   const lumaMin = Math.max(0, stats.luma - lumaTolerance * 1.35);
   const lumaMax = Math.min(150, stats.luma + lumaTolerance);
   const candidate = new Uint8Array(total);
   let rawPixels = 0;
   let excludedSulfidePixels = 0;
   let excludedExistingTalcPixels = 0;
+  let excludedNotTalcPixels = 0;
+  let excludedNegativeSeedPixels = 0;
   for (let pixel = 0; pixel < total; pixel += 1) {
     if (sulfideData && isMaskDataActive(sulfideData, pixel, 0)) {
       excludedSulfidePixels += 1;
@@ -3324,59 +3985,79 @@ function computeSimilarTalcPreview(point) {
       excludedExistingTalcPixels += 1;
       continue;
     }
+    if (isMaskDataActive(notTalcData, pixel, 0)) {
+      excludedNotTalcPixels += 1;
+      continue;
+    }
     const i = pixel * 4;
-    const r = sourceData[i];
-    const g = sourceData[i + 1];
-    const b = sourceData[i + 2];
-    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    if (luma < lumaMin || luma > lumaMax) continue;
-    const dr = r - stats.r;
-    const dg = g - stats.g;
-    const db = b - stats.b;
+    const item = similarFeatureFromData(sourceData, pixel);
+    if (item.luma < lumaMin || item.luma > lumaMax) continue;
+    const dr = item.r - stats.r;
+    const dg = item.g - stats.g;
+    const db = item.b - stats.b;
     const colorDistance = Math.sqrt(dr * dr + dg * dg + db * db);
     if (colorDistance > colorTolerance) continue;
+    if (Math.abs((item.texture || 0) - (stats.texture || 0)) > textureTolerance) continue;
+    if (negativeStats) {
+      const positiveDistance = similarFeatureDistanceToStats(item, stats);
+      const negativeDistance = similarFeatureDistanceToStats(item, negativeStats);
+      if (negativeDistance <= positiveDistance * 1.08 || negativeDistance < Math.max(10, colorTolerance * 0.45)) {
+        excludedNegativeSeedPixels += 1;
+        continue;
+      }
+    }
     candidate[pixel] = 1;
     rawPixels += 1;
   }
   const cleaned = cleanupSimilarTalcCandidates(candidate, width, height);
   const fraction = total > 0 ? cleaned.kept / total : 0;
   if (cleaned.kept === 0) {
-    clearSimilarTalcPreview({ redraw: true });
-    setStatus('Similar found no similar non-sulfide pixels. Lower Strictness or click a clearer talc grain.', true);
+    clearSimilarTalcPreview({ redraw: true, clearSeeds: false });
+    setStatus('Similar found no similar non-sulfide pixels. Lower Strictness, add another + seed, or remove overly broad - seeds.', true);
     return;
   }
   if (fraction > MAX_SIMILAR_TALC_REGION_FRACTION) {
-    clearSimilarTalcPreview({ redraw: true });
-    setStatus(`Similar preview covers ${Math.round(fraction * 100)}% of the image; raise Strictness or click a more specific talc grain.`, true);
+    clearSimilarTalcPreview({ redraw: true, clearSeeds: false });
+    setStatus(`Similar preview covers ${Math.round(fraction * 100)}% of the image; raise Strictness, add - seeds, or click a more specific talc grain.`, true);
     return;
   }
 
   const maskPreview = binaryMaskCanvasFromArray(cleaned.cleaned, width, height);
   state.similarTalcPreview.maskCanvas = maskPreview;
   state.similarTalcPreview.tint = buildTintFromCanvas(maskPreview, [255, 196, 0, 118]);
-  state.similarTalcPreview.seed = seed;
+  state.similarTalcPreview.seed = seedSummaries[seedSummaries.length - 1] || null;
   state.similarTalcPreview.stats = {
     strictness,
-    seed,
+    seed: state.similarTalcPreview.seed,
+    positive_seeds: seedSummaries,
+    negative_seeds: negativeSeeds,
     seed_in_current_mask: seedInCurrentMask,
     source_kind: sourceKind,
     sample_count: stats.sampleCount,
+    negative_sample_count: negativeSamples.length,
+    negative_seed_count: negativeSeeds.length,
+    not_talc_negative_samples: notTalcNegativeSamples.length,
     seed_patch_samples: patchSampleCount,
     positive_bag_candidates: positiveBagCandidates,
     positive_bag_kept: positiveBagKept,
     seed_luma: Number(stats.luma.toFixed(2)),
+    seed_texture: Number((stats.texture || 0).toFixed(2)),
     luma_tolerance: Number(lumaTolerance.toFixed(2)),
     color_tolerance: Number(colorTolerance.toFixed(2)),
+    texture_tolerance: Number(textureTolerance.toFixed(2)),
     raw_pixels: rawPixels,
     preview_pixels: cleaned.kept,
     preview_fraction: fraction,
     excluded_sulfide_pixels: excludedSulfidePixels,
-    excluded_existing_talc_pixels: excludedExistingTalcPixels
+    excluded_existing_talc_pixels: excludedExistingTalcPixels,
+    excluded_not_talc_pixels: excludedNotTalcPixels,
+    excluded_negative_seed_pixels: excludedNegativeSeedPixels
   };
   updateSimilarTalcApplyButton();
   draw();
-  const sourceLabel = sourceKind === 'seed patch + filtered positive bag' ? 'filtered positive bag' : 'seed patch';
-  setStatus(`Similar preview: ${formatInt(cleaned.kept)} px from ${sourceLabel}; Strictness ${strictness}. Press Apply Similar or Save to add talc nodes.`);
+  const sourceLabel = sourceKind === 'seed patches + filtered positive bag' ? 'filtered positive bag' : 'seed patches';
+  const negativeText = negativeSamples.length ? `; ${negativeSeeds.length} - seeds + ${formatInt(notTalcNegativeSamples.length)} Not Talc samples` : '';
+  setStatus(`Similar preview: ${formatInt(cleaned.kept)} px from ${positiveSeeds.length} + seed(s), ${sourceLabel}${negativeText}; Strictness ${strictness}. Press Apply Similar or Save to add talc nodes.`);
 }
 
 async function applySimilarTalcPreview(options = {}) {
@@ -3420,10 +4101,14 @@ async function applySimilarTalcPreview(options = {}) {
     source_tool: 'similar_talc',
     target_class: 'talc_node',
     seed: preview.seed,
+    positive_seeds: preview.stats ? preview.stats.positive_seeds : [],
+    negative_seeds: preview.stats ? preview.stats.negative_seeds : [],
     strictness: preview.stats ? preview.stats.strictness : clampSimilarStrictness(),
     source_kind: preview.stats ? preview.stats.source_kind : null,
     seed_luma: preview.stats ? preview.stats.seed_luma : null,
+    seed_texture: preview.stats ? preview.stats.seed_texture : null,
     sample_count: preview.stats ? preview.stats.sample_count : null,
+    negative_sample_count: preview.stats ? preview.stats.negative_sample_count : null,
     preview_pixels: previewPixels,
     overlapping_positive_bag_pixels: overlappingPositiveBagPixels,
     added_pixels: newPixels,
@@ -3475,7 +4160,7 @@ async function fillAtPoint(point) {
   const sulfideBoundaryData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
   const boundaryLabels = [];
   if (state.fillBoundaryLoaded) boundaryLabels.push('blue_lines');
-  boundaryLabels.push(targetClass === 'talc_node' ? 'current_talc_node_regions' : 'current_positive_bag_regions');
+  boundaryLabels.push(`current_${targetClass}_regions`);
   if (sulfideBoundaryData) boundaryLabels.push('sulfide_pixels');
   boundaryLabels.push('screen_edges');
   const blocked = (pixel) => (
@@ -3592,6 +4277,12 @@ function commitShapeChange(kind, edit, options = {}) {
   autosave(kind, message).catch((err) => setStatus(`Autosave failed: ${err.message}`, true));
 }
 
+function classEditType(targetClass, baseType) {
+  if (targetClass === 'talc_node') return `${baseType}_talc_node`;
+  if (targetClass === 'not_talc') return `${baseType}_not_talc`;
+  return `${baseType}_positive_bag`;
+}
+
 function addPolygonShape(points) {
   if (points.length < 3) return false;
   const targetClass = activeEditClass();
@@ -3606,7 +4297,7 @@ function addPolygonShape(points) {
   state.activeShapeId = shape.id;
   state.polygon.points = [];
   commitShapeChange('polygon', {
-    type: targetClass === 'talc_node' ? 'polygon_add_talc_node' : 'polygon_add_positive_bag',
+    type: classEditType(targetClass, 'polygon_add'),
     target_class: targetClass,
     shape_id: shape.id,
     points: shape.points.map((p) => [Math.round(p.x), Math.round(p.y)]),
@@ -3634,7 +4325,7 @@ function addRectangleShape(rect) {
   state.activeShapeId = shape.id;
   state.rect.active = false;
   commitShapeChange('rectangle', {
-    type: targetClass === 'talc_node' ? 'rectangle_add_talc_node' : 'rectangle_add_positive_bag',
+    type: classEditType(targetClass, 'rectangle_add'),
     target_class: targetClass,
     shape_id: shape.id,
     x1: Math.round(r.x1),
@@ -3687,6 +4378,7 @@ async function autosave(reason, message) {
       mask_png: combined.toDataURL('image/png'),
       positive_bag_mask_png: maskCanvas.toDataURL('image/png'),
       talc_node_mask_png: talcNodeCanvas.toDataURL('image/png'),
+      not_talc_mask_png: notTalcCanvas.toDataURL('image/png'),
       edits: state.edits,
       reason,
       view_settings: viewSettingsPayload()
@@ -3720,7 +4412,8 @@ async function subtractSulfidesFromMask() {
   const flattened = flattenShapesToBase(false);
   const removedPositiveBag = removeSulfidePixelsFromCanvas(baseMaskCtx);
   const removedTalcNode = removeSulfidePixelsFromCanvas(baseTalcNodeCtx);
-  const removed = removedPositiveBag + removedTalcNode;
+  const removedNotTalc = removeSulfidePixelsFromCanvas(baseNotTalcCtx);
+  const removed = removedPositiveBag + removedTalcNode + removedNotTalc;
   if (removed === 0) {
     state.undoStack.pop();
     rebuildMaskFromBase({ recordProtection: false, reason: 'subtract_sulfides' });
@@ -3735,6 +4428,7 @@ async function subtractSulfidesFromMask() {
     removed_pixels: removed,
     removed_positive_bag_pixels: removedPositiveBag,
     removed_talc_node_pixels: removedTalcNode,
+    removed_not_talc_pixels: removedNotTalc,
     at: new Date().toISOString()
   });
   markLocalDirty();
@@ -3757,6 +4451,7 @@ async function saveReview(moveNext) {
     mask_png: combined.toDataURL('image/png'),
     positive_bag_mask_png: maskCanvas.toDataURL('image/png'),
     talc_node_mask_png: talcNodeCanvas.toDataURL('image/png'),
+    not_talc_mask_png: notTalcCanvas.toDataURL('image/png'),
     edits: state.edits,
     reviewer: els.reviewerInput.value.trim(),
     notes: els.notesInput.value.trim(),
@@ -4565,10 +5260,12 @@ els.brushSize.addEventListener('input', () => {
 });
 els.similarStrictness.addEventListener('input', () => {
   updateSimilarStrictnessUi();
-  if (state.tool === 'similar' && state.similarTalcPreview.seed) {
-    computeSimilarTalcPreview(state.similarTalcPreview.seed);
+  if (state.tool === 'similar' && state.similarTalcPreview.positiveSeeds.length) {
+    computeSimilarTalcPreview();
   }
 });
+els.similarPositiveSeedBtn.addEventListener('click', () => setSimilarSeedMode('positive'));
+els.similarNegativeSeedBtn.addEventListener('click', () => setSimilarSeedMode('negative'));
 els.similarApplyBtn.addEventListener('click', () => {
   applySimilarTalcPreview().catch((err) => setStatus(`Similar apply failed: ${err.message}`, true));
 });
@@ -4607,6 +5304,16 @@ if (els.clusterLayerToggle) {
   control.addEventListener('change', () => {
     invalidateClusterOverlay();
     updateClusterOverlayUi(true);
+    drawWithAvailabilityStatus();
+  });
+});
+[
+  els.modelHumanToggle,
+  els.humanAgreementToggle
+].forEach((control) => {
+  if (!control) return;
+  control.addEventListener('change', () => {
+    invalidateModelHumanQa();
     drawWithAvailabilityStatus();
   });
 });
@@ -4705,14 +5412,22 @@ async function loadSample(sampleId, options = {}) {
   talcNodeCanvas.height = state.imageH;
   baseTalcNodeCanvas.width = state.imageW;
   baseTalcNodeCanvas.height = state.imageH;
+  notTalcCanvas.width = state.imageW;
+  notTalcCanvas.height = state.imageH;
+  baseNotTalcCanvas.width = state.imageW;
+  baseNotTalcCanvas.height = state.imageH;
   currentTintCanvas.width = state.imageW;
   currentTintCanvas.height = state.imageH;
   talcNodeTintCanvas.width = state.imageW;
   talcNodeTintCanvas.height = state.imageH;
+  notTalcTintCanvas.width = state.imageW;
+  notTalcTintCanvas.height = state.imageH;
+  modelTalcCanvas.width = state.imageW;
+  modelTalcCanvas.height = state.imageH;
 
   const urls = state.sample.urls;
   const [
-    original, annotated, qa, currentMask, positiveBagMask, talcNodeMask, autoMask, rawLines, closedLines, overlapMask, ignoreMask, sulfideMask
+    original, annotated, qa, currentMask, positiveBagMask, talcNodeMask, notTalcMask, autoMask, rawLines, closedLines, overlapMask, ignoreMask, sulfideMask, modelMask
   ] = await Promise.all([
     loadImage(urls.original, urls.original ? 'Original photo' : null),
     loadImage(urls.annotated || urls.source_copy, (urls.annotated || urls.source_copy) ? 'MS Paint annotation' : null),
@@ -4720,26 +5435,41 @@ async function loadSample(sampleId, options = {}) {
     loadImage(urls.current_mask, urls.current_mask ? 'Current working mask' : null),
     loadImage(urls.current_positive_bag_mask || urls.current_mask, (urls.current_positive_bag_mask || urls.current_mask) ? 'Positive bag mask' : null),
     loadImage(urls.current_talc_node_mask, urls.current_talc_node_mask ? 'Talc node mask' : null),
+    loadImage(urls.current_not_talc_mask, urls.current_not_talc_mask ? 'Not Talc mask' : null),
     loadImage(urls.autodetected_mask, urls.autodetected_mask ? 'Autodetected mask' : null),
     loadImage(urls.raw_blue_stroke, urls.raw_blue_stroke ? 'Original blue lines' : null),
     loadImage(urls.closed_blue_stroke, urls.closed_blue_stroke ? 'Closed blue line boundary' : null),
     loadImage(urls.sulfide_overlap, urls.sulfide_overlap ? 'Sulfide overlap mask' : null),
     loadImage(urls.ignore_mask, urls.ignore_mask ? 'Ignore/uncertain mask' : null),
-    loadImage(urls.sulfide_mask, urls.sulfide_mask ? 'Sulfide mask' : null)
+    loadImage(urls.sulfide_mask, urls.sulfide_mask ? 'Sulfide mask' : null),
+    loadImage(urls.model_talc_mask, urls.model_talc_mask ? 'Model talc mask' : null)
   ]);
+  const humanReviewEntries = Array.isArray(urls.human_review_masks) ? urls.human_review_masks : [];
+  const humanReviewLoaded = await Promise.all(
+    humanReviewEntries.map(async (entry) => {
+      const img = await loadImage(entry.url, entry.url ? `Human mask ${entry.label || ''}` : null);
+      if (!img) return null;
+      const canvas = document.createElement('canvas');
+      canvas.width = state.imageW;
+      canvas.height = state.imageH;
+      canvas.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0, state.imageW, state.imageH);
+      return { label: entry.label || 'human', canvas };
+    })
+  );
   if (!currentMask) {
     state.assetErrors.push('Current working mask is unavailable; edits are disabled until it loads');
     state.sample.editable = false;
   }
   if (!original && !annotated) state.assetErrors.push('No display image is available for this sample');
   renderAssetWarnings();
-  state.images = { original, annotated, qa, sulfideMask };
   prepareFillBoundaries(rawLines, closedLines);
   resetBrightnessPreviewCache();
   baseMaskCtx.clearRect(0, 0, state.imageW, state.imageH);
   maskCtx.clearRect(0, 0, state.imageW, state.imageH);
   baseTalcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
   talcNodeCtx.clearRect(0, 0, state.imageW, state.imageH);
+  baseNotTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
+  notTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
   if (positiveBagMask || currentMask) {
     const positiveSource = positiveBagMask || currentMask;
     baseMaskCtx.drawImage(positiveSource, 0, 0, state.imageW, state.imageH);
@@ -4749,19 +5479,27 @@ async function loadSample(sampleId, options = {}) {
     baseTalcNodeCtx.drawImage(talcNodeMask, 0, 0, state.imageW, state.imageH);
     talcNodeCtx.drawImage(talcNodeMask, 0, 0, state.imageW, state.imageH);
   }
+  if (notTalcMask) {
+    baseNotTalcCtx.drawImage(notTalcMask, 0, 0, state.imageW, state.imageH);
+    notTalcCtx.drawImage(notTalcMask, 0, 0, state.imageW, state.imageH);
+  }
   sulfideGuardCanvas.width = state.imageW;
   sulfideGuardCanvas.height = state.imageH;
   sulfideGuardCtx.clearRect(0, 0, state.imageW, state.imageH);
   state.sulfideGuardLoaded = Boolean(sulfideMask);
   if (sulfideMask) sulfideGuardCtx.drawImage(sulfideMask, 0, 0, state.imageW, state.imageH);
+  modelTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
+  if (modelMask) modelTalcCtx.drawImage(modelMask, 0, 0, state.imageW, state.imageH);
   state.staticTints = {
     auto: buildTintFromImage(autoMask, [47, 120, 255, 90]),
     lines: buildTintFromImage(rawLines, [20, 40, 255, 170]),
     overlap: buildTintFromImage(overlapMask, [255, 85, 30, 140]),
     ignore: buildTintFromImage(ignoreMask, [255, 214, 10, 110])
   };
+  state.images = { original, annotated, qa, sulfideMask, modelMask, humanReviewMasks: humanReviewLoaded.filter(Boolean).map((item) => item.canvas), humanReviewLabels: humanReviewLoaded.filter(Boolean).map((item) => item.label) };
   state.shapes = [];
   syncTalcNodeLayer({ reason: 'load_sample' });
+  enforceNotTalcExclusion(false, 'load_sample');
   refreshCurrentTint();
   state.undoStack = [];
   state.edits = [];
@@ -4805,6 +5543,7 @@ applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || 'system', false);
 setBrightnessThreshold(localStorage.getItem(BRIGHTNESS_THRESHOLD_STORAGE_KEY) || 255, false);
 loadClusterOverlaySettings();
 updateSimilarStrictnessUi();
+setSimilarSeedMode('positive');
 updateToolParams();
 
 loadManifest(true).catch((err) => {
@@ -4822,6 +5561,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--conversion-dir", type=Path, default=None, help="Prepared conversion workspace containing manifest.json.")
     parser.add_argument("--sulfide-mask-dir", type=Path, default=None, help="Optional sulfide masks by image stem for conversion.")
     parser.add_argument("--silicate-mask-dir", type=Path, default=None, help="Optional silicate support masks by image stem for conversion.")
+    parser.add_argument("--talc-model-mask-dir", type=Path, default=None, help="Optional trained talc model prediction masks for model-vs-human QA.")
+    parser.add_argument(
+        "--human-review-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help="Optional teammate talc-review workspace/folder; may be repeated for multi-human agreement QA.",
+    )
     parser.add_argument("--reconvert", action="store_true", help="Regenerate conversion workspace before starting.")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of converted samples for debugging.")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
@@ -4851,6 +5598,8 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             sam2_model_id=args.sam2_model_id,
             sam2_device=args.sam2_device,
+            talc_model_mask_dir=args.talc_model_mask_dir,
+            human_review_dirs=args.human_review_dir,
         )
     except ApiError as exc:
         print(f"error: {exc.message}", file=sys.stderr)

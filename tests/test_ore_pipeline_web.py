@@ -13,6 +13,7 @@ import threading
 import time
 import unittest
 import zipfile
+from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
 
@@ -36,6 +37,7 @@ from apps.ore_pipeline_web import (  # noqa: E402
     load_font,
     normalize_talc_clusterization_payload,
     render_html_page,
+    summary_from_final_edit,
     text_width,
     wrap_text_lines,
 )
@@ -80,6 +82,84 @@ class OrePipelineWebTest(unittest.TestCase):
         # test can only touch its own (soon-discarded) directory; ignore_errors
         # keeps a live write from failing the cleanup.
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def assertInvalidStoreId(self, callback) -> None:  # noqa: N802 - unittest helper style.
+        with self.assertRaises(ApiError) as raised:
+            callback()
+        self.assertEqual(raised.exception.status, HTTPStatus.BAD_REQUEST)
+        self.assertIn("invalid", raised.exception.message)
+
+    def test_run_and_upload_ids_reject_path_traversal(self) -> None:
+        escaped_run_dir = self.store.workspace_dir / "escaped_run"
+        escaped_run_dir.mkdir(parents=True)
+        escaped_run = {
+            "schema_version": "ore-pipeline-run-v0.1",
+            "run_id": "escaped_run",
+            "status": "prepared",
+            "display": {},
+            "summary": {},
+            "input": {"upload_id": "escaped_upload"},
+            "image": {"width": 1, "height": 1},
+        }
+        (escaped_run_dir / "run.json").write_text(json.dumps(escaped_run), encoding="utf-8")
+        escaped_upload_dir = self.store.workspace_dir / "escaped_upload"
+        escaped_upload_dir.mkdir(parents=True)
+        (escaped_upload_dir / "upload.json").write_text(
+            json.dumps({"schema_version": "ore-pipeline-upload-v0.1", "upload_id": "escaped_upload", "display": {}}),
+            encoding="utf-8",
+        )
+
+        bad_run_id = "../escaped_run"
+        self.assertInvalidStoreId(lambda: self.store.run_payload(bad_run_id))
+        self.assertInvalidStoreId(lambda: self.store.cancel_run(bad_run_id))
+        self.assertInvalidStoreId(lambda: self.store.metrics_csv_path(bad_run_id))
+        self.assertInvalidStoreId(lambda: self.store.start_prepared_run(bad_run_id, run_async=False))
+        self.assertInvalidStoreId(
+            lambda: self.store.prepare_run_from_apply(
+                bad_run_id,
+                {"preprocessing_enabled": True},
+                changed_step="preprocess",
+            )
+        )
+        self.assertInvalidStoreId(lambda: self.store.create_edit_run(bad_run_id, {"edit_layer": "final", "mask_png": ""}))
+
+        bad_upload_id = "../escaped_upload"
+        self.assertInvalidStoreId(lambda: self.store.upload_payload(bad_upload_id))
+        self.assertInvalidStoreId(lambda: self.store.prepare_upload(bad_upload_id, {"preprocessing_enabled": True}))
+        self.assertInvalidStoreId(lambda: self.store.save_upload_artifact_mask(bad_upload_id, {"mask_png": ""}))
+        self.assertInvalidStoreId(lambda: self.store.start_run(bad_upload_id, {"preprocessing_enabled": True}, run_async=False))
+
+        persisted_run = json.loads((escaped_run_dir / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted_run["status"], "prepared")
+
+    def test_http_run_and_upload_ids_reject_encoded_path_traversal(self) -> None:
+        (self.store.workspace_dir / "escaped_run").mkdir(parents=True)
+        (self.store.workspace_dir / "escaped_run" / "run.json").write_text(
+            json.dumps({"schema_version": "ore-pipeline-run-v0.1", "run_id": "escaped_run", "status": "prepared"}),
+            encoding="utf-8",
+        )
+        (self.store.workspace_dir / "escaped_upload").mkdir(parents=True)
+        (self.store.workspace_dir / "escaped_upload" / "upload.json").write_text(
+            json.dumps({"schema_version": "ore-pipeline-upload-v0.1", "upload_id": "escaped_upload", "display": {}}),
+            encoding="utf-8",
+        )
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            for path in ("/api/runs/..%2Fescaped_run", "/api/uploads/..%2Fescaped_upload"):
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request("GET", path)
+                response = connection.getresponse()
+                payload = json.loads(response.read().decode("utf-8"))
+                connection.close()
+                self.assertEqual(response.status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("invalid", payload["error"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_pdf_report_wraps_long_russian_conclusion_text(self) -> None:
         page = Image.new("RGB", (1240, 1754), "white")
@@ -144,6 +224,58 @@ class OrePipelineWebTest(unittest.TestCase):
         )
         self.assertEqual(int((no_cluster > 0).sum()), 0)
         self.assertEqual(no_stats["area_px"], 0)
+
+        sulfide_exclusion = np.zeros((7, 7), dtype=np.uint8)
+        sulfide_exclusion[2, 2] = 255
+        clipped_cluster, clipped_stats = compute_talc_cluster_mask(
+            talc,
+            analyzed,
+            {"radius_px": 1, "min_local_talc_percent": 10, "opacity_percent": 55},
+            exclude_mask=sulfide_exclusion,
+        )
+        self.assertEqual(int((clipped_cluster > 0).sum()), 8)
+        self.assertEqual(int(clipped_cluster[2, 2]), 0)
+        self.assertEqual(clipped_stats["excluded_area_px"], 1)
+        self.assertEqual(clipped_stats["analysis_area_px"], 48)
+        self.assertAlmostEqual(clipped_stats["fraction"], 8 / 48)
+
+    def test_talc_cluster_outputs_do_not_overlap_sulfides(self) -> None:
+        run_dir = self.store.runs_dir / "run_talc_cluster_exclusion"
+        (run_dir / "input").mkdir(parents=True)
+        image = Image.new("RGB", (7, 7), (38, 48, 42))
+        image.save(run_dir / "input/original_for_analysis.png")
+        image.save(run_dir / "input/preprocessed.png")
+        sulfide_mask = np.zeros((7, 7), dtype=np.uint8)
+        sulfide_mask[2, 2] = 255
+        talc_mask = np.zeros((7, 7), dtype=np.uint8)
+        talc_mask[3, 3] = 255
+        analyzed_mask = np.ones((7, 7), dtype=np.uint8) * 255
+        final_mask = np.zeros((7, 7), dtype=np.uint8)
+        final_mask[2, 2] = 1
+        final_mask[3, 3] = 3
+
+        self.store._write_run_outputs(
+            run_dir=run_dir,
+            summary=summary_from_final_edit(sulfide_mask, final_mask, analyzed_mask),
+            components=[],
+            sulfide_mask=sulfide_mask,
+            talc_mask=talc_mask,
+            analyzed_mask=analyzed_mask,
+            final_mask=final_mask,
+            talc_clusterization={"radius_px": 1, "min_local_talc_percent": 10, "opacity_percent": 55},
+        )
+
+        persisted_sulfide = np.asarray(Image.open(run_dir / "masks/sulfide_mask.png").convert("L"))
+        cluster = np.asarray(Image.open(run_dir / "masks/talc_cluster_mask.png").convert("L")).copy()
+        self.assertFalse(np.any((cluster > 0) & (persisted_sulfide > 0)))
+        persisted_summary = json.loads((run_dir / "reports/ore_summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted_summary["talc_cluster_area_px"], 8)
+
+        cluster[2, 2] = 255
+        Image.fromarray(cluster, mode="L").save(run_dir / "masks/talc_cluster_mask.png")
+        self.store._build_display_layers(run_dir)
+        repaired = np.asarray(Image.open(run_dir / "masks/talc_cluster_mask.png").convert("L"))
+        self.assertFalse(np.any((repaired > 0) & (persisted_sulfide > 0)))
 
     def test_talc_clusterization_normalization_accepts_ui_aliases(self) -> None:
         normalized = normalize_talc_clusterization_payload(
@@ -382,6 +514,47 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertIn("attachment", disposition)
             with zipfile.ZipFile(io.BytesIO(body)) as archive:
                 self.assertIn("run.json", archive.namelist())
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_file_downloads_stream_without_reading_entire_file(self) -> None:
+        artifact_body = b"streamed artifact body" * 4096
+        artifact_path = self.root / "streamed.bin"
+        artifact_path.write_bytes(artifact_body)
+        self.store.artifacts["stream-test"] = artifact_path
+        upload = self.store.register_upload_from_path(self.image_path)
+        preprocessed = self.store.prepare_upload(upload["upload_id"], {"preprocessing_enabled": True, "panorama_scaling": True})
+        run = self.store.start_run(upload["upload_id"], preprocessed["preprocess"]["preset"], run_async=False)
+        zip_path = self.store.run_zip_path(run["run_id"])
+
+        server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        try:
+            with mock.patch("pathlib.Path.read_bytes", side_effect=AssertionError("send_file must stream")):
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request("GET", "/artifacts/stream-test/streamed.bin")
+                response = connection.getresponse()
+                body = response.read()
+                content_length = response.getheader("Content-Length")
+                connection.close()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(content_length, str(len(artifact_body)))
+                self.assertEqual(body, artifact_body)
+
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request("GET", f"/api/runs/{run['run_id']}/artifacts.zip")
+                response = connection.getresponse()
+                zip_body = response.read()
+                content_length = response.getheader("Content-Length")
+                connection.close()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(content_length, str(zip_path.stat().st_size))
+                with zipfile.ZipFile(io.BytesIO(zip_body)) as archive:
+                    self.assertIn("run.json", archive.namelist())
         finally:
             server.shutdown()
             server.server_close()

@@ -23,4 +23,20 @@ if [ -n "${ORE_UI_CHECKPOINT:-}" ]; then
   set -- "$@" --checkpoint "$ORE_UI_CHECKPOINT"
 fi
 
+if [ -n "${ORE_UI_TALC_BACKEND:-}" ]; then
+  set -- "$@" --talc-backend "$ORE_UI_TALC_BACKEND"
+fi
+
+if [ -n "${ORE_UI_TALC_CHECKPOINT:-}" ]; then
+  set -- "$@" --talc-checkpoint "$ORE_UI_TALC_CHECKPOINT"
+fi
+
+if [ -n "${ORE_UI_TALC_THRESHOLD:-}" ]; then
+  set -- "$@" --talc-threshold "$ORE_UI_TALC_THRESHOLD"
+fi
+
+if [ -n "${ORE_UI_GRADE_CHECKPOINT:-}" ]; then
+  set -- "$@" --grade-checkpoint "$ORE_UI_GRADE_CHECKPOINT"
+fi
+
 exec "$@"

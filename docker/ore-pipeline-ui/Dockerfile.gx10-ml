@@ -1,0 +1,42 @@
+FROM nvcr.io/nvidia/pytorch:25.11-py3
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    ORE_UI_HOST=0.0.0.0 \
+    ORE_UI_PORT=8080 \
+    ORE_UI_WORKSPACE=/data/ore_pipeline_ui \
+    ORE_UI_BACKEND=ml \
+    ORE_UI_TALC_BACKEND=ml \
+    ORE_UI_PROCESSING_MAX_SIDE=2600 \
+    ORE_UI_PANORAMA_MAX_SIDE=1800 \
+    ORE_UI_PREVIEW_MAX_SIDES=1024,2048,4096
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libjpeg-turbo8 \
+        libpng16-16 \
+        libraw23 \
+        libtiff6 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/ore-pipeline-ui/requirements-gx10-ml.txt /tmp/requirements-gx10-ml.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements-gx10-ml.txt
+
+COPY apps/ ./apps/
+COPY src/ ./src/
+COPY heuristic_segmentation/ ./heuristic_segmentation/
+COPY scripts/ ./scripts/
+COPY docker/ore-pipeline-ui/entrypoint.sh /usr/local/bin/ore-pipeline-ui
+
+RUN chmod +x /usr/local/bin/ore-pipeline-ui \
+    && mkdir -p /data/ore_pipeline_ui
+
+VOLUME ["/data/ore_pipeline_ui"]
+EXPOSE 8080
+
+ENTRYPOINT ["ore-pipeline-ui"]

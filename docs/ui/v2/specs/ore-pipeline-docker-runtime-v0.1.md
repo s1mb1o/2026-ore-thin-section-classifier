@@ -26,7 +26,11 @@ Environment variables:
 | `ORE_UI_PORT` | `8080` | Port inside the container |
 | `ORE_UI_WORKSPACE` | `/data/ore_pipeline_ui` | Persistent UI workspace |
 | `ORE_UI_BACKEND` | `heuristic` | `heuristic` or `ml` |
-| `ORE_UI_CHECKPOINT` | empty | Optional checkpoint path for `ml` backend |
+| `ORE_UI_CHECKPOINT` | empty | Optional binary sulfide checkpoint path for `ml` backend |
+| `ORE_UI_TALC_BACKEND` | empty | Optional talc backend override: `heuristic` or `ml` |
+| `ORE_UI_TALC_CHECKPOINT` | empty | Optional talc checkpoint path for talc `ml` backend |
+| `ORE_UI_TALC_THRESHOLD` | empty | Optional talc probability threshold |
+| `ORE_UI_GRADE_CHECKPOINT` | empty | Optional grade-branch CNN checkpoint path |
 | `ORE_UI_PROCESSING_MAX_SIDE` | `2600` | Analysis-scale longest-side limit |
 | `ORE_UI_PANORAMA_MAX_SIDE` | `1800` | Panorama preprocessing longest-side limit |
 | `ORE_UI_PREVIEW_MAX_SIDES` | `1024,2048,4096` | Preview pyramid side sizes |
@@ -36,6 +40,7 @@ Environment variables:
 
 - `./outputs/ore_pipeline_ui:/data/ore_pipeline_ui` persists app state across restarts.
 - `./models:/app/models:ro` makes local checkpoints available if an ML-capable derived image is used.
+- gx10 SOTA ML deployments also mount `outputs/talc_segformer_folds:/app/outputs/talc_segformer_folds:ro` so the talc SegFormer-B0 fold checkpoint remains outside the image.
 
 ## Non-goals
 

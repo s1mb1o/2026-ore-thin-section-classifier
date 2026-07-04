@@ -2,6 +2,13 @@
 
 Clean workspace for the official `Скажи мне, кто твой шлиф` task.
 
+## Repositories
+
+- **Main repo (GitHub)**: <https://github.com/s1mb1o/2026-ore-thin-section-classifier>
+- **Auto-sync mirror (SourceCraft)**: <https://sourcecraft.dev/s1mb1o/2026-ore-thin-section-classifier>
+
+Push changes to the GitHub repo; the SourceCraft mirror is synchronized automatically.
+
 The goal is a narrow optical-microscopy pipeline:
 
 ```text
