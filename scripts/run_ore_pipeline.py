@@ -46,18 +46,22 @@ def main() -> int:
         action="store_true",
         help="Generate a conservative color-heuristic talc candidate mask and pass it into ore analysis.",
     )
+    parser.add_argument("--talc-checkpoint", type=Path, default=None, help="Optional talc segmentation checkpoint to run on non-sulfide pixels.")
+    parser.add_argument("--talc-threshold", type=float, default=0.5)
     parser.add_argument("--talc-min-area-px", type=int, default=320)
     parser.add_argument("--preview-max-side", type=int, default=1800)
     parser.add_argument("--progress-json", type=Path, default=None)
     args = parser.parse_args()
 
-    if args.talc_mask is not None and args.auto_talc_candidate:
-        raise ValueError("--talc-mask and --auto-talc-candidate are mutually exclusive")
+    talc_source_count = sum(1 for enabled in (args.talc_mask is not None, args.auto_talc_candidate, args.talc_checkpoint is not None) if enabled)
+    if talc_source_count > 1:
+        raise ValueError("--talc-mask, --auto-talc-candidate, and --talc-checkpoint are mutually exclusive")
     rule_config = resolve_rule_config_from_args(args)
 
     inference_dir = args.out_dir / "binary_sulfide"
     analysis_dir = args.out_dir / "ore_analysis"
     talc_dir = args.out_dir / "talc_candidate"
+    talc_model_dir = args.out_dir / "talc_model"
     inference_cmd = [
         sys.executable,
         "scripts/infer_binary_sulfide.py",
@@ -86,10 +90,50 @@ def main() -> int:
 
     talc_mask_path: Path | None = None
     talc_paths: dict[str, str] = {}
+    talc_summary: dict[str, object] = {}
     talc_source = "none"
     if args.talc_mask is not None:
         talc_mask_path = args.talc_mask
         talc_source = "provided_mask"
+    elif args.talc_checkpoint is not None:
+        talc_cmd = [
+            sys.executable,
+            "scripts/infer_talc_segmentation.py",
+            "--image",
+            str(args.image),
+            "--checkpoint",
+            str(args.talc_checkpoint),
+            "--out-dir",
+            str(talc_model_dir),
+            "--sulfide-mask",
+            str(inference_dir / "sulfide_mask.png"),
+            "--tile-size",
+            str(args.tile_size),
+            "--stride",
+            str(args.stride),
+            "--batch-size",
+            str(args.batch_size),
+            "--device",
+            args.device,
+            "--threshold",
+            str(args.talc_threshold),
+            "--preview-max-side",
+            str(args.preview_max_side),
+        ]
+        run(talc_cmd)
+        talc_summary_path = talc_model_dir / "summary.json"
+        talc_summary = json.loads(talc_summary_path.read_text(encoding="utf-8"))
+        talc_summary_paths = talc_summary.get("paths") if isinstance(talc_summary.get("paths"), dict) else {}
+        talc_mask_path = Path(str(talc_summary_paths.get("talc_mask") or talc_model_dir / "talc_mask.png"))
+        talc_paths = {
+            "talc_model_summary": str(talc_summary_path),
+            "talc_model_overlay_preview": str(talc_summary_paths.get("overlay_preview") or talc_model_dir / "overlay_preview.jpg"),
+            "talc_model_confidence": str(talc_summary_paths.get("confidence") or talc_model_dir / "confidence.png"),
+            "talc_model_confidence_non_sulfide": str(
+                talc_summary_paths.get("confidence_non_sulfide") or talc_model_dir / "confidence_non_sulfide.png"
+            ),
+        }
+        talc_source = "ml_model"
     elif args.auto_talc_candidate:
         image_arr = np.asarray(Image.open(args.image).convert("RGB"))
         sulfide_arr = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L"))
@@ -132,6 +176,9 @@ def main() -> int:
         "image": str(args.image),
         "checkpoint": str(args.checkpoint),
         "talc_source": talc_source,
+        "talc_checkpoint": str(args.talc_checkpoint) if args.talc_checkpoint is not None else None,
+        "talc_threshold": args.talc_threshold if args.talc_checkpoint is not None else None,
+        "talc_checkpoint_meta": talc_summary.get("checkpoint_meta") if talc_summary else None,
         "rule_config": rule_config,
         "paths": {
             "binary_sulfide_summary": str(inference_dir / "summary.json"),
@@ -142,6 +189,10 @@ def main() -> int:
             "talc_mask": str(talc_mask_path) if talc_mask_path is not None else None,
             "talc_candidate_summary": talc_paths.get("talc_candidate_summary"),
             "talc_candidate_overlay_preview": talc_paths.get("talc_candidate_overlay_preview"),
+            "talc_model_summary": talc_paths.get("talc_model_summary"),
+            "talc_model_overlay_preview": talc_paths.get("talc_model_overlay_preview"),
+            "talc_model_confidence": talc_paths.get("talc_model_confidence"),
+            "talc_model_confidence_non_sulfide": talc_paths.get("talc_model_confidence_non_sulfide"),
             "ore_summary": str(analysis_dir / "ore_summary.json"),
             "component_features": str(analysis_dir / "component_features.csv"),
             "analysis_analyzed_mask": str(analysis_dir / "analyzed_mask.png"),

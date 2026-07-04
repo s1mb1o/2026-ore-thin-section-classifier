@@ -50,6 +50,7 @@ an OS-assigned port, and passes any extra arguments straight through:
 ./run_main_app.sh                     # heuristic backend, OS-assigned port
 ./run_main_app.sh --port 8080         # fixed port
 ./run_main_app.sh --backend ml        # ML sulfide backend (B2 checkpoint default)
+./run_main_app.sh --talc-backend ml   # trained talc SegFormer-B0 source
 ./run_main_app.sh --help              # app help
 ```
 
@@ -71,6 +72,9 @@ environment is active:
 python3 apps/ore_pipeline_web.py \
   --backend ml \
   --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --talc-backend ml \
+  --talc-checkpoint outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt \
+  --talc-threshold 0.50 \
   --host 127.0.0.1 \
   --port 0
 ```
@@ -283,7 +287,8 @@ python3 scripts/run_ore_pipeline.py \
   --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
   --out-dir outputs/inference_demo/local_dscn2176_b2 \
   --device auto \
-  --auto-talc-candidate
+  --talc-checkpoint outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt \
+  --talc-threshold 0.50
 ```
 
 Use an accepted talc mask instead of the automatic candidate when available:
@@ -392,6 +397,114 @@ python3 scripts/run_ore_pipeline.py \
   --device auto \
   --auto-talc-candidate
 ```
+
+## Official Pipeline Evaluation Harness (one command)
+
+End-to-end: dataset → exclude multi-variant (label-conflict + duplicate) images →
+our full pipeline over the leak-free deconflicted 345-image split → both metric
+sets (deterministic rule + feature-classifier CV) → combined `metrics_summary.md`.
+Prerequisite artifacts (manifest, label audit, deconflicted split) are built
+automatically if missing and reused otherwise.
+
+Clean baseline (no perturbation):
+
+```bash
+python3 scripts/evaluate_official_pipeline.py \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/evaluations/harness_baseline_20260704 \
+  --device auto \
+  --batch-size 1
+```
+
+Robustness test with JSON augmentation and/or preprocessing (file path or inline
+JSON; same transforms as the browser UI). Every split image is perturbed before
+inference:
+
+```bash
+python3 scripts/evaluate_official_pipeline.py \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/evaluations/harness_robust_scratches \
+  --augmentation-json '{"enabled": true, "surface_artifacts": {"scratch_count": 12, "scratch_intensity_pct": 30, "pit_count": 40, "pit_intensity_pct": 18, "polishing_haze_pct": 10}}' \
+  --preprocess-json '{"illumination_normalization": true, "denoise": false, "contrast_correction": true}' \
+  --device auto --batch-size 1
+```
+
+Quick directional check on a subset (2 images per class) before a full variant:
+
+```bash
+python3 scripts/evaluate_official_pipeline.py \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/evaluations/harness_smoke \
+  --per-label 2 --cv-folds 2 --device auto --batch-size 1
+```
+
+Re-evaluate an existing batch without re-running inference:
+
+```bash
+python3 scripts/evaluate_official_pipeline.py \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/evaluations/harness_baseline_20260704 \
+  --skip-inference
+```
+
+Runtime (this Mac, MPS, `--batch-size 1`, tile 1024 / stride 768):
+
+- ~10 s per image end-to-end (sulfide inference + talc candidate + ore analysis).
+- Full 345-image baseline: **~50–60 min** wall.
+- Both metric scripts on a ready `summary.csv`: **< 1 min**.
+- Each perturbation variant repeats the full batch (~50–60 min): inference
+  re-runs on transformed pixels. Use `--per-label` for a fast subset first.
+
+## Grain-level Classifier — human-in-the-loop (path B)
+
+Segment sulfide grains → human-classify grains → train a grain classifier →
+aggregate to image grade (⊕ talc branch) → leak-free grade F1. Spec/plan:
+`docs/specs/grain-human-in-the-loop-classifier.md`, `docs/plans/37_grain-human-in-the-loop-classifier.md`.
+
+1. Build the grain dataset from a completed official batch (crops + manifest):
+
+```bash
+python3 scripts/build_grain_dataset.py \
+  --batch-dir outputs/evaluations/harness_baseline_20260704 \
+  --out-dir outputs/grain_dataset_v0 \
+  --min-grain-area-px 300 --max-grains-per-image 48
+```
+
+Runtime: ~30 s for the 345-image baseline batch (≈14.4k grain crops exported).
+
+2. Label grains in the browser (O=ordinary, F=fine, U=uncertain; arrows to move).
+Persists `annotations.json` in the dataset dir:
+
+```bash
+python3 apps/grain_review_web.py --dataset-dir outputs/grain_dataset_v0 --port 0
+```
+
+3. Train the grain classifier (uses human labels if present, else heuristic
+bootstrap; GroupKFold by specimen):
+
+```bash
+python3 scripts/train_grain_classifier.py \
+  --manifest outputs/grain_dataset_v0/grains_manifest.csv \
+  --annotations outputs/grain_dataset_v0/annotations.json \
+  --out-dir models/grain_classifier/v0
+```
+
+4. Aggregate to image grade and evaluate leak-free (grain model + thresholds fit
+per train fold):
+
+```bash
+python3 scripts/aggregate_grade_from_grains.py \
+  --batch-dir outputs/evaluations/harness_baseline_20260704 \
+  --manifest outputs/grain_dataset_v0/grains_manifest.csv \
+  --annotations outputs/grain_dataset_v0/annotations.json \
+  --out-dir outputs/evaluations/grade_from_grains_v0
+```
+
+Steps 3–4 run in seconds (tabular). Omit `--annotations` (or before any labeling)
+for the heuristic-bootstrap baseline. v0.1 bootstrap grade macro-F1 ≈ 0.19
+(≈ deterministic rule; talcose F1 = 0 because the auto-candidate talc signal is
+near-zero — feed the trained talc model for the talcose branch, and add human
+grain labels, for the real gain).
 
 ## Sulfide QA UI
 

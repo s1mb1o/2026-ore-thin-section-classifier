@@ -108,11 +108,14 @@ class OrePipelineWebTest(unittest.TestCase):
 
         pages = build_pdf_report_pages(run, self.store.runs_dir / run["run_id"])
         pdf_path = self.store.pdf_report_path(run["run_id"])
+        persisted_run = json.loads((self.store.runs_dir / run["run_id"] / "run.json").read_text(encoding="utf-8"))
 
         self.assertEqual(len(pages), 5)
         self.assertTrue(all(page.size == (1240, 1754) for page in pages))
         self.assertTrue(pdf_path.read_bytes().startswith(b"%PDF"))
         self.assertGreater(pdf_path.stat().st_size, 50_000)
+        self.assertGreaterEqual(run["elapsed_seconds"], 0)
+        self.assertEqual(run["elapsed_seconds"], persisted_run["elapsed_seconds"])
 
     def test_async_start_returns_payload_while_worker_updates_run_json(self) -> None:
         upload = self.store.register_upload_from_path(self.image_path)
@@ -329,8 +332,11 @@ class OrePipelineWebTest(unittest.TestCase):
     def test_runtime_provenance_enriches_ml_checkpoint_summary(self) -> None:
         checkpoint = self.root / "ml_best.pt"
         checkpoint.write_bytes(b"fake")
+        talc_checkpoint = self.root / "talc_best.pt"
+        talc_checkpoint.write_bytes(b"fake talc")
         run_dir = self.store.runs_dir / "runtime_probe"
         (run_dir / "ml_pipeline/binary_sulfide").mkdir(parents=True)
+        (run_dir / "ml_pipeline/talc_model").mkdir(parents=True)
         (run_dir / "ml_pipeline").mkdir(parents=True, exist_ok=True)
         (run_dir / "ml_pipeline/binary_sulfide/summary.json").write_text(
             json.dumps(
@@ -352,12 +358,31 @@ class OrePipelineWebTest(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (run_dir / "ml_pipeline/talc_model/summary.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "binary-talc-inference-v0.1",
+                    "checkpoint": str(talc_checkpoint),
+                    "checkpoint_meta": {"model": "segformer_b0", "epoch": 3},
+                    "device": "mps",
+                    "tile_size": 1024,
+                    "stride": 768,
+                    "threshold": 0.42,
+                    "tiles": 8,
+                    "talc_fraction_non_sulfide": 0.12,
+                    "talc_fraction_analyzed": 0.09,
+                }
+            ),
+            encoding="utf-8",
+        )
         (run_dir / "ml_pipeline/pipeline_summary.json").write_text(
             json.dumps(
                 {
                     "schema_version": "ore-pipeline-run-v0.2",
                     "image": "input/preprocessed.png",
-                    "talc_source": "auto_candidate",
+                    "talc_source": "ml_model",
+                    "talc_checkpoint": str(talc_checkpoint),
+                    "talc_threshold": 0.42,
                     "rule_config": {"ordinary_component_max_area_px": 1000},
                 }
             ),
@@ -377,7 +402,10 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(runtime["checkpoints"]["binary_sulfide"], str(checkpoint.resolve()))
         self.assertEqual(runtime["models"]["binary_sulfide"]["checkpoint_meta"]["model"], "segformer_b2")
         self.assertEqual(runtime["models"]["binary_sulfide"]["device"], "mps")
-        self.assertEqual(runtime["models"]["talc"]["backend"], "auto_candidate")
+        self.assertEqual(runtime["checkpoints"]["talc"], str(talc_checkpoint.resolve()))
+        self.assertEqual(runtime["models"]["talc"]["backend"], "ml_model")
+        self.assertEqual(runtime["models"]["talc"]["checkpoint_meta"]["model"], "segformer_b0")
+        self.assertEqual(runtime["models"]["talc"]["threshold"], 0.42)
         self.assertEqual(runtime["models"]["final_segmentation"]["backend"], "component_rules")
         self.assertEqual(metadata["reports"]["runtime_json"], str(run_dir / "reports/runtime.json"))
         self.assertTrue((run_dir / "reports/runtime.json").exists())
@@ -797,6 +825,9 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertGreaterEqual(payload["history"]["history_size_bytes"], 0)
         self.assertEqual(payload["history"]["run_status_counts"].get(run["status"]), 1)
         self.assertEqual(payload["app"]["backend"], "heuristic")
+        self.assertEqual(payload["app"]["talc_backend"], "heuristic")
+        self.assertEqual(payload["app"]["models"]["binary_sulfide"]["backend"], "heuristic")
+        self.assertEqual(payload["app"]["models"]["talc"]["backend"], "heuristic_candidate")
         self.assertIn("logs", payload)
         self.assertGreaterEqual(len(payload["logs"]["system"]), 1)
 
@@ -1089,6 +1120,8 @@ class OrePipelineWebTest(unittest.TestCase):
     def test_app_settings_are_persisted_and_exposed_by_api(self) -> None:
         fake_checkpoint = self.root / "fake_checkpoint.pt"
         fake_checkpoint.write_bytes(b"fake checkpoint")
+        fake_talc_checkpoint = self.root / "fake_talc_checkpoint.pt"
+        fake_talc_checkpoint.write_bytes(b"fake talc checkpoint")
         settings = self.store.save_app_settings(
             {
                 "language": "en",
@@ -1097,6 +1130,9 @@ class OrePipelineWebTest(unittest.TestCase):
                 "runtime": {
                     "backend": "ml",
                     "checkpoint": str(fake_checkpoint),
+                    "talc_backend": "ml",
+                    "talc_checkpoint": str(fake_talc_checkpoint),
+                    "talc_threshold": 0.42,
                 },
                 "preprocess": {
                     "preprocessing_enabled": False,
@@ -1120,8 +1156,14 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertTrue(settings["show_tiling"])
         self.assertEqual(settings["runtime"]["backend"], "ml")
         self.assertEqual(settings["runtime"]["checkpoint"], str(fake_checkpoint.resolve()))
+        self.assertEqual(settings["runtime"]["talc_backend"], "ml")
+        self.assertEqual(settings["runtime"]["talc_checkpoint"], str(fake_talc_checkpoint.resolve()))
+        self.assertEqual(settings["runtime"]["talc_threshold"], 0.42)
         self.assertEqual(self.store.backend, "ml")
         self.assertEqual(self.store.checkpoint, fake_checkpoint.resolve())
+        self.assertEqual(self.store.talc_backend, "ml")
+        self.assertEqual(self.store.talc_checkpoint, fake_talc_checkpoint.resolve())
+        self.assertEqual(self.store.talc_threshold, 0.42)
         self.assertFalse(settings["preprocess"]["preprocessing_enabled"])
         self.assertEqual(settings["preprocess"]["panorama_scaling_mode"], "scale_factor")
         self.assertEqual(settings["preprocess"]["panorama_max_side_px"], 4096)
@@ -1139,7 +1181,11 @@ class OrePipelineWebTest(unittest.TestCase):
         )
         self.assertEqual(restarted.backend, "ml")
         self.assertEqual(restarted.checkpoint, fake_checkpoint.resolve())
+        self.assertEqual(restarted.talc_backend, "ml")
+        self.assertEqual(restarted.talc_checkpoint, fake_talc_checkpoint.resolve())
+        self.assertEqual(restarted.talc_threshold, 0.42)
         self.assertEqual(restarted.app_settings()["runtime"]["backend"], "ml")
+        self.assertEqual(restarted.app_settings()["runtime"]["talc_backend"], "ml")
         self.assertEqual(restarted.app_settings()["metadata_defaults"]["om_instrument"], "scope-1")
         self.assertEqual(restarted.app_settings()["preprocess"]["panorama_scaling_mode"], "scale_factor")
         self.assertEqual(restarted.app_settings()["preprocess"]["panorama_scale_factor"], 0.25)
@@ -1157,6 +1203,7 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(payload["language"], "en")
             self.assertEqual(payload["runtime"]["backend"], "ml")
+            self.assertEqual(payload["runtime"]["talc_backend"], "ml")
 
             connection = http.client.HTTPConnection(host, port, timeout=5)
             body = json.dumps({"theme": "neon"}).encode("utf-8")
@@ -1175,6 +1222,15 @@ class OrePipelineWebTest(unittest.TestCase):
             connection.close()
             self.assertEqual(response.status, 400)
             self.assertIn("settings.runtime.checkpoint", payload["error"])
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            body = json.dumps({"runtime": {"talc_backend": "ml", "talc_checkpoint": str(self.root / "missing_talc.pt")}}).encode("utf-8")
+            connection.request("PUT", "/api/settings", body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, 400)
+            self.assertIn("settings.runtime.talc_checkpoint", payload["error"])
         finally:
             server.shutdown()
             server.server_close()
@@ -1183,6 +1239,8 @@ class OrePipelineWebTest(unittest.TestCase):
     def test_runtime_test_endpoint_checks_heuristic_and_ml_probe(self) -> None:
         fake_checkpoint = self.root / "fake_checkpoint.pt"
         fake_checkpoint.write_bytes(b"fake checkpoint")
+        fake_talc_checkpoint = self.root / "fake_talc_checkpoint.pt"
+        fake_talc_checkpoint.write_bytes(b"fake talc checkpoint")
         server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1226,23 +1284,70 @@ class OrePipelineWebTest(unittest.TestCase):
                     + "\n",
                     stderr="",
                 )
-                status, payload = request_runtime_test({"runtime": {"backend": "ml", "checkpoint": str(fake_checkpoint)}})
+                status, payload = request_runtime_test(
+                    {"runtime": {"backend": "ml", "checkpoint": str(fake_checkpoint), "talc_backend": "heuristic"}}
+                )
             self.assertEqual(status, 200)
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["backend"], "ml")
             self.assertEqual(payload["details"]["checkpoint_meta"]["model"], "resunet")
+            self.assertEqual(payload["models"]["binary_sulfide"]["details"]["checkpoint_meta"]["model"], "resunet")
+            self.assertEqual(payload["models"]["talc"]["backend"], "auto_candidate")
             self.assertEqual(self.store.backend, "heuristic")
 
             with mock.patch("apps.ore_pipeline_web.subprocess.run") as run_probe:
+                run_probe.return_value = subprocess.CompletedProcess(
+                    args=["python"],
+                    returncode=0,
+                    stdout=json.dumps(
+                        {
+                            "device": "cpu",
+                            "torch": "test",
+                            "transformers": "test",
+                            "checkpoint_meta": {"model": "segformer_b0", "epoch": 2},
+                            "parameter_count": 456,
+                            "seconds": 0.03,
+                        }
+                    )
+                    + "\n",
+                    stderr="",
+                )
+                status, payload = request_runtime_test(
+                    {
+                        "runtime": {
+                            "backend": "heuristic",
+                            "talc_backend": "ml",
+                            "talc_checkpoint": str(fake_talc_checkpoint),
+                            "talc_threshold": 0.42,
+                        }
+                    }
+                )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["backend"], "heuristic")
+            self.assertEqual(payload["models"]["talc"]["details"]["checkpoint_meta"]["model"], "segformer_b0")
+            self.assertEqual(payload["talc_threshold"], 0.42)
+
+            with mock.patch("apps.ore_pipeline_web.subprocess.run") as run_probe:
                 run_probe.return_value = subprocess.CompletedProcess(args=["python"], returncode=1, stdout="", stderr="loader failed")
-                status, payload = request_runtime_test({"runtime": {"backend": "ml", "checkpoint": str(fake_checkpoint)}})
+                status, payload = request_runtime_test(
+                    {"runtime": {"backend": "ml", "checkpoint": str(fake_checkpoint), "talc_backend": "heuristic"}}
+                )
             self.assertEqual(status, 200)
             self.assertFalse(payload["ok"])
             self.assertIn("loader failed", payload["message"])
 
-            status, payload = request_runtime_test({"runtime": {"backend": "ml", "checkpoint": str(self.root / "missing.pt")}})
+            status, payload = request_runtime_test(
+                {"runtime": {"backend": "ml", "checkpoint": str(self.root / "missing.pt"), "talc_backend": "heuristic"}}
+            )
             self.assertEqual(status, 400)
             self.assertIn("settings.runtime.checkpoint", payload["error"])
+
+            status, payload = request_runtime_test(
+                {"runtime": {"backend": "heuristic", "talc_backend": "ml", "talc_checkpoint": str(self.root / "missing_talc.pt")}}
+            )
+            self.assertEqual(status, 400)
+            self.assertIn("settings.runtime.talc_checkpoint", payload["error"])
         finally:
             server.shutdown()
             server.server_close()
@@ -1309,6 +1414,7 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(payload["status"], "canceling")
         self.assertTrue(payload["cancel_requested"])
         self.assertIsNone(payload["eta_seconds"])
+        self.assertGreaterEqual(payload["elapsed_seconds"], 0)
         self.assertEqual(self.store._read_run(run_id)["status"], "canceling")
         with self.assertRaises(RunCancelled):
             self.store._check_cancelled(run_id)
@@ -1325,7 +1431,7 @@ class OrePipelineWebTest(unittest.TestCase):
                 "progress": 18,
                 "status": "running",
                 "stage": "running ML tiled inference",
-                "started_at": time.time(),
+                "started_at": time.time() - 2,
                 "eta_seconds": None,
                 "cancel_requested": False,
             }
@@ -1350,8 +1456,60 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(payload["tile_progress"]["tiles_processed"], 3)
         self.assertEqual(payload["tile_progress"]["tiles_total"], 8)
         self.assertIn("3/8 tiles", payload["stage"])
+        self.assertGreaterEqual(payload["elapsed_seconds"], 2)
         self.assertGreater(payload["progress"], 18)
         self.assertLess(payload["progress"], 76)
+
+    def test_ml_backend_passes_talc_checkpoint_to_pipeline(self) -> None:
+        binary_checkpoint = self.root / "binary.pt"
+        binary_checkpoint.write_bytes(b"binary")
+        talc_checkpoint = self.root / "talc.pt"
+        talc_checkpoint.write_bytes(b"talc")
+        upload = self.store.register_upload_from_path(self.image_path)
+        prepared = self.store.prepare_upload(upload["upload_id"], {"panorama_scaling": False})
+        run_id = "run_talc_command_test"
+        run_dir = self.store.runs_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        self.store._initialize_run_from_upload(run_id, run_dir, prepared, prepared["preprocess"]["preset"])
+        self.store.talc_backend = "ml"
+        self.store.talc_checkpoint = talc_checkpoint.resolve()
+        self.store.talc_threshold = 0.42
+        with self.store.lock:
+            self.store.jobs[run_id] = {
+                "progress": 18,
+                "status": "running",
+                "stage": "running ML tiled inference",
+                "started_at": time.time(),
+                "eta_seconds": None,
+                "cancel_requested": True,
+            }
+
+        class FakeProcess:
+            returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                return None
+
+            def wait(self, timeout=None):
+                self.returncode = -15
+                return self.returncode
+
+            def kill(self):
+                return None
+
+        with mock.patch("apps.ore_pipeline_web.subprocess.Popen", return_value=FakeProcess()) as popen:
+            with self.assertRaises(RunCancelled):
+                self.store._run_ml_backend(run_id, run_dir, checkpoint=binary_checkpoint)
+
+        cmd = popen.call_args.args[0]
+        self.assertIn("--talc-checkpoint", cmd)
+        self.assertEqual(cmd[cmd.index("--talc-checkpoint") + 1], str(talc_checkpoint.resolve()))
+        self.assertIn("--talc-threshold", cmd)
+        self.assertEqual(cmd[cmd.index("--talc-threshold") + 1], "0.42")
+        self.assertNotIn("--auto-talc-candidate", cmd)
 
     def test_list_runs_overlays_active_job_progress(self) -> None:
         upload = self.store.register_upload_from_path(self.image_path)
@@ -1365,7 +1523,7 @@ class OrePipelineWebTest(unittest.TestCase):
                 "progress": 43,
                 "status": "running",
                 "stage": "running ML tiled inference (5/12 tiles)",
-                "started_at": time.time(),
+                "started_at": time.time() - 9,
                 "eta_seconds": 30,
                 "cancel_requested": False,
                 "tile_progress": {
@@ -1384,6 +1542,7 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(history[0]["progress"], 43)
         self.assertEqual(history[0]["stage"], "running ML tiled inference (5/12 tiles)")
         self.assertEqual(history[0]["eta_seconds"], 30)
+        self.assertGreaterEqual(history[0]["elapsed_seconds"], 8)
         self.assertEqual(history[0]["tile_progress"]["tiles_processed"], 5)
         self.assertEqual(history[0]["tile_progress"]["tiles_total"], 12)
 
@@ -1687,6 +1846,9 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn('id="settingsShowTiling"', html)
         self.assertIn('id="settingsBackend"', html)
         self.assertIn('id="settingsCheckpoint"', html)
+        self.assertIn('id="settingsTalcBackend"', html)
+        self.assertIn('id="settingsTalcCheckpoint"', html)
+        self.assertIn('id="settingsTalcThreshold"', html)
         self.assertIn('id="testRuntimeBtn"', html)
         self.assertIn('id="runtimeTestStatus"', html)
         self.assertIn('id="removeAllHistoryBtn"', html)
@@ -1703,6 +1865,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("function loadSystemStatus(options = {})", html)
         self.assertIn("function renderSystemStatus(payload", html)
         self.assertIn("const backendSubvalue = app.backend === 'ml' ? (app.checkpoint || '') : ''", html)
+        self.assertIn("function statusModelDetails(labelKey, model)", html)
+        self.assertIn("settingsRuntimeTestOkModels", html)
         self.assertIn("function renderStatusLogs(logs)", html)
         self.assertIn("function saveSettingsObject(settings", html)
         self.assertIn("settingsRemoveAllHistory", html)
@@ -1807,7 +1971,11 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("function renderHistoryThumbnail(run)", html)
         self.assertIn("function renderHistoryProgress(run)", html)
         self.assertIn("function runProgressPercent(run)", html)
-        self.assertIn("history-progress-bar", html)
+        self.assertIn("function formatDurationSeconds(seconds)", html)
+        self.assertIn("historyElapsed", html)
+        self.assertIn("statusElapsed", html)
+        self.assertIn("elapsed_seconds", html)
+        self.assertNotIn("history-progress-bar", html)
         self.assertIn("function statusActiveJobsText(history)", html)
         self.assertIn("function setStatusPolling(enabled)", html)
         self.assertIn("function statusGpuDeviceDetails(device)", html)

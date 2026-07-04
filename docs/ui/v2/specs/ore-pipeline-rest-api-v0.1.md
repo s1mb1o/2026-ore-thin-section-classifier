@@ -26,7 +26,8 @@ downloads, Series processing, app settings, and service health.
   sequentially with shared settings. Route and storage names remain `batch`
   for compatibility.
 - Settings: server-backed defaults shared by all browsers opening the same
-  workspace.
+  workspace, including binary sulfide backend/checkpoint and talc
+  source/checkpoint/threshold.
 - Status: read-only service health and resource diagnostics.
 
 ## Endpoint Contract
@@ -36,14 +37,14 @@ Downloads return CSV, PDF, or ZIP payloads.
 
 | Endpoint | Purpose | Implemented |
 | --- | --- | --- |
-| `GET /api/status` | Service health, backend, CPU/GPU/RAM/flash, storage, active jobs | yes |
+| `GET /api/status` | Service health, backend/model status, CPU/GPU/RAM/flash, storage, active jobs | yes |
 | `POST /api/uploads` | Upload one PNG/JPEG/TIFF/RAW-extension file as form field `file` | yes |
 | `GET /api/uploads/{upload_id}` | Read upload metadata and previews | yes |
 | `POST /api/uploads/{upload_id}/preprocess` | Refresh augmentation/preprocessing artifacts before a run | yes |
 | `POST /api/uploads/{upload_id}/artifact-mask` | Save a pre-run artifact exclusion mask | yes |
 | `POST /api/runs/start` | Create and optionally run a new immutable job from an upload | yes |
-| `GET /api/runs` | List persisted run history | yes |
-| `GET /api/runs/{run_id}` | Read run status, progress, metadata, masks, previews, metrics, downloads | yes |
+| `GET /api/runs` | List persisted run history with status/progress/elapsed timing | yes |
+| `GET /api/runs/{run_id}` | Read run status, progress, elapsed time, metadata, masks, previews, metrics, downloads | yes |
 | `POST /api/runs/{run_id}/cancel` | Request cooperative cancellation | yes |
 | `POST /api/runs/{run_id}/prepare` | Create or update a prepared run from changed settings | yes |
 | `POST /api/runs/{run_id}/start` | Continue a prepared run in place | yes |
@@ -65,6 +66,7 @@ Downloads return CSV, PDF, or ZIP payloads.
 | `DELETE /api/batches/{batch_id}` | Remove a completed/failed/canceled Series and child runs | yes |
 | `GET /api/settings` | Read server-backed app defaults | yes |
 | `PUT /api/settings` | Validate and persist app defaults | yes |
+| `POST /api/runtime/test` | Validate unsaved runtime values and probe selected ML checkpoints | yes |
 
 ## API Documentation Page
 
@@ -92,6 +94,9 @@ Edit-mask endpoints exist and remain covered by focused feature specs.
 - Prepared-run continuation is only valid for `prepared` runs.
 - Cancellation is cooperative and only meaningful for queued/running jobs.
 - Active Series cannot be removed through delete endpoints.
+- ML binary sulfide runtime requires an existing `runtime.checkpoint`.
+- Talc ML runtime requires an existing `runtime.talc_checkpoint`; talc
+  threshold is clamped to the supported `0.01..0.99` range.
 
 ## Test Coverage
 

@@ -32,13 +32,17 @@ The first version covers settings already present in the UI:
 - runtime backend:
   - `heuristic` or `ml`;
   - checkpoint path for the ML backend;
+  - talc source: `heuristic` for the existing optical candidate or `ml` for
+    the trained talc segmentation model;
+  - talc checkpoint path and probability threshold for the talc ML source;
   - saving applies the new runtime immediately for new runs;
   - already-created immutable runs keep their recorded backend and checkpoint;
   - changing runtime is rejected while a run or Series job is active;
   - `Test` checks the selected, possibly unsaved runtime values; for
     `heuristic` it verifies the built-in heuristic backend is available, and
-    for `ml` it verifies that the checkpoint exists and can be loaded through
-    the same model loader used by runs without creating a run;
+    for each `ml` source it verifies that the configured checkpoint exists and
+    can be loaded through the same model loader used by runs without creating a
+    run;
 - default preprocessing preset:
   - preprocessing enabled;
   - illumination normalization;
@@ -67,6 +71,7 @@ The page shows:
 
 - language and theme selectors;
 - runtime backend selector and checkpoint path input;
+- talc source selector, talc checkpoint path input, and talc threshold input;
 - runtime `Test` action with a localized success/failure status line;
 - preprocessing default checkboxes;
 - show-tiling default checkbox;
@@ -82,8 +87,8 @@ Add:
 - `GET /api/settings` -> current merged settings, including effective runtime;
 - `PUT /api/settings` -> validate, persist, and apply settings.
 - `POST /api/runtime/test` -> validate a supplied runtime selection without
-  saving it; ML mode performs a bounded subprocess checkpoint-load probe and
-  returns `ok/status/details`.
+  saving it; selected ML sources perform bounded subprocess checkpoint-load
+  probes and return `ok/status/details/models`.
 - `DELETE /api/history` -> remove all persisted run and Series artifact folders
   while leaving uploads and settings intact.
 
@@ -99,14 +104,17 @@ History removal during active jobs should return `409`.
 - `/settings` loads the same app shell and selects the Settings page.
 - Settings are loaded before workspace defaults are applied.
 - Saving settings updates the server-side JSON file.
-- Saving backend/checkpoint updates the live server runtime for the next run.
-- ML backend save validates that the checkpoint path exists.
+- Saving backend/checkpoint and talc source/checkpoint/threshold updates the
+  live server runtime for the next run.
+- ML backend save validates that the binary checkpoint path exists; talc ML
+  save validates that the talc checkpoint path exists.
 - The Settings page `Test` button can test unsaved runtime form values.
 - Heuristic runtime tests return success without creating a run.
-- ML runtime tests do not mutate saved settings, do not create a run, and report
-  checkpoint-loader success or failure on the same `auto` device selection used
-  by real pipeline inference.
-- New immutable runs snapshot `backend` and `checkpoint` in `run.json`.
+- ML runtime tests do not mutate saved settings, do not create a run, and
+  report per-model checkpoint-loader success or failure on the same `auto`
+  device selection used by real pipeline inference.
+- New immutable runs snapshot `backend`, `checkpoint`, `talc_backend`,
+  `talc_checkpoint`, and `talc_threshold` in `run.json` runtime provenance.
 - `Remove all history` asks for confirmation, removes run/Series history,
   clears the loaded run/result state in the browser, and keeps uploads/settings.
 - After app restart, `GET /api/settings` returns saved values.

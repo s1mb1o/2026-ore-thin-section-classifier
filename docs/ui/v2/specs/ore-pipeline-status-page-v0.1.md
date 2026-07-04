@@ -23,6 +23,8 @@ host or Nornickel VM.
 - Show RAM usage.
 - Show Flash/disk usage for the configured UI workspace.
 - Show history size, run count, series count, upload size, and active jobs.
+- Show the configured model/source for binary sulfide segmentation and talc
+  detection, including talc checkpoint and threshold when talc ML is active.
 - Show health checks and an overall `ok`, `warning`, or `error` state.
 - Show recent system events and HTTP access events.
 - Keep the page localized in Russian and English.
@@ -49,6 +51,24 @@ host or Nornickel VM.
     "backend": "heuristic",
     "checkpoint": null,
     "checkpoint_exists": false,
+    "talc_backend": "heuristic",
+    "talc_checkpoint": null,
+    "talc_checkpoint_exists": false,
+    "talc_threshold": 0.5,
+    "models": {
+      "binary_sulfide": {
+        "backend": "heuristic",
+        "checkpoint": null,
+        "role": "sulfide/non-sulfide segmentation"
+      },
+      "talc": {
+        "backend": "heuristic_candidate",
+        "configured_backend": "heuristic",
+        "checkpoint": null,
+        "threshold": null,
+        "role": "talc detection"
+      }
+    },
     "workspace_dir": "outputs/ore_pipeline_ui"
   },
   "health": {
@@ -126,6 +146,7 @@ host or Nornickel VM.
 
 - `error` if the workspace is not writable.
 - `error` if ML backend is selected and the configured checkpoint is missing.
+- `error` if talc ML is selected and the configured talc checkpoint is missing.
 - `error` if Flash free space is below 3%.
 - `warning` if Flash free space is below 10%.
 - `error` if RAM available is below 5%.
@@ -140,7 +161,7 @@ host or Nornickel VM.
 - `/status` opens without needing a current upload or run.
 - The page hides the workflow left sidebar, like History, Series, and Settings.
 - The top card row shows health, CPU, GPU, RAM, Flash, history size, runs,
-  series, backend, and uptime.
+  series, backend, active model/source summary, and uptime.
 - The health table lists all checks.
 - The storage table lists run history, series history, uploads, and total
   workspace size.

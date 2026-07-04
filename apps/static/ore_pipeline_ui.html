@@ -148,6 +148,13 @@
     .metrics-table tr.metric-level-0 .metric-label { font-weight: 750; }
     .metrics-table tr.metric-level-1 .metric-label { font-weight: 650; }
     .metrics-table tr.metric-level-2 .metric-label { color: var(--muted); }
+    .sulfide-grains-section { margin-top: 16px; display: grid; gap: 8px; }
+    .sulfide-grains-section h3 { margin: 0; font-size: 14px; }
+    .sulfide-grains-table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
+    .sulfide-grains-table { min-width: 720px; }
+    .sulfide-grains-table td.numeric, .sulfide-grains-table th.numeric { text-align: right; white-space: nowrap; }
+    .sulfide-grains-table td.select, .sulfide-grains-table th.select { width: 54px; text-align: center; }
+    .sulfide-grains-table td.grain-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .layer-toggle-row, .viewer-options-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
     .segmentation-legend-overlay { position: absolute; z-index: 4; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; pointer-events: none; }
     .segmentation-legend-panel { max-width: min(48%, 760px); display: grid; gap: 6px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: 0 8px 24px rgba(0,0,0,.22); backdrop-filter: blur(8px); pointer-events: auto; }
@@ -183,10 +190,8 @@
     .history-table th.progress, .history-table td.progress { min-width: 150px; }
     .history-table td.filename { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .history-progress-cell { display: grid; gap: 4px; min-width: 140px; }
-    .history-progress-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
-    .history-progress-head strong { font-size: 12px; font-weight: 750; white-space: nowrap; }
-    .history-progress-bar { height: 6px; border-radius: 999px; overflow: hidden; background: var(--line); }
-    .history-progress-bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+    .history-progress-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+    .history-progress-head strong { font-size: 13px; font-weight: 800; white-space: nowrap; }
     .history-progress-cell small, .history-row-progress { color: var(--muted); font-size: 12px; line-height: 1.25; }
     .history-thumb-button { width: 56px; height: 42px; padding: 0; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; background: var(--viewer-bg); border-color: var(--line); }
     .history-thumb-button img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -538,6 +543,13 @@
             <h2 data-i18n="metricsTitle">Метрики</h2>
             <table id="metricsTable" class="metrics-table"></table>
             <p id="metricsDenominatorNote" class="metrics-note muted"></p>
+            <div class="sulfide-grains-section">
+              <h3 data-i18n="sulfideGrainsTitle">Сульфидные зерна</h3>
+              <p id="sulfideGrainsNote" class="metrics-note muted"></p>
+              <div class="sulfide-grains-table-wrap">
+                <table id="sulfideGrainsTable" class="sulfide-grains-table"></table>
+              </div>
+            </div>
             <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
               <a id="csvLink"><button data-i18n="saveCsv">Сохранить CSV</button></a>
               <a id="pdfLink"><button data-i18n="savePdf">Сохранить PDF-отчет</button></a>
@@ -619,6 +631,12 @@
                 <option value="ml" data-i18n="settingsBackendMl">ML</option>
               </select></label>
               <label class="settings-field full"><span data-i18n="settingsCheckpoint">Checkpoint</span><input id="settingsCheckpoint" type="text"></label>
+              <label class="settings-field"><span data-i18n="settingsTalcBackend">Talc source</span><select id="settingsTalcBackend">
+                <option value="heuristic" data-i18n="settingsTalcBackendHeuristic">heuristic</option>
+                <option value="ml" data-i18n="settingsTalcBackendMl">ML model</option>
+              </select></label>
+              <label class="settings-field"><span data-i18n="settingsTalcThreshold">Talc threshold</span><input id="settingsTalcThreshold" type="number" min="0.01" max="0.99" step="0.01"></label>
+              <label class="settings-field full"><span data-i18n="settingsTalcCheckpoint">Talc checkpoint</span><input id="settingsTalcCheckpoint" type="text"></label>
             </div>
             <div class="settings-actions">
               <button id="testRuntimeBtn" type="button" data-i18n="settingsRuntimeTest">Проверить</button>
@@ -1005,6 +1023,10 @@
       last: {x: 0, y: 0},
       images: new Map(),
       boundaryImages: new Map(),
+      grainOutlineImages: new Map(),
+      selectedGrainIds: new Set(),
+      grainLabelMap: null,
+      grainRunId: null,
       overlayOpacity: 0.65,
       boundaryOnly: false,
       classVisibility: {
@@ -1088,7 +1110,10 @@
       show_tiling: false,
       runtime: {
         backend: 'heuristic',
-        checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt'
+        checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt',
+        talc_backend: 'ml',
+        talc_checkpoint: 'outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt',
+        talc_threshold: 0.5
       },
       preprocess: {...DEFAULT_PREPROCESS_PRESET},
       metadata_defaults: {}
@@ -1484,10 +1509,16 @@
         settingsBackendHeuristic: 'heuristic',
         settingsBackendMl: 'ML',
         settingsCheckpoint: 'Checkpoint',
+        settingsTalcBackend: 'Источник талька',
+        settingsTalcBackendHeuristic: 'heuristic',
+        settingsTalcBackendMl: 'ML model',
+        settingsTalcCheckpoint: 'Talc checkpoint',
+        settingsTalcThreshold: 'Talc threshold',
         settingsRuntimeTest: 'Проверить',
         settingsRuntimeTesting: 'Проверка runtime...',
         settingsRuntimeTestOkHeuristic: 'Эвристический backend доступен.',
         settingsRuntimeTestOkMl: 'ML backend загружен: {model}, {device}, {seconds} с.',
+        settingsRuntimeTestOkModels: 'Runtime доступен: {models}.',
         settingsRuntimeTestFailed: 'Проверка runtime не прошла: {error}',
         settingsPreprocessDefaults: 'Предобработка по умолчанию',
         settingsMetadataDefaults: 'Метаданные сессии по умолчанию',
@@ -1524,6 +1555,10 @@
         statusRuns: 'Запуски',
         statusSeries: 'Серии',
         statusBackend: 'Backend',
+        statusModels: 'Модели',
+        statusModelBinary: 'Сульфиды',
+        statusModelTalc: 'Тальк',
+        statusModelThreshold: 'порог {threshold}',
         statusUptime: 'Uptime',
         statusOk: 'OK',
         statusWarning: 'Внимание',
@@ -1768,8 +1803,9 @@
         statusPreprocessUpdated: 'Предобработанный предпросмотр обновлен.',
         statusAugmentationPreparedRun: 'Создан новый запуск {runId} с обновленной аугментацией. Нажмите Старт, чтобы продолжить расчет.',
         statusPreprocessPreparedRun: 'Создан новый запуск {runId} с обновленной предобработкой. Нажмите Старт, чтобы продолжить расчет.',
-        statusProgress: '{stage} · {progress}%{eta}',
-        statusEta: ' · осталось {seconds} с',
+        statusProgress: '{stage} · {progress}%{eta}{elapsed}',
+        statusEta: ' · осталось {duration}',
+        statusElapsed: ' · прошло {duration}',
         statusFailed: 'Ошибка: {error}',
         statusCanceling: 'Остановка запуска...',
         statusCanceled: 'Запуск остановлен.',
@@ -1798,6 +1834,14 @@
         metricsHeaderAreaPx: 'Площадь, px',
         metricsHeaderPhysicalArea: 'Физическая площадь',
         metricsDenominatorNote: 'Сульфиды, тальк и остальное считаются от проанализированной области; обычные и тонкие срастания — от площади сульфидов; артефакты — от всего изображения.',
+        sulfideGrainsTitle: 'Сульфидные зерна',
+        sulfideGrainsNote: 'Доля считается от общей площади сульфидов. Отмеченные строки обводятся на изображении как единый контур.',
+        sulfideGrainsEmpty: 'Сульфидные зерна не найдены.',
+        sulfideGrainsHeaderShow: 'Обводка',
+        sulfideGrainsHeaderId: 'ID',
+        sulfideGrainsHeaderType: 'Тип',
+        sulfideGrainsHeaderArea: 'Площадь, px',
+        sulfideGrainsHeaderShare: 'Доля сульфидов',
         decisionRationaleText: 'Основание: сульфиды — {sulfidePct}% проанализированной области; тальк — {talcPct}%; обычные/тонкие срастания — {ordinaryPct}%/{finePct}% от сульфидов; отрыв тонких от обычных — {intergrowthMargin} п.п.; запас по тальку — {talcMargin} п.п.{warnings}',
         decisionWarnings: '; предупреждения: {warnings}',
         notAvailable: 'н/д',
@@ -1808,6 +1852,7 @@
         historyDate: 'Дата',
         historyProgress: 'Прогресс',
         historyTileProgress: 'тайлы {processed}/{total}',
+        historyElapsed: 'затрачено {duration}',
         historyOreClassification: 'Классификация руды',
         historySulfides: 'Сульфиды',
         historyNonSulfides: 'Не сульфиды',
@@ -1921,10 +1966,16 @@
         settingsBackendHeuristic: 'heuristic',
         settingsBackendMl: 'ML',
         settingsCheckpoint: 'Checkpoint',
+        settingsTalcBackend: 'Talc source',
+        settingsTalcBackendHeuristic: 'heuristic',
+        settingsTalcBackendMl: 'ML model',
+        settingsTalcCheckpoint: 'Talc checkpoint',
+        settingsTalcThreshold: 'Talc threshold',
         settingsRuntimeTest: 'Test',
         settingsRuntimeTesting: 'Testing runtime...',
         settingsRuntimeTestOkHeuristic: 'Heuristic backend is available.',
         settingsRuntimeTestOkMl: 'ML backend loaded: {model}, {device}, {seconds}s.',
+        settingsRuntimeTestOkModels: 'Runtime available: {models}.',
         settingsRuntimeTestFailed: 'Runtime test failed: {error}',
         settingsPreprocessDefaults: 'Default preprocessing',
         settingsMetadataDefaults: 'Default session metadata',
@@ -1961,6 +2012,10 @@
         statusRuns: 'Runs',
         statusSeries: 'Series',
         statusBackend: 'Backend',
+        statusModels: 'Models',
+        statusModelBinary: 'Sulfides',
+        statusModelTalc: 'Talc',
+        statusModelThreshold: 'threshold {threshold}',
         statusUptime: 'Uptime',
         statusOk: 'OK',
         statusWarning: 'Warning',
@@ -2205,8 +2260,9 @@
         statusPreprocessUpdated: 'Preprocessing preview updated.',
         statusAugmentationPreparedRun: 'Created new run {runId} with updated augmentation. Press Start to continue evaluation.',
         statusPreprocessPreparedRun: 'Created new run {runId} with updated preprocessing. Press Start to continue evaluation.',
-        statusProgress: '{stage} · {progress}%{eta}',
-        statusEta: ' · ETA {seconds}s',
+        statusProgress: '{stage} · {progress}%{eta}{elapsed}',
+        statusEta: ' · ETA {duration}',
+        statusElapsed: ' · elapsed {duration}',
         statusFailed: 'Failed: {error}',
         statusCanceling: 'Stopping run...',
         statusCanceled: 'Run stopped.',
@@ -2235,6 +2291,14 @@
         metricsHeaderAreaPx: 'Area, px',
         metricsHeaderPhysicalArea: 'Physical area',
         metricsDenominatorNote: 'Sulfides, talc, and other use analyzed area as denominator; ordinary and fine intergrowths use sulfide area; artefacts use the whole image.',
+        sulfideGrainsTitle: 'Sulfide grains',
+        sulfideGrainsNote: 'Share is calculated from total sulfide area. Checked rows are stroked on the image as one combined outline.',
+        sulfideGrainsEmpty: 'No sulfide grains found.',
+        sulfideGrainsHeaderShow: 'Stroke',
+        sulfideGrainsHeaderId: 'ID',
+        sulfideGrainsHeaderType: 'Type',
+        sulfideGrainsHeaderArea: 'Area, px',
+        sulfideGrainsHeaderShare: 'Sulfide share',
         decisionRationaleText: 'Rationale: sulfides {sulfidePct}% of analyzed area; talc {talcPct}%; ordinary/fine intergrowths {ordinaryPct}%/{finePct}% of sulfides; fine-vs-ordinary margin {intergrowthMargin} pp; talc margin {talcMargin} pp{warnings}',
         decisionWarnings: '; warnings: {warnings}',
         notAvailable: 'n/a',
@@ -2245,6 +2309,7 @@
         historyDate: 'Date',
         historyProgress: 'Progress',
         historyTileProgress: 'tiles {processed}/{total}',
+        historyElapsed: 'elapsed {duration}',
         historyOreClassification: 'Ore classification',
         historySulfides: 'Sulfides',
         historyNonSulfides: 'Non-sulfides',
@@ -2325,6 +2390,20 @@
       const precision = unitIndex === 0 ? 0 : (scaled >= 10 ? 1 : 2);
       return `${scaled.toFixed(precision)} ${units[unitIndex]}`;
     }
+    function formatDurationSeconds(seconds) {
+      const value = Math.max(0, Math.round(Number(seconds || 0)));
+      const hours = Math.floor(value / 3600);
+      const minutes = Math.floor((value % 3600) / 60);
+      const rest = value % 60;
+      if (currentLanguage() === 'ru') {
+        if (hours > 0) return `${hours} ч ${String(minutes).padStart(2, '0')} мин`;
+        if (minutes > 0) return `${minutes} мин ${String(rest).padStart(2, '0')} с`;
+        return `${rest} с`;
+      }
+      if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+      if (minutes > 0) return `${minutes}m ${String(rest).padStart(2, '0')}s`;
+      return `${rest}s`;
+    }
     function formatCount(value) {
       return Number(value || 0).toLocaleString(localeCode());
     }
@@ -2360,8 +2439,8 @@
       if (!parts.length) return t('statusNoActiveJobs');
       const operationDetails = activeOperations.slice(0, 2).map(operation => {
         const label = operation.label || operation.kind || '';
-        const elapsed = Math.round(Number(operation.elapsed_seconds || 0));
-        return label ? `${label} ${elapsed}s` : '';
+        const elapsed = formatDurationSeconds(operation.elapsed_seconds || 0);
+        return label ? `${label} ${elapsed}` : '';
       }).filter(Boolean);
       return parts.concat(operationDetails).join(' · ');
     }
@@ -2378,6 +2457,15 @@
         used: formatBytes(device && device.memory_used_bytes),
         total: formatBytes(device && device.memory_total_bytes)
       });
+    }
+    function statusModelBackend(model, fallback = 'heuristic') {
+      return String((model && (model.backend || model.configured_backend)) || fallback || 'heuristic');
+    }
+    function statusModelDetails(labelKey, model) {
+      const parts = [`${t(labelKey)}: ${statusModelBackend(model)}`];
+      if (model && model.checkpoint) parts.push(String(model.checkpoint));
+      if (model && model.threshold != null) parts.push(t('statusModelThreshold', {threshold: Number(model.threshold).toFixed(2)}));
+      return parts.join(' · ');
     }
     function statusLogDetails(entry) {
       const details = entry && entry.details && typeof entry.details === 'object' ? entry.details : null;
@@ -2431,6 +2519,18 @@
         ? gpu.devices.map(device => statusGpuDeviceDetails(device)).join(' · ')
         : (gpu.message || '');
       const backendSubvalue = app.backend === 'ml' ? (app.checkpoint || '') : '';
+      const appModels = app.models && typeof app.models === 'object' ? app.models : {};
+      const binaryModel = appModels.binary_sulfide || {backend: app.backend, checkpoint: app.checkpoint || null};
+      const talcModel = appModels.talc || {
+        backend: app.talc_backend || 'heuristic',
+        checkpoint: app.talc_checkpoint || null,
+        threshold: app.talc_threshold
+      };
+      const modelsValue = `${statusModelBackend(binaryModel)} / ${statusModelBackend(talcModel)}`;
+      const modelsSubvalue = [
+        statusModelDetails('statusModelBinary', binaryModel),
+        statusModelDetails('statusModelTalc', talcModel)
+      ].join(' | ');
       $('statusCards').innerHTML = [
         statusCard('statusOverall', healthPill(health.overall), t('statusActiveJobs') + ': ' + statusActiveJobsText(history)),
         statusCard('statusCpu', escapeHtml(t('statusCpuValue', {load: formatPercentValue(cpu.load_percent_1m), cpus: cpu.logical_cpus || '—'})), `1m ${formatPercentValue(cpu.load_average_1m)} · 5m ${formatPercentValue(cpu.load_average_5m)} · 15m ${formatPercentValue(cpu.load_average_15m)}`),
@@ -2441,6 +2541,7 @@
         statusCard('statusRuns', escapeHtml(t('statusRunsValue', {count: formatCount(history.runs_total)})), statusCountsText(history.run_status_counts)),
         statusCard('statusSeries', escapeHtml(t('statusSeriesValue', {count: formatCount(history.batches_total)})), statusCountsText(history.batch_status_counts)),
         statusCard('statusBackend', escapeHtml(t('statusBackendValue', {backend: app.backend || '—'})), backendSubvalue),
+        statusCard('statusModels', escapeHtml(modelsValue), modelsSubvalue),
         statusCard('statusUptime', escapeHtml(t('statusUptimeValue', {seconds: Math.round(Number(app.uptime_seconds || 0))})), app.started_at ? formatDate(app.started_at) : '')
       ].join('');
       const checks = Array.isArray(health.checks) ? health.checks : [];
@@ -2848,7 +2949,11 @@
       const fallbackValues = fallback && typeof fallback === 'object' ? fallback : DEFAULT_APP_SETTINGS.runtime;
       const backend = ['heuristic', 'ml'].includes(values.backend) ? values.backend : (fallbackValues.backend || 'heuristic');
       const checkpoint = typeof values.checkpoint === 'string' ? values.checkpoint : (fallbackValues.checkpoint || '');
-      return {backend, checkpoint};
+      const talcBackend = ['heuristic', 'ml'].includes(values.talc_backend) ? values.talc_backend : (fallbackValues.talc_backend || 'heuristic');
+      const talcCheckpoint = typeof values.talc_checkpoint === 'string' ? values.talc_checkpoint : (fallbackValues.talc_checkpoint || '');
+      const talcThresholdValue = Number(values.talc_threshold ?? fallbackValues.talc_threshold ?? 0.5);
+      const talcThreshold = Number.isFinite(talcThresholdValue) ? Math.max(0.01, Math.min(0.99, talcThresholdValue)) : 0.5;
+      return {backend, checkpoint, talc_backend: talcBackend, talc_checkpoint: talcCheckpoint, talc_threshold: talcThreshold};
     }
     function normalizedAppSettings(settings = {}) {
       const values = settings && typeof settings === 'object' ? settings : {};
@@ -2872,7 +2977,13 @@
         theme: storedThemeChoice(),
         show_tiling: false,
         runtime: state.systemStatus && state.systemStatus.app
-          ? {backend: state.systemStatus.app.backend, checkpoint: state.systemStatus.app.checkpoint || ''}
+          ? {
+              backend: state.systemStatus.app.backend,
+              checkpoint: state.systemStatus.app.checkpoint || '',
+              talc_backend: state.systemStatus.app.talc_backend || 'heuristic',
+              talc_checkpoint: state.systemStatus.app.talc_checkpoint || '',
+              talc_threshold: state.systemStatus.app.talc_threshold ?? DEFAULT_APP_SETTINGS.runtime.talc_threshold
+            }
           : DEFAULT_APP_SETTINGS.runtime,
         preprocess: storedPreprocessPreset(),
         metadata_defaults: metadataDefaultsFromLocalStorage()
@@ -3122,6 +3233,9 @@
       $('settingsShowTiling').checked = normalized.show_tiling;
       $('settingsBackend').value = normalized.runtime.backend;
       $('settingsCheckpoint').value = normalized.runtime.checkpoint || '';
+      $('settingsTalcBackend').value = normalized.runtime.talc_backend;
+      $('settingsTalcCheckpoint').value = normalized.runtime.talc_checkpoint || '';
+      $('settingsTalcThreshold').value = Number(normalized.runtime.talc_threshold || 0.5).toFixed(2);
       $('settingsPreprocessingEnabled').checked = normalized.preprocess.preprocessing_enabled;
       $('settingsIllumination').checked = normalized.preprocess.illumination_normalization;
       $('settingsDenoise').checked = normalized.preprocess.denoise;
@@ -3159,7 +3273,10 @@
         show_tiling: $('settingsShowTiling').checked,
         runtime: {
           backend: $('settingsBackend').value,
-          checkpoint: $('settingsCheckpoint').value.trim()
+          checkpoint: $('settingsCheckpoint').value.trim(),
+          talc_backend: $('settingsTalcBackend').value,
+          talc_checkpoint: $('settingsTalcCheckpoint').value.trim(),
+          talc_threshold: $('settingsTalcThreshold').value
         },
         preprocess: {
           preprocessing_enabled: $('settingsPreprocessingEnabled').checked,
@@ -3187,6 +3304,19 @@
     function runtimeTestSuccessStatus(payload) {
       const details = payload && payload.details && typeof payload.details === 'object' ? payload.details : {};
       const checkpointMeta = details.checkpoint_meta && typeof details.checkpoint_meta === 'object' ? details.checkpoint_meta : {};
+      const models = payload && payload.models && typeof payload.models === 'object' ? payload.models : {};
+      const loadedModels = Object.values(models).filter(model => model && model.ok && model.backend === 'ml');
+      if (loadedModels.length) {
+        return {
+          key: 'settingsRuntimeTestOkModels',
+          params: {
+            models: loadedModels.map(model => {
+              const meta = model.details && typeof model.details === 'object' && model.details.checkpoint_meta ? model.details.checkpoint_meta : {};
+              return `${model.role || 'model'}=${meta.model || 'model'}`;
+            }).join(', ')
+          }
+        };
+      }
       if (payload && payload.backend === 'ml') {
         return {
           key: 'settingsRuntimeTestOkMl',
@@ -4632,7 +4762,7 @@
       let preparedRun = runIsPrepared(state.run) ? state.run : null;
       clearRunResultsForStart(preparedRun);
       setProgress(1);
-      setStatus('statusProgress', {stage: stageLabel('queued'), progress: 1, eta: ''});
+      setStatus('statusProgress', {stage: stageLabel('queued'), progress: 1, eta: '', elapsed: ''});
       try {
         // Start always applies the current settings: if the loaded prepared run was built from
         // earlier Apply-time settings that no longer match the current controls, re-prepare it in
@@ -4726,8 +4856,18 @@
       if (activePollRunId !== runId) return;
       state.run = payload;
       setProgress(payload.progress || 0);
-      const eta = payload.eta_seconds == null ? '' : t('statusEta', {seconds: payload.eta_seconds});
-      setStatus('statusProgress', {stage: stageLabel(payload.stage || payload.status || 'running'), progress: payload.progress || 0, eta});
+      const eta = payload.eta_seconds == null || Number(payload.progress || 0) >= 100
+        ? ''
+        : t('statusEta', {duration: formatDurationSeconds(payload.eta_seconds)});
+      const elapsed = payload.elapsed_seconds == null
+        ? ''
+        : t('statusElapsed', {duration: formatDurationSeconds(payload.elapsed_seconds)});
+      setStatus('statusProgress', {
+        stage: stageLabel(payload.stage || payload.status || 'running'),
+        progress: payload.progress || 0,
+        eta,
+        elapsed
+      });
       updateRunControls(payload);
       if (payload.status === 'complete') {
         activePollRunId = null;
@@ -4911,10 +5051,12 @@
       return Math.round(clampNumber(Number.isFinite(value) ? value : 0, 0, 100));
     }
     function runProgressDetails(run) {
-      if (!run || !runIsActive(run)) return '';
+      if (!run) return '';
       const parts = [];
       const statusText = stageLabel(run.status || 'running');
-      if (run.stage) {
+      if (!runIsActive(run)) {
+        parts.push(statusText);
+      } else if (run.stage) {
         const stageText = stageLabel(run.stage);
         if (stageText && stageText !== statusText) parts.push(stageText);
       }
@@ -4924,20 +5066,19 @@
         const tilesProcessed = Math.max(0, Math.min(Number(tileProgress.tiles_processed || 0), tilesTotal));
         parts.push(t('historyTileProgress', {processed: Math.round(tilesProcessed), total: Math.round(tilesTotal)}));
       }
-      if (run.eta_seconds != null) parts.push(t('statusEta', {seconds: run.eta_seconds}).trim());
+      if (runIsActive(run) && run.eta_seconds != null) {
+        parts.push(t('statusEta', {duration: formatDurationSeconds(run.eta_seconds)}).trim());
+      }
+      if (run.elapsed_seconds != null) {
+        parts.push(t('historyElapsed', {duration: formatDurationSeconds(run.elapsed_seconds)}));
+      }
       return parts.join(' · ');
     }
     function renderHistoryProgress(run) {
       const progress = runProgressPercent(run);
-      const active = runIsActive(run);
-      const label = stageLabel((run && run.status) || 'complete');
       const details = runProgressDetails(run);
-      const bar = active
-        ? `<div class="history-progress-bar" aria-hidden="true"><span style="width:${progress}%"></span></div>`
-        : '';
       return `<div class="history-progress-cell">
-        <div class="history-progress-head"><span>${escapeHtml(label)}</span><strong>${escapeHtml(progress + '%')}</strong></div>
-        ${bar}
+        <div class="history-progress-head"><strong>${escapeHtml(progress + '%')}</strong></div>
         ${details ? `<small>${escapeHtml(details)}</small>` : ''}
       </div>`;
     }
@@ -5022,7 +5163,10 @@
       const title = runFilename(run) || run.run_id || t('historyPreviewTitle');
       const date = formatDate(run.created_at);
       const summaryText = localizedRunText(run) || run.status || '';
-      const progressText = runIsActive(run) ? `${stageLabel(run.status || 'running')} · ${runProgressPercent(run)}%` : '';
+      const details = runProgressDetails(run);
+      const progressText = runIsActive(run)
+        ? `${runProgressPercent(run)}%${details ? ' · ' + details : ''}`
+        : (run.elapsed_seconds == null ? '' : t('historyElapsed', {duration: formatDurationSeconds(run.elapsed_seconds)}));
       return `<div class="history-row">
         <div class="history-row-media">
           ${renderHistoryThumbnail(run)}

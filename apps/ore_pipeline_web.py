@@ -66,6 +66,9 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 DEFAULT_WORKSPACE_DIR = ROOT / "outputs/ore_pipeline_ui"
 DEFAULT_CHECKPOINT = ROOT / "models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt"
+DEFAULT_TALC_CHECKPOINT = ROOT / "outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt"
+DEFAULT_TALC_THRESHOLD = 0.5
+DEFAULT_TALC_BACKEND = "ml" if DEFAULT_TALC_CHECKPOINT.exists() else "heuristic"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 220 * 1024 * 1024
 LOG_ENTRY_LIMIT = 300
@@ -140,6 +143,9 @@ DEFAULT_APP_SETTINGS = {
     "runtime": {
         "backend": "heuristic",
         "checkpoint": str(DEFAULT_CHECKPOINT.resolve()) if DEFAULT_CHECKPOINT.exists() else "",
+        "talc_backend": DEFAULT_TALC_BACKEND,
+        "talc_checkpoint": str(DEFAULT_TALC_CHECKPOINT.resolve()) if DEFAULT_TALC_CHECKPOINT.exists() else "",
+        "talc_threshold": DEFAULT_TALC_THRESHOLD,
     },
     "preprocess": {
         "preprocessing_enabled": True,
@@ -177,6 +183,28 @@ class RunCancelled(RuntimeError):
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def elapsed_seconds_between(started_at: Any, ended_at: Any | None = None) -> float | None:
+    started = parse_iso_datetime(started_at)
+    if not started:
+        return None
+    ended = parse_iso_datetime(ended_at) if ended_at is not None else datetime.now(timezone.utc)
+    if not ended:
+        return None
+    return round(max(0.0, (ended - started).total_seconds()), 3)
 
 
 def json_response(payload: Any) -> bytes:
@@ -464,49 +492,14 @@ def settings_value(payload: dict[str, Any], key: str, fallback: Any, aliases: tu
 
 
 def normalize_settings_preprocess(payload: Any, base: dict[str, Any] | None = None) -> dict[str, Any]:
-    if payload is None:
-        payload = {}
-    if not isinstance(payload, dict):
-        raise ApiError(HTTPStatus.BAD_REQUEST, "settings.preprocess must be an object")
+    # Delegates the actual normalization to the shared ore_classifier.preprocessing
+    # module so the UI and the offline harness stay byte-identical; only the
+    # HTTP-specific error type is applied here.
     fallback = base if isinstance(base, dict) else DEFAULT_APP_SETTINGS["preprocess"]
-    return {
-        "preprocessing_enabled": settings_bool(payload, "preprocessing_enabled", bool(fallback["preprocessing_enabled"]), ("enabled",)),
-        "illumination_normalization": settings_bool(payload, "illumination_normalization", bool(fallback["illumination_normalization"]), ("illumination",)),
-        "denoise": settings_bool(payload, "denoise", bool(fallback["denoise"]), ("noise_reduction",)),
-        "contrast_correction": settings_bool(payload, "contrast_correction", bool(fallback["contrast_correction"]), ("contrast",)),
-        "panorama_scaling": settings_bool(payload, "panorama_scaling", bool(fallback["panorama_scaling"]), ("panoramaScaling",)),
-        "panorama_scaling_mode": normalized_panorama_scaling_mode(
-            settings_value(
-                payload,
-                "panorama_scaling_mode",
-                fallback.get("panorama_scaling_mode", PANORAMA_SCALING_MODE_MAX_SIDE),
-                ("panoramaScalingMode",),
-            ),
-            PANORAMA_SCALING_MODE_MAX_SIDE,
-        ),
-        "panorama_max_side_px": normalized_int(
-            settings_value(
-                payload,
-                "panorama_max_side_px",
-                fallback.get("panorama_max_side_px", DEFAULT_PANORAMA_MAX_SIDE_PX),
-                ("panoramaMaxSidePx", "panorama_max_side", "panoramaMaxSide"),
-            ),
-            DEFAULT_PANORAMA_MAX_SIDE_PX,
-            MIN_PANORAMA_MAX_SIDE_PX,
-            MAX_PANORAMA_MAX_SIDE_PX,
-        ),
-        "panorama_scale_factor": normalized_float(
-            settings_value(
-                payload,
-                "panorama_scale_factor",
-                fallback.get("panorama_scale_factor", DEFAULT_PANORAMA_SCALE_FACTOR),
-                ("panoramaScaleFactor", "panorama_scaling_factor"),
-            ),
-            DEFAULT_PANORAMA_SCALE_FACTOR,
-            MIN_PANORAMA_SCALE_FACTOR,
-            MAX_PANORAMA_SCALE_FACTOR,
-        ),
-    }
+    try:
+        return normalize_preprocess_settings(payload, fallback)
+    except ValueError as exc:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "settings.preprocess must be an object") from exc
 
 
 def normalize_settings_runtime(payload: Any, base: dict[str, Any] | None = None, *, validate_checkpoint: bool = False) -> dict[str, Any]:
@@ -529,7 +522,43 @@ def normalize_settings_runtime(payload: Any, base: dict[str, Any] | None = None,
             raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime.checkpoint is required for ml backend")
         if validate_checkpoint and not Path(checkpoint_value).exists():
             raise ApiError(HTTPStatus.BAD_REQUEST, f"settings.runtime.checkpoint does not exist: {checkpoint_value}")
-    return {"backend": backend, "checkpoint": checkpoint_value}
+    talc_backend_raw = payload_value(payload, "talc_backend", ("talcBackend", "talc_source", "talcSource"))
+    talc_backend = str(talc_backend_raw if talc_backend_raw is not None else fallback.get("talc_backend", "heuristic") or "heuristic").lower()
+    if talc_backend in {"auto", "auto_candidate", "candidate", "heuristic_candidate"}:
+        talc_backend = "heuristic"
+    if talc_backend in {"model", "ml_model"}:
+        talc_backend = "ml"
+    if talc_backend not in {"heuristic", "ml"}:
+        raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime.talc_backend must be heuristic or ml")
+    talc_checkpoint_value = str(
+        payload_value(payload, "talc_checkpoint", ("talcCheckpoint",))
+        if payload_value(payload, "talc_checkpoint", ("talcCheckpoint",)) is not None
+        else fallback.get("talc_checkpoint", "")
+        or ""
+    ).strip()
+    if talc_checkpoint_value:
+        talc_checkpoint_path = Path(talc_checkpoint_value).expanduser()
+        if not talc_checkpoint_path.is_absolute():
+            talc_checkpoint_path = ROOT / talc_checkpoint_path
+        talc_checkpoint_value = str(talc_checkpoint_path.resolve())
+    talc_threshold = normalized_float(
+        payload_value(payload, "talc_threshold", ("talcThreshold",)),
+        float(fallback.get("talc_threshold", DEFAULT_TALC_THRESHOLD)),
+        0.01,
+        0.99,
+    )
+    if talc_backend == "ml":
+        if not talc_checkpoint_value:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "settings.runtime.talc_checkpoint is required for talc ml backend")
+        if validate_checkpoint and not Path(talc_checkpoint_value).exists():
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"settings.runtime.talc_checkpoint does not exist: {talc_checkpoint_value}")
+    return {
+        "backend": backend,
+        "checkpoint": checkpoint_value,
+        "talc_backend": talc_backend,
+        "talc_checkpoint": talc_checkpoint_value,
+        "talc_threshold": talc_threshold,
+    }
 
 
 def normalize_app_settings_payload(
@@ -716,35 +745,6 @@ def normalize_curated_metadata_payload(payload: Any) -> dict[str, Any] | None:
         for key in ("domain", "raw_summary", "session_defaults_applied", "warnings")
     ) or bool(extra)
     return normalized if has_content else None
-
-
-def apply_preprocessing(image: Image.Image, preset: dict[str, Any]) -> Image.Image:
-    # Keep a single numpy RGB buffer across steps. The previous version round-tripped
-    # PIL<->numpy once per enabled step, allocating several full-size copies of large
-    # images (costly for panorama-scale inputs). Output is pixel-identical; only the
-    # redundant intermediate PIL images and array copies are removed.
-    arr = np.asarray(image.convert("RGB"))
-    if preset.get("illumination_normalization"):
-        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
-        value = hsv[..., 2]
-        sigma = max(9.0, min(value.shape) / 32.0)
-        background = cv2.GaussianBlur(value, (0, 0), sigmaX=sigma)
-        corrected = value.astype(np.float32) - background.astype(np.float32) + float(np.median(background))
-        hsv[..., 2] = cv2.normalize(corrected, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        arr = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-    if preset.get("denoise"):
-        arr = cv2.fastNlMeansDenoisingColored(arr, None, 4, 4, 7, 21)
-    if preset.get("contrast_correction"):
-        lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
-        l_channel, a_channel, b_channel = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        corrected_l = clahe.apply(l_channel)
-        corrected = cv2.merge((corrected_l, a_channel, b_channel))
-        arr = cv2.cvtColor(corrected, cv2.COLOR_LAB2RGB)
-    result = Image.fromarray(arr, mode="RGB")
-    if preset.get("contrast_correction"):
-        result = ImageEnhance.Contrast(result).enhance(1.05)
-    return result
 
 
 def save_image(path: Path, image: Image.Image, *, optimize: bool = False) -> None:
@@ -1414,6 +1414,9 @@ class OrePipelineStore:
         processing_max_side: int,
         panorama_max_side: int,
         preview_max_sides: tuple[int, ...],
+        talc_backend: str = "heuristic",
+        talc_checkpoint: Path | None = None,
+        talc_threshold: float = DEFAULT_TALC_THRESHOLD,
     ) -> None:
         self.workspace_dir = resolve_path(workspace_dir)
         self.uploads_dir = self.workspace_dir / "uploads"
@@ -1423,6 +1426,9 @@ class OrePipelineStore:
         self.settings_path = self.settings_dir / "app_settings.json"
         self.backend = backend
         self.checkpoint = resolve_path(checkpoint) if checkpoint else None
+        self.talc_backend = talc_backend
+        self.talc_checkpoint = resolve_path(talc_checkpoint) if talc_checkpoint else None
+        self.talc_threshold = float(talc_threshold)
         self.processing_max_side = int(processing_max_side)
         self.panorama_max_side = int(panorama_max_side)
         self.preview_max_sides = preview_max_sides
@@ -1446,6 +1452,9 @@ class OrePipelineStore:
             backend=self.backend,
             workspace_dir=str(self.workspace_dir),
             checkpoint=str(self.checkpoint) if self.checkpoint else None,
+            talc_backend=self.talc_backend,
+            talc_checkpoint=str(self.talc_checkpoint) if self.talc_checkpoint else None,
+            talc_threshold=self.talc_threshold,
         )
 
     def record_system_event(self, level: str, message: str, **fields: Any) -> None:
@@ -1500,6 +1509,9 @@ class OrePipelineStore:
             {
                 "backend": self.backend,
                 "checkpoint": str(self.checkpoint) if self.checkpoint else "",
+                "talc_backend": self.talc_backend,
+                "talc_checkpoint": str(self.talc_checkpoint) if self.talc_checkpoint else "",
+                "talc_threshold": self.talc_threshold,
             }
         )
 
@@ -1533,6 +1545,9 @@ class OrePipelineStore:
         with self.lock:
             self.backend = normalized["backend"]
             self.checkpoint = Path(normalized["checkpoint"]) if normalized["checkpoint"] else None
+            self.talc_backend = normalized["talc_backend"]
+            self.talc_checkpoint = Path(normalized["talc_checkpoint"]) if normalized["talc_checkpoint"] else None
+            self.talc_threshold = float(normalized["talc_threshold"])
         return self.current_runtime_settings()
 
     def _load_persisted_runtime_settings(self) -> None:
@@ -1566,19 +1581,36 @@ class OrePipelineStore:
         *,
         backend: str | None = None,
         checkpoint: str | Path | None = None,
+        talc_backend: str | None = None,
+        talc_checkpoint: str | Path | None = None,
+        talc_threshold: float | None = None,
     ) -> dict[str, Any]:
         backend_value = str(backend or self.backend or "heuristic").lower()
         checkpoint_path = self._runtime_checkpoint_path(checkpoint if checkpoint is not None else self.checkpoint)
         binary_checkpoint = checkpoint_path if backend_value == "ml" else None
-        talc_backend = "auto_candidate" if backend_value == "ml" else "heuristic_candidate"
+        talc_backend_value = str(talc_backend or self.talc_backend or "heuristic").lower()
+        if talc_backend_value in {"model", "ml_model"}:
+            talc_backend_value = "ml"
+        if talc_backend_value not in {"heuristic", "ml"}:
+            talc_backend_value = "heuristic"
+        talc_checkpoint_path = self._runtime_checkpoint_path(talc_checkpoint if talc_checkpoint is not None else self.talc_checkpoint)
+        talc_checkpoint_path = talc_checkpoint_path if talc_backend_value == "ml" else None
+        talc_model_backend = "ml_model" if talc_backend_value == "ml" else ("auto_candidate" if backend_value == "ml" else "heuristic_candidate")
+        talc_threshold_value = (
+            normalized_float(talc_threshold, DEFAULT_TALC_THRESHOLD, 0.01, 0.99)
+            if talc_threshold is not None
+            else normalized_float(self.talc_threshold, DEFAULT_TALC_THRESHOLD, 0.01, 0.99)
+        )
         return {
             "schema_version": RUNTIME_PROVENANCE_SCHEMA_VERSION,
             "backend": backend_value,
+            "talc_backend": talc_backend_value,
+            "talc_threshold": talc_threshold_value,
             "recorded_at": utc_now_iso(),
             "python_executable": sys.executable,
             "checkpoints": {
                 "binary_sulfide": binary_checkpoint,
-                "talc": None,
+                "talc": talc_checkpoint_path,
                 "final_segmentation": None,
             },
             "models": {
@@ -1589,9 +1621,10 @@ class OrePipelineStore:
                     "source": "ML checkpoint" if backend_value == "ml" else "heuristic_segmentation",
                 },
                 "talc": {
-                    "backend": talc_backend,
-                    "checkpoint": None,
-                    "role": "talc candidate detection",
+                    "backend": talc_model_backend,
+                    "checkpoint": talc_checkpoint_path,
+                    "threshold": talc_threshold_value if talc_backend_value == "ml" else None,
+                    "role": "talc detection",
                 },
                 "final_segmentation": {
                     "backend": "component_rules",
@@ -1614,7 +1647,35 @@ class OrePipelineStore:
             or metadata.get("checkpoint")
             or (str(self.checkpoint) if self.checkpoint else None)
         )
-        provenance = self._initial_runtime_provenance(backend=backend, checkpoint=checkpoint)
+        runtime_models = runtime.get("models") if isinstance(runtime.get("models"), dict) else {}
+        talc_model = runtime_models.get("talc") if isinstance(runtime_models.get("talc"), dict) else {}
+        talc_backend = str(runtime.get("talc_backend") or talc_model.get("source") or talc_model.get("backend") or self.talc_backend or "heuristic").lower()
+        if talc_backend in {"model", "ml_model"}:
+            talc_backend = "ml"
+        elif talc_backend in {"auto", "auto_candidate", "candidate", "heuristic_candidate"}:
+            talc_backend = "heuristic"
+        talc_checkpoint = (
+            checkpoints.get("talc")
+            or runtime.get("talc_checkpoint")
+            or talc_model.get("checkpoint")
+            or (str(self.talc_checkpoint) if self.talc_checkpoint else None)
+        )
+        talc_threshold = runtime.get("talc_threshold", talc_model.get("threshold", self.talc_threshold))
+        provenance = self._initial_runtime_provenance(
+            backend=backend,
+            checkpoint=checkpoint,
+            talc_backend=talc_backend,
+            talc_checkpoint=talc_checkpoint,
+            talc_threshold=talc_threshold,
+        )
+        if isinstance(runtime.get("checkpoints"), dict):
+            for key, value in runtime["checkpoints"].items():
+                if key in provenance["checkpoints"] and value:
+                    provenance["checkpoints"][key] = json_safe_value(value)
+        if isinstance(runtime.get("models"), dict):
+            for key, value in runtime["models"].items():
+                if key in provenance["models"] and isinstance(value, dict):
+                    provenance["models"][key] = {**provenance["models"][key], **json_safe_value(value)}
         for key, value in runtime.items():
             if key not in {"schema_version", "backend", "checkpoints", "models", "recorded_at", "python_executable"}:
                 provenance[key] = json_safe_value(value)
@@ -1635,6 +1696,9 @@ class OrePipelineStore:
         runtime = self._runtime_provenance_from_metadata(metadata, run_dir)
         binary_summary = self._read_optional_json(run_dir / "ml_pipeline/binary_sulfide/summary.json")
         pipeline_summary = self._read_optional_json(run_dir / "ml_pipeline/pipeline_summary.json")
+        talc_summary = self._read_optional_json(run_dir / "ml_pipeline/talc_model/summary.json")
+        if not talc_summary:
+            talc_summary = self._read_optional_json(run_dir / "talc_model/summary.json")
         if binary_summary:
             checkpoint = self._runtime_checkpoint_path(binary_summary.get("checkpoint") or runtime["checkpoints"].get("binary_sulfide"))
             runtime["backend"] = "ml"
@@ -1657,13 +1721,21 @@ class OrePipelineStore:
                 "schema_version": pipeline_summary.get("schema_version"),
                 "image": pipeline_summary.get("image"),
                 "talc_source": pipeline_summary.get("talc_source"),
+                "talc_checkpoint": pipeline_summary.get("talc_checkpoint"),
+                "talc_threshold": pipeline_summary.get("talc_threshold"),
                 "rule_config": json_safe_value(pipeline_summary.get("rule_config") or {}),
             }
+            pipeline_talc_checkpoint = self._runtime_checkpoint_path(pipeline_summary.get("talc_checkpoint"))
+            if pipeline_talc_checkpoint:
+                runtime["checkpoints"]["talc"] = pipeline_talc_checkpoint
+            if pipeline_summary.get("talc_threshold") is not None:
+                runtime["talc_threshold"] = normalized_float(pipeline_summary.get("talc_threshold"), runtime.get("talc_threshold", DEFAULT_TALC_THRESHOLD), 0.01, 0.99)
             runtime["models"]["talc"] = {
                 **runtime["models"].get("talc", {}),
                 "backend": pipeline_summary.get("talc_source") or runtime["models"].get("talc", {}).get("backend"),
-                "checkpoint": None,
-                "role": "talc candidate detection",
+                "checkpoint": pipeline_talc_checkpoint if pipeline_talc_checkpoint else runtime["checkpoints"].get("talc"),
+                "threshold": runtime.get("talc_threshold"),
+                "role": "talc detection",
             }
             runtime["models"]["final_segmentation"] = {
                 **runtime["models"].get("final_segmentation", {}),
@@ -1671,7 +1743,29 @@ class OrePipelineStore:
                 "checkpoint": None,
                 "rule_config": json_safe_value(pipeline_summary.get("rule_config") or DEFAULT_RULE_CONFIG),
             }
+        if talc_summary:
+            checkpoint = self._runtime_checkpoint_path(talc_summary.get("checkpoint") or runtime["checkpoints"].get("talc"))
+            runtime["talc_backend"] = "ml"
+            runtime["checkpoints"]["talc"] = checkpoint
+            runtime["talc_threshold"] = normalized_float(talc_summary.get("threshold"), runtime.get("talc_threshold", DEFAULT_TALC_THRESHOLD), 0.01, 0.99)
+            runtime["models"]["talc"] = {
+                **runtime["models"].get("talc", {}),
+                "backend": "ml_model",
+                "checkpoint": checkpoint,
+                "role": "talc detection",
+                "schema_version": talc_summary.get("schema_version"),
+                "checkpoint_meta": json_safe_value(talc_summary.get("checkpoint_meta") or {}),
+                "device": talc_summary.get("device"),
+                "tile_size": talc_summary.get("tile_size"),
+                "stride": talc_summary.get("stride"),
+                "threshold": talc_summary.get("threshold"),
+                "tiles": talc_summary.get("tiles"),
+                "talc_fraction_non_sulfide": talc_summary.get("talc_fraction_non_sulfide"),
+                "talc_fraction_analyzed": talc_summary.get("talc_fraction_analyzed"),
+            }
         runtime["completed_at"] = metadata.get("completed_at") or runtime.get("completed_at")
+        if metadata.get("elapsed_seconds") is not None:
+            runtime["elapsed_seconds"] = json_safe_value(metadata.get("elapsed_seconds"))
         runtime["backend"] = str(runtime.get("backend") or metadata.get("backend") or self.backend or "heuristic").lower()
         metadata["runtime"] = runtime
         metadata["backend"] = runtime["backend"]
@@ -1977,12 +2071,27 @@ class OrePipelineStore:
             curated_metadata=normalized_curated_metadata,
             batch_link=batch_link,
         )
+        started_at_iso = utc_now_iso()
+        started_at_monotonic = time.time()
+        run_metadata = self._read_run(run_id)
+        run_metadata["status"] = "queued"
+        run_metadata["stage"] = "queued"
+        run_metadata["progress"] = 1
+        run_metadata["started_at"] = started_at_iso
+        run_metadata["elapsed_seconds"] = 0
+        run_metadata["eta_seconds"] = None
+        runtime = self._runtime_provenance_from_metadata(run_metadata, run_dir)
+        runtime["started_at"] = started_at_iso
+        run_metadata["runtime"] = runtime
+        self._write_json(run_dir / "run.json", run_metadata)
         with self.lock:
             self.jobs[run_id] = {
                 "progress": 1,
                 "status": "queued",
                 "stage": "queued",
-                "started_at": time.time(),
+                "started_at": started_at_monotonic,
+                "started_at_iso": started_at_iso,
+                "elapsed_seconds": 0,
                 "eta_seconds": None,
                 "cancel_requested": False,
             }
@@ -2086,16 +2195,22 @@ class OrePipelineStore:
         metadata["stage"] = "queued"
         metadata["progress"] = 1
         metadata["eta_seconds"] = None
+        started_at_iso = utc_now_iso()
+        metadata["started_at"] = started_at_iso
+        metadata["elapsed_seconds"] = 0
         runtime = self._runtime_provenance_from_metadata(metadata, run_dir)
-        runtime["started_at"] = utc_now_iso()
+        runtime["started_at"] = started_at_iso
         metadata["runtime"] = runtime
         self._write_json(run_dir / "run.json", metadata)
+        started_at_monotonic = time.time()
         with self.lock:
             self.jobs[run_id] = {
                 "progress": 1,
                 "status": "queued",
                 "stage": "queued",
-                "started_at": time.time(),
+                "started_at": started_at_monotonic,
+                "started_at_iso": started_at_iso,
+                "elapsed_seconds": 0,
                 "eta_seconds": None,
                 "cancel_requested": False,
             }
@@ -2180,9 +2295,12 @@ class OrePipelineStore:
                 {
                     "run_id": run_id,
                     "created_at": data.get("created_at"),
+                    "started_at": data.get("started_at"),
+                    "completed_at": data.get("completed_at"),
                     "status": data.get("status"),
                     "progress": data.get("progress", 0),
                     "stage": data.get("stage"),
+                    "elapsed_seconds": data.get("elapsed_seconds"),
                     "eta_seconds": data.get("eta_seconds"),
                     "tile_progress": data.get("tile_progress"),
                     "parent_run_id": (data.get("derivation") or {}).get("parent_run_id"),
@@ -2241,6 +2359,12 @@ class OrePipelineStore:
             checks.append({"key": "checkpoint", "status": "ok", "message": str(self.checkpoint)})
         else:
             checks.append({"key": "backend", "status": "ok", "message": self.backend})
+        if self.talc_backend == "ml" and (not self.talc_checkpoint or not self.talc_checkpoint.exists()):
+            checks.append({"key": "talc_checkpoint", "status": "error", "message": str(self.talc_checkpoint or "")})
+        elif self.talc_backend == "ml":
+            checks.append({"key": "talc_checkpoint", "status": "ok", "message": str(self.talc_checkpoint)})
+        else:
+            checks.append({"key": "talc_backend", "status": "ok", "message": self.talc_backend})
         if disk["free_percent"] < 3:
             checks.append({"key": "flash_free", "status": "error", "message": f"{disk['free_percent']:.1f}%"})
         elif disk["free_percent"] < 10:
@@ -2277,6 +2401,22 @@ class OrePipelineStore:
         elif any(check["status"] == "warning" for check in checks):
             overall = "warning"
         history_size = int(runs_size["size_bytes"]) + int(batches_size["size_bytes"])
+        binary_model = {
+            "backend": self.backend,
+            "checkpoint": str(self.checkpoint) if self.checkpoint else None,
+            "checkpoint_exists": bool(self.checkpoint and self.checkpoint.exists()),
+            "role": "sulfide/non-sulfide segmentation",
+            "source": "ML checkpoint" if self.backend == "ml" else "heuristic_segmentation",
+        }
+        talc_model_backend = "ml_model" if self.talc_backend == "ml" else ("auto_candidate" if self.backend == "ml" else "heuristic_candidate")
+        talc_model = {
+            "backend": talc_model_backend,
+            "configured_backend": self.talc_backend,
+            "checkpoint": str(self.talc_checkpoint) if self.talc_checkpoint else None,
+            "checkpoint_exists": bool(self.talc_checkpoint and self.talc_checkpoint.exists()),
+            "threshold": self.talc_threshold if self.talc_backend == "ml" else None,
+            "role": "talc detection",
+        }
         return {
             "schema_version": "ore-pipeline-status-v0.1",
             "generated_at": utc_now_iso(),
@@ -2286,6 +2426,14 @@ class OrePipelineStore:
                 "backend": self.backend,
                 "checkpoint": str(self.checkpoint) if self.checkpoint else None,
                 "checkpoint_exists": bool(self.checkpoint and self.checkpoint.exists()),
+                "talc_backend": self.talc_backend,
+                "talc_checkpoint": str(self.talc_checkpoint) if self.talc_checkpoint else None,
+                "talc_checkpoint_exists": bool(self.talc_checkpoint and self.talc_checkpoint.exists()),
+                "talc_threshold": self.talc_threshold,
+                "models": {
+                    "binary_sulfide": binary_model,
+                    "talc": talc_model,
+                },
                 "workspace_dir": str(self.workspace_dir),
             },
             "health": {"overall": overall, "checks": checks},
@@ -2352,28 +2500,33 @@ class OrePipelineStore:
             "generated_at": utc_now_iso(),
             "backend": runtime["backend"],
             "checkpoint": runtime["checkpoint"] or None,
+            "talc_backend": runtime["talc_backend"],
+            "talc_checkpoint": runtime["talc_checkpoint"] or None,
+            "talc_threshold": runtime["talc_threshold"],
             "ok": False,
             "status": "error",
             "seconds": 0.0,
         }
-        if runtime["backend"] == "heuristic":
-            result = {
-                **base_result,
+        requested_ml = runtime["backend"] == "ml" or runtime["talc_backend"] == "ml"
+        if requested_ml:
+            active_jobs = self._active_runtime_jobs()
+            if active_jobs:
+                raise ApiError(HTTPStatus.CONFLICT, f"runtime test cannot run while jobs are active: {', '.join(active_jobs)}")
+
+        def heuristic_probe(role: str, backend: str) -> dict[str, Any]:
+            return {
                 "ok": True,
                 "status": "ok",
-                "message": "heuristic backend is available",
-                "seconds": round(time.time() - started, 3),
+                "backend": backend,
+                "role": role,
+                "checkpoint": None,
+                "message": f"{role} uses {backend}",
                 "details": {"module": "heuristic_segmentation.segmentation", "function": "segment_image"},
             }
-            self.record_system_event("info", "runtime test ok", backend="heuristic")
-            return result
 
-        active_jobs = self._active_runtime_jobs()
-        if active_jobs:
-            raise ApiError(HTTPStatus.CONFLICT, f"runtime test cannot run while jobs are active: {', '.join(active_jobs)}")
-
-        checkpoint = Path(runtime["checkpoint"])
-        probe_script = r"""
+        def checkpoint_probe(checkpoint_value: str, role: str) -> dict[str, Any]:
+            checkpoint = Path(checkpoint_value)
+            probe_script = r"""
 import json
 import sys
 import time
@@ -2402,60 +2555,105 @@ print(json.dumps({
     "seconds": round(time.time() - started, 3),
 }, default=str))
 """
-        command = [sys.executable, "-c", probe_script, str(ROOT), str(checkpoint)]
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                timeout=RUNTIME_TEST_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired as exc:
-            elapsed = round(time.time() - started, 3)
-            result = {
-                **base_result,
-                "seconds": elapsed,
-                "message": f"ML runtime probe timed out after {elapsed:.1f}s",
-                "details": {
-                    "timeout_seconds": RUNTIME_TEST_TIMEOUT_SECONDS,
-                    "stdout": compact_text(exc.stdout),
-                    "stderr": compact_text(exc.stderr),
-                },
-            }
-            self.record_system_event("warning", "runtime test failed", backend="ml", error=result["message"])
-            return result
+            probe_started = time.time()
+            command = [sys.executable, "-c", probe_script, str(ROOT), str(checkpoint)]
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=RUNTIME_TEST_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                elapsed = round(time.time() - probe_started, 3)
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "backend": "ml",
+                    "role": role,
+                    "checkpoint": str(checkpoint),
+                    "seconds": elapsed,
+                    "message": f"{role} ML runtime probe timed out after {elapsed:.1f}s",
+                    "details": {
+                        "timeout_seconds": RUNTIME_TEST_TIMEOUT_SECONDS,
+                        "stdout": compact_text(exc.stdout),
+                        "stderr": compact_text(exc.stderr),
+                    },
+                }
 
-        elapsed = round(time.time() - started, 3)
-        stdout = (completed.stdout or "").strip()
-        stderr = (completed.stderr or "").strip()
-        if completed.returncode:
-            error_text = compact_text(stderr or stdout or f"runtime probe exited with code {completed.returncode}")
-            result = {
-                **base_result,
-                "seconds": elapsed,
-                "message": error_text,
-                "details": {"returncode": completed.returncode, "stdout": compact_text(stdout), "stderr": compact_text(stderr)},
-            }
-            self.record_system_event("warning", "runtime test failed", backend="ml", error=error_text)
-            return result
+            elapsed = round(time.time() - probe_started, 3)
+            stdout = (completed.stdout or "").strip()
+            stderr = (completed.stderr or "").strip()
+            if completed.returncode:
+                error_text = compact_text(stderr or stdout or f"runtime probe exited with code {completed.returncode}")
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "backend": "ml",
+                    "role": role,
+                    "checkpoint": str(checkpoint),
+                    "seconds": elapsed,
+                    "message": error_text,
+                    "details": {"returncode": completed.returncode, "stdout": compact_text(stdout), "stderr": compact_text(stderr)},
+                }
 
-        try:
-            details = json.loads(stdout.splitlines()[-1]) if stdout else {}
-        except (json.JSONDecodeError, IndexError):
-            details = {"stdout": compact_text(stdout)}
-        checkpoint_meta = details.get("checkpoint_meta") if isinstance(details.get("checkpoint_meta"), dict) else {}
-        model_name = str(checkpoint_meta.get("model") or "unknown")
-        device = str(details.get("device") or "cpu")
+            try:
+                details = json.loads(stdout.splitlines()[-1]) if stdout else {}
+            except (json.JSONDecodeError, IndexError):
+                details = {"stdout": compact_text(stdout)}
+            checkpoint_meta = details.get("checkpoint_meta") if isinstance(details.get("checkpoint_meta"), dict) else {}
+            model_name = str(checkpoint_meta.get("model") or "unknown")
+            device = str(details.get("device") or "cpu")
+            return {
+                "ok": True,
+                "status": "ok",
+                "backend": "ml",
+                "role": role,
+                "checkpoint": str(checkpoint),
+                "seconds": elapsed,
+                "message": f"{role} ML checkpoint loaded: model={model_name}, device={device}",
+                "details": json_safe_value(details),
+            }
+
+        models = {
+            "binary_sulfide": (
+                checkpoint_probe(runtime["checkpoint"], "binary_sulfide")
+                if runtime["backend"] == "ml"
+                else heuristic_probe("binary_sulfide", "heuristic")
+            ),
+            "talc": (
+                checkpoint_probe(runtime["talc_checkpoint"], "talc")
+                if runtime["talc_backend"] == "ml"
+                else heuristic_probe("talc", "auto_candidate" if runtime["backend"] == "ml" else "heuristic_candidate")
+            ),
+        }
+        ok = all(bool(model.get("ok")) for model in models.values())
+        first_error = next((model for model in models.values() if not model.get("ok")), None)
+        primary_model = models["binary_sulfide"] if runtime["backend"] == "ml" else models["talc"]
+        primary_details = primary_model.get("details") if isinstance(primary_model.get("details"), dict) else {}
+        elapsed_total = round(time.time() - started, 3)
         result = {
             **base_result,
-            "ok": True,
-            "status": "ok",
-            "seconds": elapsed,
-            "message": f"ML checkpoint loaded: model={model_name}, device={device}",
-            "details": json_safe_value(details),
+            "ok": ok,
+            "status": "ok" if ok else "error",
+            "seconds": elapsed_total,
+            "message": "runtime is available" if ok else str(first_error.get("message") if first_error else "runtime probe failed"),
+            "details": json_safe_value(primary_details),
+            "models": json_safe_value(models),
         }
-        self.record_system_event("info", "runtime test ok", backend="ml", checkpoint=str(checkpoint), model=model_name, seconds=elapsed)
+        if ok:
+            self.record_system_event(
+                "info",
+                "runtime test ok",
+                backend=runtime["backend"],
+                checkpoint=runtime["checkpoint"] or None,
+                talc_backend=runtime["talc_backend"],
+                talc_checkpoint=runtime["talc_checkpoint"] or None,
+                seconds=elapsed_total,
+            )
+        else:
+            self.record_system_event("warning", "runtime test failed", backend=runtime["backend"], error=result["message"])
         return result
 
     def create_batch(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2804,12 +3002,17 @@ print(json.dumps({
             job = self.jobs.get(run_id)
             if job and job.get("status") in {"queued", "running", "canceling"}:
                 progress = int(job.get("progress", data.get("progress", 0)) or 0)
+                try:
+                    elapsed = round(max(0.0, time.time() - float(job.get("started_at", time.time()))), 3)
+                except (TypeError, ValueError):
+                    elapsed = data.get("elapsed_seconds")
                 updated = {
                     **job,
                     "progress": progress,
                     "status": "canceling",
                     "stage": "canceling",
                     "eta_seconds": None,
+                    "elapsed_seconds": elapsed,
                     "cancel_requested": True,
                 }
                 self.jobs[run_id] = updated
@@ -2817,14 +3020,22 @@ print(json.dumps({
                 data["stage"] = "canceling"
                 data["progress"] = progress
                 data["eta_seconds"] = None
+                data["elapsed_seconds"] = elapsed
             else:
                 progress = int(data.get("progress", 0) or 0)
+                canceled_at = utc_now_iso()
                 data["status"] = "canceled"
                 data["stage"] = "canceled"
                 data["progress"] = progress
                 data["eta_seconds"] = None
-                data["canceled_at"] = utc_now_iso()
-                self.jobs[run_id] = {"status": "canceled", "progress": progress, "eta_seconds": None}
+                data["canceled_at"] = canceled_at
+                data["elapsed_seconds"] = elapsed_seconds_between(data.get("started_at") or (data.get("runtime") or {}).get("started_at"), canceled_at)
+                self.jobs[run_id] = {
+                    "status": "canceled",
+                    "progress": progress,
+                    "eta_seconds": None,
+                    "elapsed_seconds": data.get("elapsed_seconds"),
+                }
         self._write_json(run_path, data)
         self.record_system_event("warning", "run cancellation requested", run_id=run_id, status=data.get("status"))
         return self.run_payload(run_id)
@@ -2858,9 +3069,109 @@ print(json.dumps({
             "metrics": metrics,
             "display": display_urls,
             "masks": masks,
+            "sulfide_grains": self._sulfide_grains_payload(run_id, data, summary),
             "downloads": downloads,
             "history": self.list_runs()["runs"],
         }
+
+    def _sulfide_grains_payload(self, run_id: str, data: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+        empty = {
+            "schema_version": "ore-pipeline-sulfide-grains-v0.1",
+            "share_denominator": "sulfide_area_px",
+            "share_denominator_px": 0,
+            "label_map": None,
+            "width": None,
+            "height": None,
+            "items": [],
+        }
+        run_dir = self.runs_dir / run_id
+        reports = data.get("reports") if isinstance(data.get("reports"), dict) else {}
+        masks = data.get("masks") if isinstance(data.get("masks"), dict) else {}
+        csv_value = reports.get("component_features_csv") or run_dir / "reports/component_features.csv"
+        sulfide_value = masks.get("sulfide") or run_dir / "masks/sulfide_mask.png"
+        try:
+            csv_path = resolve_path(csv_value)
+            sulfide_path = resolve_path(sulfide_value)
+        except (TypeError, ValueError):
+            return empty
+        if not csv_path.exists() or csv_path.stat().st_size <= 0 or not sulfide_path.exists():
+            return empty
+        try:
+            rows = self._read_sulfide_grain_rows(csv_path, summary)
+            label_map_path = self._ensure_sulfide_component_label_map(run_dir, sulfide_path)
+            with Image.open(label_map_path) as image:
+                width, height = image.size
+        except Exception as exc:  # noqa: BLE001 - derived visualization should not break run loading.
+            self.record_system_event("warning", "sulfide grain payload failed", run_id=run_id, error=str(exc))
+            return empty
+        denominator = int(summary.get("sulfide_area_px") or sum(int(row["area_px"]) for row in rows))
+        return {
+            "schema_version": "ore-pipeline-sulfide-grains-v0.1",
+            "share_denominator": "sulfide_area_px",
+            "share_denominator_px": denominator,
+            "label_map": self.artifact_url(label_map_path),
+            "width": width,
+            "height": height,
+            "items": rows,
+        }
+
+    def _read_sulfide_grain_rows(self, csv_path: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
+        label_text = {
+            "ordinary_intergrowth": ("Обычные срастания", "ordinary intergrowth"),
+            "fine_intergrowth": ("Тонкие срастания", "fine intergrowth"),
+        }
+        with csv_path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        denominator = int(summary.get("sulfide_area_px") or 0)
+        if denominator <= 0:
+            denominator = sum(int(float(row.get("area_px") or 0)) for row in rows)
+        grains: list[dict[str, Any]] = []
+        for row in rows:
+            component_id = int(float(row.get("component_id") or 0))
+            area_px = int(float(row.get("area_px") or 0))
+            label = str(row.get("label") or "")
+            type_ru, type_en = label_text.get(label, (label, label))
+            share_percent = area_px / max(denominator, 1) * 100.0
+            grains.append(
+                {
+                    "component_id": component_id,
+                    "type": label,
+                    "type_ru": type_ru,
+                    "type_en": type_en,
+                    "area_px": area_px,
+                    "share_percent": share_percent,
+                    "bbox": {
+                        "x": int(float(row.get("bbox_x") or 0)),
+                        "y": int(float(row.get("bbox_y") or 0)),
+                        "width": int(float(row.get("bbox_w") or 0)),
+                        "height": int(float(row.get("bbox_h") or 0)),
+                    },
+                    "centroid": {
+                        "x": float(row.get("centroid_x") or 0.0),
+                        "y": float(row.get("centroid_y") or 0.0),
+                    },
+                }
+            )
+        return grains
+
+    def _ensure_sulfide_component_label_map(self, run_dir: Path, sulfide_mask_path: Path) -> Path:
+        output_path = run_dir / "masks/sulfide_component_labels_rgb.png"
+        if output_path.exists():
+            return output_path
+        mask = read_binary_mask(sulfide_mask_path) > 0
+        self._write_sulfide_component_label_map(output_path, mask)
+        return output_path
+
+    @staticmethod
+    def _write_sulfide_component_label_map(output_path: Path, sulfide_mask: np.ndarray) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        _, labels = cv2.connectedComponents((sulfide_mask > 0).astype(np.uint8), connectivity=8)
+        label_values = labels.astype(np.uint32)
+        encoded = np.zeros((label_values.shape[0], label_values.shape[1], 3), dtype=np.uint8)
+        encoded[..., 0] = (label_values & 0xFF).astype(np.uint8)
+        encoded[..., 1] = ((label_values >> 8) & 0xFF).astype(np.uint8)
+        encoded[..., 2] = ((label_values >> 16) & 0xFF).astype(np.uint8)
+        Image.fromarray(encoded, mode="RGB").save(output_path)
 
     def _merge_active_run_job(self, run_id: str, data: dict[str, Any]) -> dict[str, Any]:
         if str(data.get("status") or "").lower() in RUN_TERMINAL_STATUSES:
@@ -2869,7 +3180,17 @@ print(json.dumps({
             job = self.jobs.get(run_id)
             if not job:
                 return data
-            return {**data, **job}
+            job_payload = {key: value for key, value in job.items() if key != "started_at"}
+            started_at_iso = job_payload.get("started_at_iso") or data.get("started_at")
+            if started_at_iso:
+                job_payload["started_at"] = started_at_iso
+            monotonic_started = job.get("started_at")
+            if monotonic_started is not None:
+                try:
+                    job_payload["elapsed_seconds"] = round(max(0.0, time.time() - float(monotonic_started)), 3)
+                except (TypeError, ValueError):
+                    pass
+            return {**data, **job_payload}
 
     def _ensure_non_sulfide_display_layer(self, run_id: str, data: dict[str, Any]) -> dict[str, Any]:
         if str(data.get("status") or "").lower() != "complete":
@@ -3149,24 +3470,36 @@ print(json.dumps({
             run_path = self.runs_dir / run_id / "run.json"
             data = json.loads(run_path.read_text(encoding="utf-8"))
             progress = int(data.get("progress", 0) or 0)
+            canceled_at = utc_now_iso()
             data["status"] = "canceled"
             data["stage"] = "canceled"
             data["progress"] = progress
             data["eta_seconds"] = None
-            data["canceled_at"] = utc_now_iso()
+            data["canceled_at"] = canceled_at
+            data["elapsed_seconds"] = elapsed_seconds_between(data.get("started_at") or (data.get("runtime") or {}).get("started_at"), canceled_at)
             self._write_json(run_path, data)
             with self.lock:
-                self.jobs[run_id] = {"status": "canceled", "progress": progress, "eta_seconds": None}
+                self.jobs[run_id] = {
+                    "status": "canceled",
+                    "progress": progress,
+                    "eta_seconds": None,
+                    "elapsed_seconds": data.get("elapsed_seconds"),
+                }
             self.record_system_event("warning", "run canceled", run_id=run_id, progress=progress)
         except Exception as exc:  # noqa: BLE001 - keep server alive and expose failure.
             run_path = self.runs_dir / run_id / "run.json"
             data = json.loads(run_path.read_text(encoding="utf-8"))
+            failed_at = utc_now_iso()
             data["status"] = "failed"
             data["error"] = str(exc)
             data["progress"] = 100
+            data["failed_at"] = failed_at
+            data["elapsed_seconds"] = elapsed_seconds_between(data.get("started_at") or (data.get("runtime") or {}).get("started_at"), failed_at)
             try:
                 runtime = self._runtime_provenance_from_metadata(data, self.runs_dir / run_id)
-                runtime["failed_at"] = utc_now_iso()
+                runtime["failed_at"] = failed_at
+                if data.get("elapsed_seconds") is not None:
+                    runtime["elapsed_seconds"] = data.get("elapsed_seconds")
                 data["runtime"] = runtime
                 data["backend"] = runtime["backend"]
                 data["checkpoint"] = runtime["checkpoints"].get("binary_sulfide")
@@ -3181,7 +3514,13 @@ print(json.dumps({
                 )
             self._write_json(run_path, data)
             with self.lock:
-                self.jobs[run_id] = {"status": "failed", "progress": 100, "error": str(exc), "eta_seconds": None}
+                self.jobs[run_id] = {
+                    "status": "failed",
+                    "progress": 100,
+                    "error": str(exc),
+                    "eta_seconds": None,
+                    "elapsed_seconds": data.get("elapsed_seconds"),
+                }
             self.record_system_event("error", "run failed", run_id=run_id, error=str(exc))
 
     def _run_job(self, run_id: str) -> None:
@@ -3190,7 +3529,9 @@ print(json.dumps({
         self._check_cancelled(run_id)
         run_metadata = self._read_run(run_id)
         runtime = self._runtime_provenance_from_metadata(run_metadata, run_dir)
-        runtime["started_at"] = utc_now_iso()
+        started_at_iso = run_metadata.get("started_at") or utc_now_iso()
+        run_metadata["started_at"] = started_at_iso
+        runtime["started_at"] = started_at_iso
         run_metadata["runtime"] = runtime
         run_metadata["backend"] = runtime["backend"]
         run_metadata["checkpoint"] = runtime["checkpoints"].get("binary_sulfide")
@@ -3206,13 +3547,76 @@ print(json.dumps({
             self._run_heuristic_backend(run_id, run_dir)
         self._check_cancelled(run_id)
         metadata = self._read_run(run_id)
+        completed_at = utc_now_iso()
         metadata["status"] = "complete"
         metadata["progress"] = 100
-        metadata["completed_at"] = utc_now_iso()
+        metadata["completed_at"] = completed_at
+        metadata["elapsed_seconds"] = elapsed_seconds_between(metadata.get("started_at") or (metadata.get("runtime") or {}).get("started_at"), completed_at)
         self._finalize_run_metadata(metadata, run_dir)
         self._write_json(run_dir / "run.json", metadata)
         with self.lock:
-            self.jobs[run_id] = {"status": "complete", "progress": 100, "eta_seconds": 0}
+            self.jobs[run_id] = {
+                "status": "complete",
+                "progress": 100,
+                "eta_seconds": 0,
+                "elapsed_seconds": metadata.get("elapsed_seconds"),
+            }
+
+    def _effective_talc_checkpoint(self) -> Path:
+        effective_checkpoint = self.talc_checkpoint
+        if effective_checkpoint and not effective_checkpoint.is_absolute():
+            effective_checkpoint = ROOT / effective_checkpoint
+        effective_checkpoint = effective_checkpoint.resolve() if effective_checkpoint else None
+        if effective_checkpoint is None or not effective_checkpoint.exists():
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Talc ML backend requires settings.runtime.talc_checkpoint")
+        return effective_checkpoint
+
+    def _run_talc_model_inference(self, run_id: str, run_dir: Path, *, image_path: Path, sulfide_mask: np.ndarray) -> np.ndarray:
+        effective_checkpoint = self._effective_talc_checkpoint()
+        talc_dir = run_dir / "talc_model"
+        talc_dir.mkdir(parents=True, exist_ok=True)
+        sulfide_path = talc_dir / "sulfide_mask_input.png"
+        save_image(sulfide_path, Image.fromarray((sulfide_mask > 0).astype(np.uint8) * 255, mode="L"))
+        cmd = [
+            sys.executable,
+            str(ROOT / "scripts/infer_talc_segmentation.py"),
+            "--image",
+            str(image_path),
+            "--checkpoint",
+            str(effective_checkpoint),
+            "--out-dir",
+            str(talc_dir),
+            "--sulfide-mask",
+            str(sulfide_path),
+            "--tile-size",
+            str(DISPLAY_TILE_SIZE),
+            "--stride",
+            str(DISPLAY_TILE_STRIDE),
+            "--batch-size",
+            "4",
+            "--device",
+            "auto",
+            "--threshold",
+            str(self.talc_threshold),
+            "--preview-max-side",
+            str(max(self.preview_max_sides)),
+        ]
+        log_path = run_dir / "talc_model.log"
+        with log_path.open("w", encoding="utf-8") as log:
+            process = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+            while process.poll() is None:
+                if self._cancel_requested(run_id):
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    raise RunCancelled()
+                time.sleep(0.5)
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, cmd)
+        return read_binary_mask(talc_dir / "talc_mask.png", sulfide_mask.shape)
 
     def _run_heuristic_backend(self, run_id: str, run_dir: Path) -> None:
         self._set_progress(run_id, 25, "sulfide/non-sulfide segmentation")
@@ -3222,8 +3626,18 @@ print(json.dumps({
         result = segment_image(rgb)
         self._check_cancelled(run_id)
         sulfide_mask = (result.sulfide_mask > 0).astype(np.uint8) * 255
-        talc_mask = (result.talc_candidate_mask > 0).astype(np.uint8) * 255
         analyzed_mask = build_analyzed_mask(rgb)
+        if self.talc_backend == "ml":
+            self._set_progress(run_id, 42, "talc ML inference")
+            self._check_cancelled(run_id)
+            talc_mask = self._run_talc_model_inference(
+                run_id,
+                run_dir,
+                image_path=run_dir / "input/preprocessed.png",
+                sulfide_mask=sulfide_mask,
+            )
+        else:
+            talc_mask = (result.talc_candidate_mask > 0).astype(np.uint8) * 255
         sulfide_mask, talc_mask, analyzed_mask, _ = apply_artifact_exclusion(
             artifact_mask=artifact_mask,
             sulfide_mask=sulfide_mask,
@@ -3269,12 +3683,22 @@ print(json.dumps({
             str(effective_checkpoint),
             "--out-dir",
             str(ml_dir),
-            "--auto-talc-candidate",
             "--preview-max-side",
             str(max(self.preview_max_sides)),
             "--progress-json",
             str(tile_progress_path),
         ]
+        if self.talc_backend == "ml":
+            cmd.extend(
+                [
+                    "--talc-checkpoint",
+                    str(self._effective_talc_checkpoint()),
+                    "--talc-threshold",
+                    str(self.talc_threshold),
+                ]
+            )
+        else:
+            cmd.append("--auto-talc-candidate")
         log_path = run_dir / "ml_pipeline.log"
         with log_path.open("w", encoding="utf-8") as log:
             process = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
@@ -3296,7 +3720,7 @@ print(json.dumps({
         self._check_cancelled(run_id)
         ore_summary = json.loads((ml_dir / "ore_analysis/ore_summary.json").read_text(encoding="utf-8"))
         sulfide_mask = np.asarray(Image.open(ml_dir / "binary_sulfide/sulfide_mask.png").convert("L"))
-        talc_path = ml_dir / "talc_candidate/talc_candidate_mask.png"
+        talc_path = ml_dir / "talc_model/talc_mask.png" if self.talc_backend == "ml" else ml_dir / "talc_candidate/talc_candidate_mask.png"
         talc_mask = np.asarray(Image.open(talc_path).convert("L")) if talc_path.exists() else np.zeros_like(sulfide_mask)
         intergrowth = np.asarray(Image.open(ml_dir / "ore_analysis/intergrowth_mask.png").convert("L"))
         analyzed_path = ml_dir / "ore_analysis/analyzed_mask.png"
@@ -3467,6 +3891,7 @@ print(json.dumps({
             final_mask=final_mask,
         )
         Image.fromarray((sulfide_mask > 0).astype(np.uint8) * 255, mode="L").save(masks_dir / "sulfide_mask.png")
+        self._write_sulfide_component_label_map(masks_dir / "sulfide_component_labels_rgb.png", sulfide_mask)
         Image.fromarray((talc_mask > 0).astype(np.uint8) * 255, mode="L").save(masks_dir / "talc_mask.png")
         Image.fromarray((analyzed_mask > 0).astype(np.uint8) * 255, mode="L").save(masks_dir / "analyzed_mask.png")
         Image.fromarray(final_mask.astype(np.uint8), mode="L").save(masks_dir / "final_mask.png")
@@ -3676,6 +4101,7 @@ print(json.dumps({
         metadata["display"] = display
         metadata["masks"] = {
             "sulfide": str(run_dir / "masks/sulfide_mask.png"),
+            "sulfide_component_labels": str(run_dir / "masks/sulfide_component_labels_rgb.png"),
             "final": str(run_dir / "masks/final_mask.png"),
             "talc": str(run_dir / "masks/talc_mask.png"),
             "analyzed": str(run_dir / "masks/analyzed_mask.png"),
@@ -3738,6 +4164,8 @@ print(json.dumps({
                 "status": "canceling" if cancel_requested else "running",
                 "stage": "canceling" if cancel_requested else status,
                 "started_at": started,
+                "started_at_iso": previous.get("started_at_iso"),
+                "elapsed_seconds": round(elapsed, 3),
                 "eta_seconds": None if cancel_requested else eta,
                 "cancel_requested": cancel_requested,
             }
@@ -3751,6 +4179,7 @@ print(json.dumps({
             data["status"] = "canceling" if cancel_requested else "running"
             data["stage"] = "canceling" if cancel_requested else status
             data["eta_seconds"] = None if cancel_requested else eta
+            data["elapsed_seconds"] = round(elapsed, 3)
             if isinstance(extra, dict):
                 data.update(extra)
             self._write_json(run_path, data)
@@ -3911,6 +4340,9 @@ print(json.dumps({
             "augmentation": normalize_augmentation_settings(augmentation_payload),
             "backend": self.backend,
             "checkpoint": str(self.checkpoint) if self.checkpoint else None,
+            "talc_backend": self.talc_backend,
+            "talc_checkpoint": str(self.talc_checkpoint) if self.talc_checkpoint else None,
+            "talc_threshold": self.talc_threshold,
         }
 
     def _batch_upload_refs(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5213,6 +5645,9 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--backend", choices=["heuristic", "ml"], default="heuristic")
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT if DEFAULT_CHECKPOINT.exists() else None)
+    parser.add_argument("--talc-backend", choices=["heuristic", "ml"], default=DEFAULT_TALC_BACKEND)
+    parser.add_argument("--talc-checkpoint", type=Path, default=DEFAULT_TALC_CHECKPOINT if DEFAULT_TALC_CHECKPOINT.exists() else None)
+    parser.add_argument("--talc-threshold", type=float, default=DEFAULT_TALC_THRESHOLD)
     parser.add_argument("--processing-max-side", type=int, default=2600)
     parser.add_argument("--panorama-max-side", type=int, default=1800)
     parser.add_argument("--preview-max-sides", default="1024,2048,4096")
@@ -5225,6 +5660,9 @@ def main() -> int:
         processing_max_side=args.processing_max_side,
         panorama_max_side=args.panorama_max_side,
         preview_max_sides=parse_preview_sides(args.preview_max_sides),
+        talc_backend=args.talc_backend,
+        talc_checkpoint=args.talc_checkpoint,
+        talc_threshold=args.talc_threshold,
     )
     server = OrePipelineHTTPServer((args.host, args.port), store)
     host, port = server.server_address[:2]
