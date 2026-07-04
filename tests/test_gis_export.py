@@ -178,7 +178,7 @@ class OrePipelineGisFinalizationTest(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def test_run_finalization_writes_geojson_report_metadata(self) -> None:
+    def _write_synthetic_completed_run_inputs(self) -> tuple[Path, dict[str, object]]:
         run_dir = self.store.runs_dir / "run_gis"
         (run_dir / "input/original_source").mkdir(parents=True)
         (run_dir / "reports").mkdir(parents=True)
@@ -240,6 +240,10 @@ class OrePipelineGisFinalizationTest(unittest.TestCase):
                 "analysis_height": 10,
             },
         }
+        return run_dir, metadata
+
+    def test_run_finalization_writes_geojson_report_metadata(self) -> None:
+        run_dir, metadata = self._write_synthetic_completed_run_inputs()
 
         self.store._finalize_run_metadata(metadata, run_dir)
 
@@ -259,6 +263,26 @@ class OrePipelineGisFinalizationTest(unittest.TestCase):
         self.assertAlmostEqual(ordinary["properties"]["area_um2"], 48.0)
         with zipfile.ZipFile(shapefile_path) as archive:
             self.assertIn("final_classes.shp", archive.namelist())
+
+    def test_run_files_payload_and_artifact_zip_include_gis_exports(self) -> None:
+        run_dir, metadata = self._write_synthetic_completed_run_inputs()
+        self.store._finalize_run_metadata(metadata, run_dir)
+        self.store._write_json(run_dir / "run.json", metadata)
+
+        files_payload = self.store.run_files_payload("run_gis")
+        files_by_path = {item["path"]: item for item in files_payload["files"]}
+
+        self.assertIn("reports/final_classes.geojson", files_by_path)
+        self.assertIn("reports/final_classes_shapefile.zip", files_by_path)
+        self.assertFalse(files_by_path["reports/final_classes.geojson"]["is_image"])
+        self.assertFalse(files_by_path["reports/final_classes_shapefile.zip"]["is_image"])
+
+        run_zip = self.store.run_zip_path("run_gis")
+        with zipfile.ZipFile(run_zip) as archive:
+            names = set(archive.namelist())
+        self.assertIn("reports/final_classes.geojson", names)
+        self.assertIn("reports/final_classes_shapefile.zip", names)
+        self.assertNotIn("reports/run_artifacts.zip", names)
 
 
 if __name__ == "__main__":
