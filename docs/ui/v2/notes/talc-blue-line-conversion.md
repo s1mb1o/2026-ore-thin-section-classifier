@@ -19,7 +19,7 @@ uncertain, and supported pixels outside the candidate become hard negatives.
 
 - `src/ore_classifier/talc_blue_line_converter.py`: conversion core and review-mask helpers.
 - `scripts/convert_talc_blue_lines.py`: CLI.
-- `apps/talc_review_streamlit.py`: Streamlit QA app.
+- `apps/deprecated/streamlit/talc_review_streamlit.py`: Streamlit QA app.
 - `src/ore_classifier/sam2_region_assist.py`: optional SAM2 point/box assist, active only when `torch` and `sam2` are installed.
 - `tests/test_talc_blue_line_converter.py`: focused synthetic unit tests.
 
@@ -106,7 +106,7 @@ DSCN5180
 ## Review UI
 
 ```bash
-streamlit run apps/talc_review_streamlit.py -- \
+streamlit run apps/deprecated/streamlit/talc_review_streamlit.py -- \
   --conversion-dir outputs/talc_blue_line_conversion
 ```
 

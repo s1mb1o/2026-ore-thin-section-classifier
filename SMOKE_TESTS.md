@@ -147,7 +147,7 @@ python3 apps/talc_review_web.py \
 Legacy Streamlit review after installing `requirements-ui.txt`:
 
 ```bash
-streamlit run apps/talc_review_streamlit.py -- \
+streamlit run apps/deprecated/streamlit/talc_review_streamlit.py -- \
   --conversion-dir outputs/talc_blue_line_conversion
 ```
 
@@ -434,7 +434,7 @@ Expected:
 - The generated pack can be opened with:
 
 ```bash
-streamlit run apps/sulfide_qa_streamlit.py -- \
+streamlit run apps/deprecated/streamlit/sulfide_qa_streamlit.py -- \
   --runs-dir outputs/manual_review/smoke_b2_review_pack/runs \
   --review-dir outputs/manual_review/smoke_b2_review_pack/reviews
 ```

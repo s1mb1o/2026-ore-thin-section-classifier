@@ -98,7 +98,7 @@ def main() -> int:
             "items": rows,
             "candidate_count": len(candidate_rows),
             "streamlit_command": (
-                f"streamlit run apps/sulfide_qa_streamlit.py -- "
+                f"streamlit run apps/deprecated/streamlit/sulfide_qa_streamlit.py -- "
                 f"--runs-dir {runs_dir} --review-dir {reviews_dir}"
             ),
         },
@@ -448,7 +448,7 @@ def write_readme(out_dir: Path, rows: list[dict[str, Any]], candidate_count: int
         "Streamlit QA:",
         "",
         "```bash",
-        f"streamlit run apps/sulfide_qa_streamlit.py -- --runs-dir {runs_dir} --review-dir {reviews_dir}",
+        f"streamlit run apps/deprecated/streamlit/sulfide_qa_streamlit.py -- --runs-dir {runs_dir} --review-dir {reviews_dir}",
         "```",
         "",
         "Suggested statuses: `accepted`, `needs_mask_fix`, `uncertain`, `exclude_artifact`, `bad_input`.",

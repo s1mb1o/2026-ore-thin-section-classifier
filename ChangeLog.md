@@ -2,6 +2,8 @@
 
 ## 2026-07-04
 
+- Deprecated the legacy Streamlit QA tools: moved `apps/talc_review_streamlit.py`, `apps/sulfide_qa_streamlit.py`, and the `apps/components/mask_shape_editor` custom component into `apps/deprecated/streamlit/`. Fixed the moved talc app's `PROJECT_ROOT`/component paths for the new depth, and updated all run-command references in `README.md`, `apps/README.md`, `COMMANDS.md`, `SMOKE_TESTS.md`, `scripts/prepare_manual_review_pack.py`, and the talc UI docs. The active tools remain the plain web apps (`apps/talc_review_web.py`, `apps/ore_pipeline_web.py`, `apps/grain_review_web.py`).
+
 - Added optional Settings-managed password protection to the v2 ore pipeline UI. Settings now has a Security panel with a write-only password field and explicit remove-password checkbox; saved passwords are stored only as salted PBKDF2-SHA256 hashes, `/api/settings` exposes only `auth.password_enabled`, `/login` issues an HttpOnly session cookie, and protected UI/API/artifact requests redirect or return `401` once enabled. Added spec/plan docs and focused HTTP/static regression tests.
 
 - Moved the generated demo-video bundles from ignored `outputs/demo_video_*` directories into the presentation package under `presentation/videos/`, regenerated all three 5-minute MP4s in place, and kept `outputs/demo_video_*` symlinks only for compatibility. Added a local video index and checksum manifest in `presentation/videos/`.

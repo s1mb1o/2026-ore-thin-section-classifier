@@ -809,7 +809,7 @@ Required checks:
 
 ## Migration Plan
 
-1. Keep `apps/talc_review_streamlit.py` available as fallback.
+1. Keep `apps/deprecated/streamlit/talc_review_streamlit.py` available as fallback.
 2. Implement direct-input startup that creates or reuses the same conversion
    output directory.
 3. Keep prepared-workspace mode for debugging/reproducibility.

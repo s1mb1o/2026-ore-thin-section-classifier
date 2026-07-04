@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image
 
 APP_PATH = Path(__file__).resolve()
-PROJECT_ROOT = APP_PATH.parents[1]
+PROJECT_ROOT = APP_PATH.parents[3]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import streamlit as st  # noqa: E402
@@ -54,7 +54,7 @@ def patch_drawable_canvas_streamlit_compat() -> None:
 
 patch_drawable_canvas_streamlit_compat()
 
-MASK_SHAPE_EDITOR_DIR = PROJECT_ROOT / "apps/components/mask_shape_editor"
+MASK_SHAPE_EDITOR_DIR = PROJECT_ROOT / "apps/deprecated/streamlit/components/mask_shape_editor"
 mask_shape_editor_component = components.declare_component("mask_shape_editor", path=str(MASK_SHAPE_EDITOR_DIR))
 
 try:

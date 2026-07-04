@@ -12,7 +12,7 @@ If `streamlit: command not found`, use the existing temporary venv from this
 workspace session:
 
 ```bash
-/private/tmp/nornikel_ore_classifier_streamlit_venv/bin/python -m streamlit run apps/talc_review_streamlit.py -- \
+/private/tmp/nornikel_ore_classifier_streamlit_venv/bin/python -m streamlit run apps/deprecated/streamlit/talc_review_streamlit.py -- \
   --conversion-dir outputs/talc_blue_line_conversion
 ```
 
@@ -182,7 +182,7 @@ PULL_RESULT=1 scripts/generate_talc_ui_video_gx10.sh
 ## Legacy Streamlit Talc Review UI
 
 ```bash
-python -m streamlit run apps/talc_review_streamlit.py -- \
+python -m streamlit run apps/deprecated/streamlit/talc_review_streamlit.py -- \
   --conversion-dir outputs/talc_blue_line_conversion
 ```
 
@@ -573,7 +573,7 @@ trained-talc branch above and real human grain labels.
 ## Sulfide QA UI
 
 ```bash
-python -m streamlit run apps/sulfide_qa_streamlit.py -- \
+python -m streamlit run apps/deprecated/streamlit/sulfide_qa_streamlit.py -- \
   --runs-dir outputs/inference_demo \
   --review-dir outputs/sulfide_qa_reviews
 ```

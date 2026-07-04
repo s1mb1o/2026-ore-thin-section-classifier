@@ -29,10 +29,18 @@ edit per-image metadata, share one preprocessing/augmentation setup across the
 group, run images sequentially into separate immutable runs, monitor each card's
 progress, and load any child run back into the normal result viewer.
 
-Implemented talc review app:
+## Deprecated Streamlit apps
+
+The legacy Streamlit tools were superseded by the plain web apps
+(`talc_review_web.py`, `ore_pipeline_web.py`) and now live under
+`apps/deprecated/streamlit/` together with their custom
+`mask_shape_editor` component. They still run, but are kept only as
+fallbacks and are no longer actively maintained.
+
+Legacy talc review app:
 
 ```bash
-streamlit run apps/talc_review_streamlit.py -- \
+streamlit run apps/deprecated/streamlit/talc_review_streamlit.py -- \
   --conversion-dir outputs/talc_blue_line_conversion
 ```
 
@@ -50,10 +58,10 @@ supported talc candidate and shows unsupported candidate pixels as ignore. Use
 the generated `talc_positive_core_mask.png` and `silicate_hard_negative_mask.png`
 for training exports, not the raw silicon/silicate mask as talc.
 
-Implemented binary sulfide QA app:
+Legacy binary sulfide QA app:
 
 ```bash
-streamlit run apps/sulfide_qa_streamlit.py -- \
+streamlit run apps/deprecated/streamlit/sulfide_qa_streamlit.py -- \
   --runs-dir outputs/inference_demo \
   --review-dir outputs/sulfide_qa_reviews
 ```

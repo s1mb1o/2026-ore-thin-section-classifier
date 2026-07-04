@@ -102,7 +102,7 @@ python3 scripts/convert_talc_blue_lines.py \
 Review UI:
 
 ```bash
-streamlit run apps/talc_review_streamlit.py -- \
+streamlit run apps/deprecated/streamlit/talc_review_streamlit.py -- \
   --conversion-dir outputs/talc_blue_line_conversion
 ```
 
