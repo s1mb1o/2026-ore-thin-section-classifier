@@ -19,3 +19,6 @@ models/*
 
 # The official dataset is linked from the original project.
 dataset
+
+# MLflow local file store (debug experiment tracking)
+mlruns/

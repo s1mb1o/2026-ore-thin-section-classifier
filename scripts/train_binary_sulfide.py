@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from ore_classifier.datasets import BinarySulfideTileDataset  # noqa: E402
 from ore_classifier.models import create_resunet  # noqa: E402
+from ore_classifier.tracking import add_mlflow_args, mlflow_run  # noqa: E402
 
 
 def main() -> int:
@@ -38,6 +39,7 @@ def main() -> int:
     parser.add_argument("--allow-random-init", action="store_true")
     parser.add_argument("--max-steps-per-epoch", type=int, default=0)
     parser.add_argument("--seed", type=int, default=20260703)
+    add_mlflow_args(parser, default_experiment="binary-sulfide")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -81,40 +83,45 @@ def main() -> int:
     with (args.out_dir / "args.json").open("w", encoding="utf-8") as f:
         json.dump(vars(args) | {"device_resolved": str(device)}, f, ensure_ascii=False, indent=2, default=str)
 
-    for epoch in range(1, args.epochs + 1):
-        started = time.time()
-        train_loss = train_one_epoch(
-            model=model,
-            loader=train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            scaler=scaler,
-            device=device,
-            use_amp=use_amp,
-            max_steps=args.max_steps_per_epoch,
-        )
-        val_metrics = evaluate(model, val_loader, criterion, device, max_steps=0)
-        row = {
-            "epoch": epoch,
-            "train_loss": round(train_loss, 6),
-            "val_loss": round(val_metrics["loss"], 6),
-            "val_iou_sulfide": round(val_metrics["iou_sulfide"], 6),
-            "val_iou_bg": round(val_metrics["iou_bg"], 6),
-            "val_pixel_acc": round(val_metrics["pixel_acc"], 6),
-            "seconds": round(time.time() - started, 2),
-        }
-        append_csv(log_path, row)
-        print(row, flush=True)
+    with mlflow_run(args, params=vars(args) | {"device_resolved": str(device)}) as run:
+        for epoch in range(1, args.epochs + 1):
+            started = time.time()
+            train_loss = train_one_epoch(
+                model=model,
+                loader=train_loader,
+                criterion=criterion,
+                optimizer=optimizer,
+                scaler=scaler,
+                device=device,
+                use_amp=use_amp,
+                max_steps=args.max_steps_per_epoch,
+            )
+            val_metrics = evaluate(model, val_loader, criterion, device, max_steps=0)
+            row = {
+                "epoch": epoch,
+                "train_loss": round(train_loss, 6),
+                "val_loss": round(val_metrics["loss"], 6),
+                "val_iou_sulfide": round(val_metrics["iou_sulfide"], 6),
+                "val_iou_bg": round(val_metrics["iou_bg"], 6),
+                "val_pixel_acc": round(val_metrics["pixel_acc"], 6),
+                "seconds": round(time.time() - started, 2),
+            }
+            append_csv(log_path, row)
+            run.log_metrics({k: v for k, v in row.items() if k != "epoch"}, step=epoch)
+            print(row, flush=True)
 
-        is_best = val_metrics["iou_sulfide"] > best_iou
-        if is_best:
-            best_iou = val_metrics["iou_sulfide"]
-        save_checkpoint(args.out_dir / "last.pt", model, optimizer, epoch, best_iou, args)
-        if is_best:
-            save_checkpoint(args.out_dir / "best.pt", model, optimizer, epoch, best_iou, args)
+            is_best = val_metrics["iou_sulfide"] > best_iou
+            if is_best:
+                best_iou = val_metrics["iou_sulfide"]
+            save_checkpoint(args.out_dir / "last.pt", model, optimizer, epoch, best_iou, args)
+            if is_best:
+                save_checkpoint(args.out_dir / "best.pt", model, optimizer, epoch, best_iou, args)
 
-    with (args.out_dir / "metrics.json").open("w", encoding="utf-8") as f:
-        json.dump({"best_val_iou_sulfide": best_iou}, f, indent=2)
+        with (args.out_dir / "metrics.json").open("w", encoding="utf-8") as f:
+            json.dump({"best_val_iou_sulfide": best_iou}, f, indent=2)
+        run.log_metrics({"best_val_iou_sulfide": best_iou})
+        run.log_artifact(log_path)
+        run.log_artifact(args.out_dir / "metrics.json")
     return 0
 
 

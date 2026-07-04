@@ -8,3 +8,6 @@
 # (never error) when Playwright or its browser is missing.
 pytest
 playwright
+
+# Optional experiment tracking for training scripts (debug only; enable with --mlflow).
+mlflow

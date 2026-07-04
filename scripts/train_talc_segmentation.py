@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from ore_classifier.datasets import BinarySulfideTileDataset  # noqa: E402
+from ore_classifier.tracking import add_mlflow_args, mlflow_run  # noqa: E402
 from train_binary_sulfide import (  # noqa: E402
     append_csv,
     create_model,
@@ -52,6 +53,7 @@ def main() -> int:
     parser.add_argument("--allow-random-init", action="store_true")
     parser.add_argument("--max-steps-per-epoch", type=int, default=0)
     parser.add_argument("--seed", type=int, default=20260703)
+    add_mlflow_args(parser, default_experiment="talc-segmentation")
     args = parser.parse_args()
     args.task = "binary_talc_non_sulfide"
 
@@ -96,44 +98,49 @@ def main() -> int:
         json.dump(vars(args) | {"device_resolved": str(device)}, f, ensure_ascii=False, indent=2, default=str)
 
     best_iou = -1.0
-    for epoch in range(1, args.epochs + 1):
-        started = time.time()
-        train_loss = train_one_epoch(
-            model=model,
-            loader=train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            scaler=scaler,
-            device=device,
-            use_amp=use_amp,
-            max_steps=args.max_steps_per_epoch,
-        )
-        val_metrics = evaluate_talc(model, val_loader, criterion, device)
-        row = {
-            "epoch": epoch,
-            "train_loss": round(train_loss, 6),
-            "val_loss": round(val_metrics["loss"], 6),
-            "val_iou_talc": round(val_metrics["iou_talc"], 6),
-            "val_iou_not_talc": round(val_metrics["iou_not_talc"], 6),
-            "val_pixel_acc": round(val_metrics["pixel_acc"], 6),
-            "seconds": round(time.time() - started, 2),
+    with mlflow_run(args, params=vars(args) | {"device_resolved": str(device)}) as run:
+        for epoch in range(1, args.epochs + 1):
+            started = time.time()
+            train_loss = train_one_epoch(
+                model=model,
+                loader=train_loader,
+                criterion=criterion,
+                optimizer=optimizer,
+                scaler=scaler,
+                device=device,
+                use_amp=use_amp,
+                max_steps=args.max_steps_per_epoch,
+            )
+            val_metrics = evaluate_talc(model, val_loader, criterion, device)
+            row = {
+                "epoch": epoch,
+                "train_loss": round(train_loss, 6),
+                "val_loss": round(val_metrics["loss"], 6),
+                "val_iou_talc": round(val_metrics["iou_talc"], 6),
+                "val_iou_not_talc": round(val_metrics["iou_not_talc"], 6),
+                "val_pixel_acc": round(val_metrics["pixel_acc"], 6),
+                "seconds": round(time.time() - started, 2),
+            }
+            append_csv(log_path, row)
+            run.log_metrics({k: v for k, v in row.items() if k != "epoch"}, step=epoch)
+            print(row, flush=True)
+
+            is_best = val_metrics["iou_talc"] > best_iou
+            if is_best:
+                best_iou = val_metrics["iou_talc"]
+            save_checkpoint(args.out_dir / "last.pt", model, optimizer, epoch, best_iou, args)
+            if is_best:
+                save_checkpoint(args.out_dir / "best.pt", model, optimizer, epoch, best_iou, args)
+
+        metrics = {
+            "task": args.task,
+            "best_val_iou_talc": best_iou,
+            "note": "checkpoint keeps best_iou_sulfide for loader compatibility; it is talc IoU for this task",
         }
-        append_csv(log_path, row)
-        print(row, flush=True)
-
-        is_best = val_metrics["iou_talc"] > best_iou
-        if is_best:
-            best_iou = val_metrics["iou_talc"]
-        save_checkpoint(args.out_dir / "last.pt", model, optimizer, epoch, best_iou, args)
-        if is_best:
-            save_checkpoint(args.out_dir / "best.pt", model, optimizer, epoch, best_iou, args)
-
-    metrics = {
-        "task": args.task,
-        "best_val_iou_talc": best_iou,
-        "note": "checkpoint keeps best_iou_sulfide for loader compatibility; it is talc IoU for this task",
-    }
-    (args.out_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        (args.out_dir / "metrics.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        run.log_metrics({"best_val_iou_talc": best_iou})
+        run.log_artifact(log_path)
+        run.log_artifact(args.out_dir / "metrics.json")
     return 0
 
 
