@@ -79,10 +79,19 @@ recorded is still a bug.
 - Aggregations (history stats, eval harness) must be able to filter or flag `degraded`
   runs so a degraded result is never silently averaged in as a nominal one.
 
-**Already landed toward this:** `scripts/build_grain_dataset.py` now records
-`grains_skipped_bad_bbox` in `dataset_summary.json` (the F6 grain-skip degradation is
-counted per build rather than lost). Remaining surfaces (resident, web) still need the
-full `degradations` list.
+**Already landed toward this (2026-07-04):**
+- `scripts/build_grain_dataset.py` records `grains_skipped_bad_bbox` in
+  `dataset_summary.json` (F6 grain-skip counted per build, not lost).
+- `src/ore_classifier/resident_pipeline.py` now emits a `degradations: []` list plus
+  `result_quality: nominal|degraded` on both the sulfide `summary.json` and the run
+  `pipeline_summary.json`, covering F2 (sulfide model failure → brightness-heuristic
+  fallback), F3 (OOM → adaptive batch shrink via `_accumulate_prob_map`, memmap-backed),
+  and talc-model failure → heuristic-candidate fallback. Unit-tested in
+  `tests/test_resident_resilience.py`.
+
+**Remaining surface:** the web runtime (`apps/ore_pipeline_web.py`) still needs the same
+`degradations`/`result_quality` wiring and the F7 job watchdog; deferred while that file
+is held by another active session.
 
 ## 5. Confirmed HIGH bugs to fix first (from the review)
 
