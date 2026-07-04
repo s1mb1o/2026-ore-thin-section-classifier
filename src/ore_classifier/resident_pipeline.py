@@ -398,6 +398,8 @@ class ResidentSulfidePipeline:
         pipeline_summary = {
             "schema_version": "ore-pipeline-run-v0.2",
             "image": image_path,
+            "result_quality": "degraded" if run_degradations else "nominal",
+            "degradations": run_degradations,
             "checkpoint": self.checkpoint,
             "talc_source": talc_source,
             "talc_checkpoint": self.talc_checkpoint,
