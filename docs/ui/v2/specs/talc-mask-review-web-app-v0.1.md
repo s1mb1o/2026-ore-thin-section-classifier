@@ -230,9 +230,12 @@ photo backgrounds. It computes perceptual luma per pixel as
 slider value stay visible as the original RGB pixel, while pixels brighter than
 the slider value are painted white. `255` is the off state, `0` paints the
 background white, and `90` is exposed as a quick practical talc-candidate
-starting point for reflected-light images. The filter must not alter the talc
-mask; it is stored only as review/view metadata in working state and reviewed
-patch JSON.
+starting point for reflected-light images. The control also reports the current
+visible-pixel share/count (`luma <= threshold`) for the active photo
+background, and reports inactive when the background mode is mask-only or
+sulfide-mask. The filter must not alter the talc mask; threshold and
+visible-pixel statistics are stored only as review/view metadata in working
+state and reviewed patch JSON.
 
 The right panel also includes a display-only talc cluster overlay. It highlights
 areas where the selected talc source is locally dense, without modifying any
@@ -246,17 +249,32 @@ mask. The reviewer can tune:
 The cluster overlay uses the current working masks, updates after edits, and is
 stored only as review/view metadata in working state and reviewed patch JSON.
 
-Segmentation class controls are a compact overlay widget on the image viewer.
-Each class row has a visibility checkbox and an edit-target radio button:
+Segmentation controls are a compact overlay widget on the image viewer. Editable
+class rows have a visibility checkbox, live percentage, and edit-target radio
+button:
 
 - Positive bag.
 - Talc.
+
+The same widget also has a separated display-only `Talc cluster areas` row with
+a visibility checkbox and percentage. It mirrors the right-panel cluster overlay
+toggle and reports highlighted cluster pixels as a percentage of image pixels;
+it has no edit-target radio because cluster areas are derived display evidence,
+not a saved segmentation class.
 
 The edit-target radio controls Brush, Fill, Rectangle, and Polygon. Selecting
 `Positive bag` writes those tools into `current_positive_bag_mask`; selecting
 `Talc` writes those tools into `current_talc_node_mask`. Similar always
 writes Talc, and SAM2 remains a Positive bag assist unless explicitly changed
 later.
+
+Because the source folder `Оталькованные руды/Области оталькования` is treated
+as a talcose source where confirmed talc should be at least `10%` of visible
+image pixels, the widget also shows live visible-pixel percentages for
+`Positive bag`, `Talc`, and `Talc cluster areas`, plus a compact target status.
+The target status is based on confirmed `Talc` pixels, not the rough
+`Positive bag`: below `10%` it shows how many percentage points are missing; at
+or above `10%` it reports the target as met.
 
 Additional display-only layer toggles:
 
@@ -580,6 +598,9 @@ serving artifact bytes.
   "view_settings": {
     "brightness_threshold_luma": 90,
     "brightness_threshold_formula": "luma = 0.299*R + 0.587*G + 0.114*B; luma <= threshold keeps the pixel, luma > threshold paints it white",
+    "brightness_visible_pixels": 12345,
+    "brightness_visible_total_pixels": 100000,
+    "brightness_visible_fraction": 0.12345,
     "talc_cluster_overlay": {
       "enabled": true,
       "source": "talc_node",
@@ -747,10 +768,13 @@ Required checks:
 - Toolbar controls are ordered Brush, Fill, Similar, Rectangle, Polygon,
   SAM2, Undo, Zoom In, Zoom Out, Fit, with active-tool parameters at the end.
 - Mouse wheel zooms over the canvas without changing mask geometry.
-- Brightness threshold preview is available and does not change mask geometry
-  or saved mask pixels.
-- Talc cluster overlay is available, tunable by source/radius/density/opacity,
-  and does not change mask geometry or saved mask pixels.
+- Brightness threshold preview is available, reports the visible-pixel
+  percentage/count for the active photo background, and does not change mask
+  geometry or saved mask pixels.
+- Talc cluster overlay is available as a separated row in the Segmentation
+  classes widget, tunable by source/radius/density/opacity in the right panel,
+  reports highlighted-area percentage, and does not change mask geometry or
+  saved mask pixels.
 - Brush left mouse draws the selected edit class; Brush right mouse erases it.
 - `B` selects Brush and `F` selects Fill without hijacking focused text inputs.
 - Fill, polygon, and rectangle are direct filled-area tools for drawing the

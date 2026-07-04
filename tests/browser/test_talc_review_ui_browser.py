@@ -74,6 +74,9 @@ def test_first_sample_auto_loads_into_viewer(page, talc_server):
     # emptyState gets display:none via the .hidden class once the sample renders.
     page.wait_for_function("document.getElementById('emptyState').classList.contains('hidden')")
     assert page.locator("#viewerCanvas").count() == 1
+    assert "%" in page.locator("#positiveBagPct").inner_text()
+    assert "%" in page.locator("#talcNodePct").inner_text()
+    assert "under 10%" in page.locator("#talcThresholdStatus").inner_text()
     assert page.console_errors == []
 
 
@@ -103,4 +106,28 @@ def test_cluster_overlay_controls_update_live_stats(page, talc_server):
         "() => document.getElementById('clusterStats').textContent.trim() !== 'Cluster overlay is off.'"
     )
     assert page.locator("#clusterStats").inner_text().strip() != "Cluster overlay is off."
+    assert page.locator("#layerClusterAreas").is_checked()
+    assert page.locator("#clusterAreaPct").inner_text().strip().endswith("%")
+
+    page.locator("#layerClusterAreas").uncheck()
+    page.wait_for_function("() => !document.getElementById('clusterOverlayToggle').checked")
+    assert page.locator("#clusterAreaPct").inner_text().strip() == "0.00%"
+    assert page.console_errors == []
+
+
+def test_dark_threshold_reports_visible_pixel_percent(page, talc_server):
+    page.goto(talc_server, wait_until="networkidle")
+    page.wait_for_selector("#sampleList .sample-card")
+    page.wait_for_function("document.getElementById('emptyState').classList.contains('hidden')")
+
+    page.locator("#brightnessThreshold").evaluate(
+        "(el) => { el.value = '50'; el.dispatchEvent(new Event('input', { bubbles: true })); }"
+    )
+
+    page.wait_for_function(
+        "() => document.getElementById('brightnessVisibleValue').textContent.includes('0.00%')"
+    )
+    visible_text = page.locator("#brightnessVisibleValue").inner_text()
+    assert "Visible pixels:" in visible_text
+    assert "(0 px)" in visible_text
     assert page.console_errors == []

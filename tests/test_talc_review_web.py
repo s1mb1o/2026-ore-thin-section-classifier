@@ -135,6 +135,9 @@ class TalcReviewWebTest(unittest.TestCase):
                 "notes": "synthetic",
                 "view_settings": {
                     "brightness_threshold_luma": 90,
+                    "brightness_visible_pixels": 123,
+                    "brightness_visible_total_pixels": 1000,
+                    "brightness_visible_fraction": 0.123,
                     "brightness_threshold_formula": "luma = 0.299*R + 0.587*G + 0.114*B",
                     "background_mode": "original",
                 },
@@ -161,6 +164,9 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertEqual(patch["reviewer"], "unit-test")
         self.assertEqual(patch["original_image_path"], str((self.original_dir / self.image_name).resolve()))
         self.assertEqual(patch["view_settings"]["brightness_threshold_luma"], 90)
+        self.assertEqual(patch["view_settings"]["brightness_visible_pixels"], 123)
+        self.assertEqual(patch["view_settings"]["brightness_visible_total_pixels"], 1000)
+        self.assertAlmostEqual(patch["view_settings"]["brightness_visible_fraction"], 0.123)
         self.assertEqual(patch["view_settings"]["background_mode"], "original")
         refreshed = self.store.manifest_payload()["samples"][0]
         self.assertEqual(refreshed["review_state"], "reviewed")
@@ -302,6 +308,16 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn("Segmentation classes", markup)
         self.assertIn("Show", markup)
         self.assertIn("Edit", markup)
+        self.assertIn('id="positiveBagPct"', markup)
+        self.assertIn('id="talcNodePct"', markup)
+        self.assertIn('id="layerClusterAreas"', markup)
+        self.assertIn('id="clusterAreaPct"', markup)
+        self.assertIn('id="talcThresholdStatus"', markup)
+        self.assertIn("Target talc >= 10% visible px", markup)
+        self.assertIn("TALC_VISIBLE_THRESHOLD_FRACTION = 0.10", markup)
+        self.assertIn("function updateSegmentationClassWidgetMetrics", markup)
+        self.assertIn("under 10% by", markup)
+        self.assertIn("target >=10% met", markup)
         self.assertIn('name="editTargetClass"', markup)
         self.assertIn('id="editTargetPositiveBag"', markup)
         self.assertIn('id="editTargetTalcNode"', markup)
@@ -309,20 +325,28 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn('value="talc_node"', markup)
         self.assertIn('class="class-swatch positive-bag"', markup)
         self.assertIn('class="class-swatch talc"', markup)
+        self.assertIn('class="class-swatch cluster"', markup)
         self.assertIn("Positive bag", markup)
         self.assertIn("Talc", markup)
+        self.assertIn("Talc cluster areas", markup)
         self.assertIn('id="brightnessThreshold"', markup)
         self.assertIn('id="brightnessThresholdValue"', markup)
+        self.assertIn('id="brightnessVisibleValue"', markup)
         self.assertIn('id="brightnessThreshold90Btn"', markup)
         self.assertIn('id="brightnessThresholdOffBtn"', markup)
         self.assertIn("Dark pixel preview threshold", markup)
+        self.assertIn("Visible pixels:", markup)
         self.assertIn("Luma = 0.299 R + 0.587 G + 0.114 B", markup)
         self.assertIn("BRIGHTNESS_THRESHOLD_STORAGE_KEY", markup)
         self.assertIn("BRIGHTNESS_THRESHOLD_FORMULA", markup)
         self.assertIn("function brightnessFilteredBackground(base)", markup)
+        self.assertIn("function setBrightnessVisibleStats", markup)
+        self.assertIn("function brightnessVisibleStatsPayload()", markup)
+        self.assertIn("brightness_visible_pixels", markup)
+        self.assertIn("brightness_visible_fraction", markup)
         self.assertIn("const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]", markup)
         self.assertIn("if (threshold <= 0)", markup)
-        self.assertIn("if (luma > threshold)", markup)
+        self.assertIn("if (luma <= threshold)", markup)
         self.assertIn('id="clusterOverlayToggle"', markup)
         self.assertIn("Show talc cluster areas", markup)
         self.assertIn('id="clusterSource"', markup)
@@ -333,6 +357,8 @@ class TalcReviewWebTest(unittest.TestCase):
         self.assertIn('id="clusterOpacity"', markup)
         self.assertIn('id="clusterStats"', markup)
         self.assertIn("CLUSTER_OVERLAY_STORAGE_KEY", markup)
+        self.assertIn("function updateClusterLayerWidget", markup)
+        self.assertIn("els.clusterLayerToggle.addEventListener('change'", markup)
         self.assertIn("function clusterOverlayCanvasForCurrentSettings()", markup)
         self.assertIn("function drawClusterOverlay()", markup)
         self.assertIn("drawClusterOverlay();", markup)
