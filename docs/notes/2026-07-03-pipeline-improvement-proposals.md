@@ -6,6 +6,31 @@ Method: multi-agent docs+code review — 5 parallel readers over all `docs/` clu
 
 Relationship to existing notes: this complements `docs/notes/2026-07-03-research-mindstorm-improvements.ru.md`. The mindstorm collects research-backed ideas and presentation framing; this note is a current-state-verified engineering gap list, prioritized against the submission deadline.
 
+## 2026-07-04 current-state addendum
+
+This note is useful as a historical gap review, but several top risks have been
+closed or reframed. Use `docs/notes/2026-07-04-current-state-ideas-review.md`
+for the latest idea priority.
+
+Major updates since this file was written:
+
+- Tier 0 is largely implemented: official label audit/deconflicted split,
+  analyzed-area denominator, and `ore_summary.json` margins/warnings now exist.
+- The image-level loop is no longer unmeasured: deterministic rules score about
+  `0.1849` macro-F1, feature-CV over pipeline features about `0.7467`, and the
+  Path A `efficientnet_b3` branch reaches `0.9303` macro-F1 on held-out
+  ordinary/fine images. Path A is 2-class; it is not yet a full talcose-comparable
+  3-class headline.
+- The talc model is real but not fraction-accurate enough yet: SegFormer-B0
+  full-image talc IoU is `0.6410` and F1 `0.7812`, while talc-fraction MAE is
+  still `8.551` percentage points. Do not claim `+/-3 pp`.
+- Runtime/UI evidence advanced: Status/API pages, runtime test, `Download ZIP`,
+  five-page PDF reports, runtime provenance, gx10 Docker path, resident inference,
+  and robustness ladder are implemented.
+- The highest-value remaining ideas are now integration/prioritization work:
+  Path A + talc decision lane provenance, talc fraction calibration, source
+  disagreement map, review candidates, and panorama compliance evidence.
+
 **Moving target caveat**: the repo advanced substantially while this review ran (SegFormer-B2, `run_ore_pipeline.py`, `run_official_batch.py`, `evaluate_ore_classification.py`, balanced eval split, talc web review app all landed in parallel). Every proposal below was re-checked against the state at ~09:40; statuses may lag further parallel work.
 
 ## Hard constraints driving priorities
@@ -70,9 +95,9 @@ Report metrics by `source_type` (LumenStone-GT vs "agreement with labeling heuri
 
 ## Tier 2 — cheap accuracy levers (each measurable via Tier 1)
 
-### 7. Retrain from ImageNet-pretrained init (P7) — **CONFIRMED by hand: B2 `args.json` has `pretrained_model: null`**
+### 7. ~~Retrain from ImageNet-pretrained init (P7)~~ — **CORRECTED 2026-07-04: this claim was WRONG for B2; largely moot**
 
-Every deployed checkpoint (B0, B1, B2) was trained from **random initialization** although `train_binary_sulfide.py` contains a working `from_pretrained('nvidia/mit-bX')` path. B2 takes ~78 s/epoch on zelda → a controlled 30-epoch A/B costs ~40 GPU-minutes. Pre-download HF weights on zelda and verify from the log that pretrained weights actually loaded (the coded fallback to random init would silently degenerate the A/B). Rank with the stratified eval (item 6), not pooled val IoU. Likely the best accuracy-per-hour available in the repo. Effort S. Risk: low.
+**Correction (verified 2026-07-04):** the deployed default SegFormer-B2 was **NOT** trained from random init. Its `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/console.log` contains `SegformerForSemanticSegmentation LOAD REPORT from: nvidia/mit-b2` with 364 backbone weights loaded — i.e. fine-tuned from the ImageNet-pretrained MiT-B2 backbone. The earlier read of `args.json` (`pretrained_model: null, allow_random_init: false`) was misinterpreted: in `train_binary_sulfide.py::create_model`, `null` + `allow_random_init=false` resolves to the **default `nvidia/mit-b{n}` pretrained** checkpoint; random init happens only with `--allow-random-init` or on download failure. Do not tell the jury "trained from scratch." Residual action (small): confirm B0/B1 init from the zelda logs (their local mirrors lack `console.log`); ResUNet is genuinely from-scratch by design (a baseline, not a defect).
 
 ### 8. Threshold + temperature calibration on GT-only val tiles (P12) — **stands**
 

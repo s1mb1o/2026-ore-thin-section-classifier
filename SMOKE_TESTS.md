@@ -66,6 +66,8 @@ Expected:
 - Pressing `Start` while a previous completed run is loaded immediately hides the old text output, metrics table, CSV/PDF/file links, `sulfide`/`final` viewer layers, and side-by-side comparison; the viewer shows the best available input layer until the new run finishes.
 - If `Edit Metadata...` or the API supplies calibrated `microns_per_pixel` / `pixel_size_um`, `scale_source`, and `scale_confidence=calibrated`, the result metrics table shows pixel area plus physical area, and `/api/runs/{run_id}/metrics.csv` contains matching hierarchy fields, `area_px`, `area_um2`, `area_mm2`, and scale provenance columns. Without calibrated scale, physical-area cells stay empty.
 - The result section shows text output first and the metrics table below it at full width. The table is hierarchical: analyzed area, total sulfides with ordinary/fine children, talc, other analyzed area, and image artefacts.
+- After the metrics table, the result section shows a sulfide-grain table. Each row lists a component ID, ordinary/fine intergrowth type, pixel area, equivalent diameter, perimeter, percent share of total sulfide area, liberation proxy, contact-count proxy, and locked/composite proxy flag. The note above the table states that liberation/contact/locked-composite values are OM-mask proxies, not chemistry-based MLA analysis. Checking one or more rows strokes the union of those selected grains on the current image view; unchecking all rows removes the outline without changing immutable run masks or metrics.
+- After the sulfide-grain table, the result section shows technical run details from `run.json` and `reports/runtime.json`: run id/status/stage, elapsed time, effective backend/model sources, ML checkpoints only for ML stages, analysis dimensions, tile count/size/stride/progress, sulfide/talc/final/artefact stage outputs, and present mask/report artifacts.
 - The result export row has `Save CSV`, `Save PDF Report`, and `View files`. `Save PDF Report` downloads a five-page A4 lab-style demonstration report with `Паспорт исследования`, conclusion, quantitative metrics table, original and preprocessed photo-documentation with preprocessing details, a two-color sulfide/non-sulfide map, full final class segmentation, ordinary/fine/talc final-overlay-plus-mask side-by-side rows, and method/QC/expert-review fields. `View files` opens a popup with all immutable run files, sortable filename/type/size/image-dimension headers, byte sizes, `WxH` dimensions for image files, and a per-row `View` action that opens the file through `/artifacts/...`; `Download ZIP` downloads `/api/runs/{run_id}/artifacts.zip` with the run contents.
 - While a run is queued/running, the `Start` control is replaced by a red `Stop` button. Pressing `Stop` disables that button, shows stopping status, cancels the active run through `/api/runs/{run_id}/cancel`, and leaves the run in terminal `canceled` state without enabling result editing.
 - Result view shows layer-specific class toggles; artefact overlays use a distinct violet/magenta color inside the `sulfide` and `final` views instead of the red/green/blue class colors.
@@ -73,7 +75,7 @@ Expected:
 - The edit dialog refreshes the selected run before loading masks so image and segmentation layers appear even after a server restart or stale browser state; missing prerequisites show a localized editor error rather than a blank canvas.
 - `Fix and Restart` creates a new derived run instead of mutating the parent.
 - The left-sidebar History cards show a small thumbnail on the left with `Load` directly underneath it, while filename/run/date/classification text uses the remaining card width.
-- The History page has three modes: all runs, standalone single runs, and series. All-runs and single-run modes show a table with thumbnail, filename, date, ore classification, sulfides, non-sulfides, ordinary intergrowth, fine intergrowth, talc, and Actions; single-run mode excludes runs created inside Series. Series mode uses the `/history_series` slug, lists persisted series from the existing batch store, and exposes `Open` plus `Remove`; `Open` navigates to `/batch/{batch_id}`, while `Remove` confirms and deletes the persisted series plus its child immutable runs. Clicking a run thumbnail opens a preview popup, `Load` restores the original upload/preprocessing preset for tuning, and run-level `Remove` deletes the selected completed/failed run artifact from history.
+- The History page has three modes: all runs, standalone single runs, and series. All-runs and single-run modes show a table with thumbnail, filename, date, text-only progress percent, ore classification, sulfides, non-sulfides, ordinary intergrowth, fine intergrowth, talc, and Actions; no progress bar is shown in the history table, while muted details can show status/stage, tile counts, ETA, and elapsed time. Single-run mode excludes runs created inside Series. Series mode uses the `/history_series` slug, lists persisted series from the existing batch store, and exposes `Open` plus `Remove`; `Open` navigates to `/batch/{batch_id}`, while `Remove` confirms and deletes the persisted series plus its child immutable runs. Clicking a run thumbnail opens a preview popup, `Load` restores the original upload/preprocessing preset for tuning, and run-level `Remove` deletes the selected completed/failed run artifact from history.
 
 ## Ore Pipeline UI Docker Smoke
 
@@ -191,6 +193,7 @@ Expected:
 - The canvas edits talc class masks: Brush left-draw/right-erase, Fill, polygon, and rectangle write the selected `Edit` class (`Positive bag` or `Talc`), optional SAM2 prompt tools edit `positive_bag`, and Similar edits `talc_node`.
 - `Background` includes `Sulfide mask (sulfide/non-sulfide mask segmentation)` and `Mask-only background`; selecting a missing background or layer shows a visible warning instead of silently dropping it.
 - `Dark pixel preview threshold` is available beside the background controls. `255` leaves the photo unchanged, `90` is a quick talc-candidate starting preset, `0` paints the photo background white, and moving the slider never changes the current talc mask pixels.
+- `Show talc cluster areas` is available beside the background controls. Turning it on highlights locally dense talc regions without changing mask pixels; source can be `Talc class` or `Positive bag + Talc`, and radius, minimum local talc percentage, and opacity sliders update the overlay and stats.
 - `Fill` adds the selected `Edit` class to the clicked connected area bounded by raw/closed blue annotation strokes, sulfide pixels, existing selected-class regions, and the image edge; it autosaves, is undoable, and still clips newly added pixels against sulfides when protection is enabled.
 - `Similar` left-clicks a confirmed talc grain to preview luma/color-similar non-sulfide pixels in yellow, `Strictness` recomputes that preview, right-click or `Clear Preview` discards it, and `Apply Similar` merges it into the `talc_node` class with autosave/undo. `Save` and `Save & Next` also apply an active Similar preview before writing reviewed outputs. Clicking inside an existing positive bag still uses the clicked seed patch as the anchor; nearby bag pixels may refine calibration only after passing seed-similarity filtering, so `Strictness=100` should not match broad matrix-heavy regions. Similar may mark pixels inside `positive_bag`; the bag remains a rough containing region, not confirmed talc.
 - Keyboard shortcuts select tools without changing text fields: `B` selects Brush and `F` selects Fill.
@@ -432,6 +435,35 @@ streamlit run apps/sulfide_qa_streamlit.py -- \
 ```
 
 Note: zelda-trained SegFormer checkpoints may use a different Transformers key namespace than the local runtime. The shared loader now applies a strict all-keys/all-shapes namespace remap; if this smoke fails after a dependency upgrade, re-run Runtime `Test` in Settings and inspect the checkpoint-loader error before falling back to zelda.
+
+## MLflow Debug Tracking (optional)
+
+The training scripts have optional MLflow tracking, off by default. Verify it stays
+non-invasive and that the enabled path logs a run.
+
+No-op path (mlflow not required): `--help` lists the flags and training runs unchanged
+without `--mlflow`.
+
+```bash
+python scripts/train_grade_classifier.py --help | grep -- --mlflow   # flags present
+python - <<'PY'
+import argparse, sys; sys.path.insert(0, "src")
+from ore_classifier.tracking import mlflow_run
+with mlflow_run(argparse.Namespace(mlflow=False), params={"lr": 1e-3}) as r:
+    assert r.enabled is False
+    r.log_metrics({"loss": 0.5}, step=1); r.log_artifact("nope.json")  # must not raise
+print("mlflow no-op path ok")
+PY
+```
+
+Enabled path (needs `pip install -r requirements-dev.txt`): a short capped training run
+writes an experiment under `./mlruns` (gitignored) that `mlflow ui` can browse.
+
+```bash
+python scripts/train_grade_classifier.py --out-dir outputs/smoke_grade_mlflow \
+  --epochs 1 --limit 32 --max-steps-per-epoch 2 --mlflow --mlflow-experiment smoke
+test -d mlruns && echo "mlruns store created"
+```
 
 ## Planned Pipeline Checks
 

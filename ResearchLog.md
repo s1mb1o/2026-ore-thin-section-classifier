@@ -1,5 +1,26 @@
 # ResearchLog
 
+## 2026-07-04
+
+### Current-state idea review
+
+- Reviewed the research mindstorm, pipeline proposals, and v2 UI backlog against
+  the current project state after the latest UI/runtime/model work.
+- Saved the updated priority review in
+  `docs/notes/2026-07-04-current-state-ideas-review.md`.
+- Key conclusion: stop treating the backlog as "invent more features"; prioritize
+  integration of measured strengths: Path A ordinary/fine decision lane,
+  trained talc branch with honest fraction caveats, source-disagreement map,
+  review candidates, panorama compliance evidence, and complete runtime/evidence
+  provenance.
+- Added a current-state addendum to
+  `docs/notes/2026-07-03-pipeline-improvement-proposals.md` so stale 2026-07-03
+  claims are not mistaken for current facts.
+- Refreshed `docs/ui/v2/TODO_CANDIDATES.md`: demoted already-implemented
+  ZIP/status work, promoted decision-lane provenance, talc claim guard,
+  source-disagreement layer, review candidates, panorama run card, and workspace
+  demo health strip.
+
 ## 2026-07-03
 
 ### Binary sulfide evaluation and ore pipeline

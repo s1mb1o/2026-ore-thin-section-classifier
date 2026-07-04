@@ -11,6 +11,8 @@ Root-level `docs/plans/`, `docs/specs/`, and `docs/notes/` are reserved for non-
 
 ## Ore Pipeline UI
 
+- `ore-pipeline-ui-customer-journeys.md`
+- `ore-pipeline-ui-user-guide.md`
 - `plans/28_ore-pipeline-ui.md`
 - `specs/ore-pipeline-preprocessing-control-v0.1.md`
 - `plans/29_ore-pipeline-preprocessing-control.md`
@@ -30,6 +32,8 @@ Root-level `docs/plans/`, `docs/specs/`, and `docs/notes/` are reserved for non-
 - `ore-pipeline-docker-deployment-runbook.md`
 - `plans/36_ore-pipeline-source-disagreement-map.md`
 - `TODO_CANDIDATES.md`
+- `plans/40_ore-pipeline-panorama-compliance-card.md`
+- `notes/2026-07-04-ore-pipeline-cli-batch-contract.md`
 
 ## Talc Review UI
 

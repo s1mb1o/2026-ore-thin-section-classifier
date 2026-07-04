@@ -459,7 +459,7 @@ Runtime (this Mac, MPS, `--batch-size 1`, tile 1024 / stride 768):
 
 Segment sulfide grains → human-classify grains → train a grain classifier →
 aggregate to image grade (⊕ talc branch) → leak-free grade F1. Spec/plan:
-`docs/specs/grain-human-in-the-loop-classifier.md`, `docs/plans/37_grain-human-in-the-loop-classifier.md`.
+`docs/specs/grain-human-in-the-loop-classifier.md`, `docs/plans/39_grain-human-in-the-loop-classifier.md`.
 
 1. Build the grain dataset from a completed official batch (crops + manifest):
 
