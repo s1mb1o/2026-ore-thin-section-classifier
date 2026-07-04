@@ -127,6 +127,23 @@ python3 scripts/classify_talcose_heuristic.py \
 ```
 
 Артефакты на образец: `talc_zone_mask.png`, `overlay.jpg`, `talcose_result.json`.
-Датасет разметки/масок: `outputs/talc_annotation_v1/` (82 снимка, боевые ore-маски
-`sulfide_mask_final.png`, ручные тальк-маски `reviewed/`). Наборы визуализаций:
-`zones_proximity_RC25/` (боевой), `zones_on_binary_K085/`, `flakes_porosity/`.
+
+## Датасет разметки (закоммичен, воспроизводимо)
+
+`datasets/talc_annotation_v1/` — **закоммичены маски + манифест** для
+воспроизведения у другого разработчика (у него тот же исходный набор
+организатора; сами снимки не входят):
+
+- `manifest.csv` / `manifest.json` — 82 записи с `source_relpath`,
+  `source_sha256`, классом, ручной долей талька;
+- `masks/<sample_id>/{talc_mask,ignore_mask,ore_mask}.png` — ручная разметка
+  талька + ignore + боевая ore-маска (`sulfide_mask_final`), нужная для точного
+  matrix = кадр − ore.
+
+Сопоставление с исходниками — по `source_relpath`/`source_sha256` (см.
+`datasets/talc_annotation_v1/README.md`). С этими масками классификатор
+воспроизводит зафиксированный результат AUC 0.809 / 87.8%.
+
+Полные рабочие артефакты (не в git): `outputs/talc_annotation_v1/` — все
+промежуточные маски и наборы визуализаций `zones_FINAL_script/`,
+`zones_proximity_RC25/`, `zones_on_binary_K085/`, `flakes_porosity/`.
