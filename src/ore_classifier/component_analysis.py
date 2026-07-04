@@ -23,6 +23,7 @@ class ComponentFeatures:
     solidity: float
     compactness: float
     boundary_complexity: float
+    perimeter_px: float
     bbox_x: int
     bbox_y: int
     bbox_w: int
@@ -224,6 +225,7 @@ def component_features(
         solidity=solidity,
         compactness=compactness,
         boundary_complexity=boundary_complexity,
+        perimeter_px=perimeter,
         bbox_x=int(stat[cv2.CC_STAT_LEFT]),
         bbox_y=int(stat[cv2.CC_STAT_TOP]),
         bbox_w=int(stat[cv2.CC_STAT_WIDTH]),

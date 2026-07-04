@@ -20,8 +20,18 @@ downloads, Series processing, app settings, and service health.
   metadata and preview pyramids.
 - Run: the service job object. Runs are immutable once completed; edit/apply
   actions create derived or prepared runs instead of mutating completed output.
+- Runtime provenance: completed run payloads expose `runtime`, `tiling`,
+  `tile_progress`, `elapsed_seconds`, `masks`, and `reports` fields so the UI
+  can show backend/model sources, operation time, tile counts/progress, stage
+  results, and artifact paths after the sulfide-grain table. Heuristic/rule-only
+  stages keep checkpoint fields empty/null.
 - Artifacts: masks, metrics, CSV/PDF reports, display layers, and full ZIP
   exports created by a run.
+- Sulfide grain rows: per-connected-component result rows derived from
+  `reports/component_features.csv`. `GET /api/runs/{run_id}` returns them as
+  `sulfide_grains.items` with `component_id`, ordinary/fine type, `area_px`,
+  and `share_percent`, plus a `sulfide_grains.label_map` URL for the generated
+  RGB component-label PNG used by the browser to draw selected-grain outlines.
 - Series: user-facing batch workflow for processing several uploads
   sequentially with shared settings. Route and storage names remain `batch`
   for compatibility.
@@ -44,7 +54,7 @@ Downloads return CSV, PDF, or ZIP payloads.
 | `POST /api/uploads/{upload_id}/artifact-mask` | Save a pre-run artifact exclusion mask | yes |
 | `POST /api/runs/start` | Create and optionally run a new immutable job from an upload | yes |
 | `GET /api/runs` | List persisted run history with status/progress/elapsed timing | yes |
-| `GET /api/runs/{run_id}` | Read run status, progress, elapsed time, metadata, masks, previews, metrics, downloads | yes |
+| `GET /api/runs/{run_id}` | Read run status, progress, elapsed time, metadata, masks, previews, metrics, sulfide-grain rows, downloads | yes |
 | `POST /api/runs/{run_id}/cancel` | Request cooperative cancellation | yes |
 | `POST /api/runs/{run_id}/prepare` | Create or update a prepared run from changed settings | yes |
 | `POST /api/runs/{run_id}/start` | Continue a prepared run in place | yes |

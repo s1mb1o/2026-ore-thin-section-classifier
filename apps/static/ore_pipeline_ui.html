@@ -151,10 +151,21 @@
     .sulfide-grains-section { margin-top: 16px; display: grid; gap: 8px; }
     .sulfide-grains-section h3 { margin: 0; font-size: 14px; }
     .sulfide-grains-table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
-    .sulfide-grains-table { min-width: 720px; }
+    .sulfide-grains-table { min-width: 1080px; }
     .sulfide-grains-table td.numeric, .sulfide-grains-table th.numeric { text-align: right; white-space: nowrap; }
     .sulfide-grains-table td.select, .sulfide-grains-table th.select { width: 54px; text-align: center; }
     .sulfide-grains-table td.grain-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .run-technical-section { margin-top: 16px; display: grid; gap: 8px; }
+    .run-technical-section h3 { margin: 0; font-size: 14px; }
+    .run-tech-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
+    .run-tech-card { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: var(--panel-alt); min-width: 0; }
+    .run-tech-card h4 { margin: 0 0 8px; font-size: 13px; }
+    .run-tech-card dl { margin: 0; display: grid; gap: 0; }
+    .run-tech-row { display: grid; grid-template-columns: minmax(96px, .55fr) minmax(0, 1fr); gap: 8px; padding: 5px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+    .run-tech-row:last-child { border-bottom: 0; }
+    .run-tech-row dt { color: var(--muted); font-weight: 700; }
+    .run-tech-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .run-tech-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
     .layer-toggle-row, .viewer-options-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
     .segmentation-legend-overlay { position: absolute; z-index: 4; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; pointer-events: none; }
     .segmentation-legend-panel { max-width: min(48%, 760px); display: grid; gap: 6px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: 0 8px 24px rgba(0,0,0,.22); backdrop-filter: blur(8px); pointer-events: auto; }
@@ -549,6 +560,11 @@
               <div class="sulfide-grains-table-wrap">
                 <table id="sulfideGrainsTable" class="sulfide-grains-table"></table>
               </div>
+            </div>
+            <div class="run-technical-section">
+              <h3 data-i18n="runTechTitle">Технические детали запуска</h3>
+              <p id="runTechNote" class="metrics-note muted"></p>
+              <div id="runTechDetails" class="run-tech-grid"></div>
             </div>
             <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
               <a id="csvLink"><button data-i18n="saveCsv">Сохранить CSV</button></a>
@@ -1835,13 +1851,59 @@
         metricsHeaderPhysicalArea: 'Физическая площадь',
         metricsDenominatorNote: 'Сульфиды, тальк и остальное считаются от проанализированной области; обычные и тонкие срастания — от площади сульфидов; артефакты — от всего изображения.',
         sulfideGrainsTitle: 'Сульфидные зерна',
-        sulfideGrainsNote: 'Доля считается от общей площади сульфидов. Отмеченные строки обводятся на изображении как единый контур.',
+        sulfideGrainsNote: 'Доля считается от общей площади сульфидов. Освобождение, контакты и флаг срастания — прокси по OM-маскам, не химический MLA-анализ. Отмеченные строки обводятся на изображении.',
         sulfideGrainsEmpty: 'Сульфидные зерна не найдены.',
         sulfideGrainsHeaderShow: 'Обводка',
         sulfideGrainsHeaderId: 'ID',
         sulfideGrainsHeaderType: 'Тип',
         sulfideGrainsHeaderArea: 'Площадь, px',
+        sulfideGrainsHeaderDiameter: 'Экв. диаметр, px',
+        sulfideGrainsHeaderPerimeter: 'Периметр, px',
         sulfideGrainsHeaderShare: 'Доля сульфидов',
+        sulfideGrainsHeaderLiberation: 'Освобожд.',
+        sulfideGrainsHeaderContacts: 'Контакты, px',
+        sulfideGrainsHeaderLocked: 'Сросток',
+        sulfideGrainsContactMatrixShort: 'М',
+        sulfideGrainsContactTalcShort: 'Т',
+        sulfideGrainsContactOtherShort: 'П',
+        sulfideGrainsLockedYes: 'да',
+        sulfideGrainsLockedNo: 'нет',
+        runTechTitle: 'Технические детали запуска',
+        runTechNote: 'Сводка сформирована из run.json и runtime provenance; она показывает фактический backend, тайлы, время и результаты каждого этапа.',
+        runTechRunCard: 'Запуск',
+        runTechModelsCard: 'Модели и правила',
+        runTechTilesCard: 'Тайлы и размеры',
+        runTechResultsCard: 'Результаты по этапам',
+        runTechArtifactsCard: 'Артефакты',
+        runTechRunId: 'ID запуска',
+        runTechStatus: 'Статус',
+        runTechStage: 'Этап',
+        runTechCreated: 'Создан',
+        runTechCompleted: 'Завершен',
+        runTechElapsed: 'Время',
+        runTechBackend: 'Backend',
+        runTechBinaryModel: 'Сульфиды',
+        runTechTalcModel: 'Тальк',
+        runTechFinalModel: 'Финал',
+        runTechCheckpoint: 'Checkpoint',
+        runTechSource: 'Источник',
+        runTechDevice: 'Устройство',
+        runTechThreshold: 'Порог',
+        runTechTileCount: 'Кол-во тайлов',
+        runTechTileSize: 'Размер тайла',
+        runTechStride: 'Шаг',
+        runTechAnalysisSize: 'Размер анализа',
+        runTechTileProgress: 'Прогресс тайлов',
+        runTechSulfidePath: 'Сульфидный этап',
+        runTechTalcPath: 'Тальковый этап',
+        runTechFinalPath: 'Финальный этап',
+        runTechArtefactPath: 'Артефакты',
+        runTechNonSulfideTalc: 'Тальк среди не-сульфидов',
+        runTechMasks: 'Маски',
+        runTechReports: 'Отчеты',
+        runTechRuntimeFile: 'runtime.json',
+        runTechGrainFile: 'Зерна CSV',
+        runTechNotAvailable: 'н/д',
         decisionRationaleText: 'Основание: сульфиды — {sulfidePct}% проанализированной области; тальк — {talcPct}%; обычные/тонкие срастания — {ordinaryPct}%/{finePct}% от сульфидов; отрыв тонких от обычных — {intergrowthMargin} п.п.; запас по тальку — {talcMargin} п.п.{warnings}',
         decisionWarnings: '; предупреждения: {warnings}',
         notAvailable: 'н/д',
@@ -2292,13 +2354,59 @@
         metricsHeaderPhysicalArea: 'Physical area',
         metricsDenominatorNote: 'Sulfides, talc, and other use analyzed area as denominator; ordinary and fine intergrowths use sulfide area; artefacts use the whole image.',
         sulfideGrainsTitle: 'Sulfide grains',
-        sulfideGrainsNote: 'Share is calculated from total sulfide area. Checked rows are stroked on the image as one combined outline.',
+        sulfideGrainsNote: 'Share is calculated from total sulfide area. Liberation, contacts, and locked/composite values are OM-mask proxies, not chemistry-based MLA analysis. Checked rows are stroked on the image.',
         sulfideGrainsEmpty: 'No sulfide grains found.',
         sulfideGrainsHeaderShow: 'Stroke',
         sulfideGrainsHeaderId: 'ID',
         sulfideGrainsHeaderType: 'Type',
         sulfideGrainsHeaderArea: 'Area, px',
+        sulfideGrainsHeaderDiameter: 'Eq. diameter, px',
+        sulfideGrainsHeaderPerimeter: 'Perimeter, px',
         sulfideGrainsHeaderShare: 'Sulfide share',
+        sulfideGrainsHeaderLiberation: 'Liberation',
+        sulfideGrainsHeaderContacts: 'Contacts, px',
+        sulfideGrainsHeaderLocked: 'Locked',
+        sulfideGrainsContactMatrixShort: 'M',
+        sulfideGrainsContactTalcShort: 'T',
+        sulfideGrainsContactOtherShort: 'O',
+        sulfideGrainsLockedYes: 'yes',
+        sulfideGrainsLockedNo: 'no',
+        runTechTitle: 'Run technical details',
+        runTechNote: 'Summary built from run.json and runtime provenance; it shows the actual backend, tiles, timing, and per-stage returned results.',
+        runTechRunCard: 'Run',
+        runTechModelsCard: 'Models and rules',
+        runTechTilesCard: 'Tiles and dimensions',
+        runTechResultsCard: 'Stage results',
+        runTechArtifactsCard: 'Artifacts',
+        runTechRunId: 'Run ID',
+        runTechStatus: 'Status',
+        runTechStage: 'Stage',
+        runTechCreated: 'Created',
+        runTechCompleted: 'Completed',
+        runTechElapsed: 'Elapsed',
+        runTechBackend: 'Backend',
+        runTechBinaryModel: 'Sulfides',
+        runTechTalcModel: 'Talc',
+        runTechFinalModel: 'Final',
+        runTechCheckpoint: 'Checkpoint',
+        runTechSource: 'Source',
+        runTechDevice: 'Device',
+        runTechThreshold: 'Threshold',
+        runTechTileCount: 'Tile count',
+        runTechTileSize: 'Tile size',
+        runTechStride: 'Stride',
+        runTechAnalysisSize: 'Analysis size',
+        runTechTileProgress: 'Tile progress',
+        runTechSulfidePath: 'Sulfide stage',
+        runTechTalcPath: 'Talc stage',
+        runTechFinalPath: 'Final stage',
+        runTechArtefactPath: 'Artefacts',
+        runTechNonSulfideTalc: 'Non-sulfide talc',
+        runTechMasks: 'Masks',
+        runTechReports: 'Reports',
+        runTechRuntimeFile: 'runtime.json',
+        runTechGrainFile: 'Grains CSV',
+        runTechNotAvailable: 'n/a',
         decisionRationaleText: 'Rationale: sulfides {sulfidePct}% of analyzed area; talc {talcPct}%; ordinary/fine intergrowths {ordinaryPct}%/{finePct}% of sulfides; fine-vs-ordinary margin {intergrowthMargin} pp; talc margin {talcMargin} pp{warnings}',
         decisionWarnings: '; warnings: {warnings}',
         notAvailable: 'n/a',
@@ -3755,6 +3863,87 @@
       if (classVisible('showTalc')) await drawOverlay(display.talc_overlay, clipX, clipW, overlayOptions);
       if (classVisible('showFinalArtifacts')) await drawOverlay(display.artifact_overlay, clipX, clipW, {...overlayOptions, tintColor: cssColor('--artifact') || '#c63cff'});
     }
+    function selectedGrainSignature() {
+      return Array.from(state.selectedGrainIds).map(Number).filter(Number.isFinite).sort((a, b) => a - b).join(',');
+    }
+    async function loadGrainLabelMap() {
+      const grains = state.run && state.run.sulfide_grains;
+      const url = grains && grains.label_map;
+      if (!url) return null;
+      if (state.grainLabelMap && state.grainLabelMap.url === url && state.grainLabelMap.data) return state.grainLabelMap;
+      if (state.grainLabelMap && state.grainLabelMap.url === url && state.grainLabelMap.promise) return state.grainLabelMap.promise;
+      const entry = {url, promise: null};
+      entry.promise = (async () => {
+        const image = await loadImage(url);
+        if (!image) return null;
+        const source = document.createElement('canvas');
+        source.width = image.width;
+        source.height = image.height;
+        const sourceCtx = source.getContext('2d', {willReadFrequently: true});
+        sourceCtx.drawImage(image, 0, 0);
+        const data = sourceCtx.getImageData(0, 0, source.width, source.height).data;
+        const ready = {url, image, data, width: source.width, height: source.height, promise: null};
+        state.grainLabelMap = ready;
+        return ready;
+      })();
+      state.grainLabelMap = entry;
+      return entry.promise;
+    }
+    function buildSelectedGrainOutline(labelMap) {
+      const signature = selectedGrainSignature();
+      if (!labelMap || !signature) return null;
+      const cacheKey = `${labelMap.url}:${labelMap.width}x${labelMap.height}:${signature}`;
+      if (state.grainOutlineImages.has(cacheKey)) return state.grainOutlineImages.get(cacheKey);
+      const selected = new Set(signature.split(',').map(value => Number(value)));
+      const width = labelMap.width;
+      const height = labelMap.height;
+      const input = labelMap.data;
+      const outline = document.createElement('canvas');
+      outline.width = width;
+      outline.height = height;
+      const outlineCtx = outline.getContext('2d');
+      const output = outlineCtx.createImageData(width, height);
+      const idAt = (x, y) => {
+        if (x < 0 || y < 0 || x >= width || y >= height) return 0;
+        const offset = (y * width + x) * 4;
+        return input[offset] + (input[offset + 1] << 8) + (input[offset + 2] << 16);
+      };
+      const mark = (x, y) => {
+        if (x < 0 || y < 0 || x >= width || y >= height) return;
+        const offset = (y * width + x) * 4;
+        output.data[offset] = 0;
+        output.data[offset + 1] = 230;
+        output.data[offset + 2] = 255;
+        output.data[offset + 3] = 245;
+      };
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const id = idAt(x, y);
+          if (!selected.has(id)) continue;
+          if (selected.has(idAt(x - 1, y)) && selected.has(idAt(x + 1, y)) && selected.has(idAt(x, y - 1)) && selected.has(idAt(x, y + 1))) continue;
+          for (let dy = -2; dy <= 2; dy++) {
+            for (let dx = -2; dx <= 2; dx++) mark(x + dx, y + dy);
+          }
+        }
+      }
+      outlineCtx.putImageData(output, 0, 0);
+      state.grainOutlineImages.set(cacheKey, outline);
+      return outline;
+    }
+    async function drawSelectedGrainOverlay(clipX = 0, clipW = canvas.width) {
+      if (!state.selectedGrainIds.size) return;
+      const labelMap = await loadGrainLabelMap();
+      const outline = buildSelectedGrainOutline(labelMap);
+      if (!labelMap || !outline) return;
+      const rect = imageRect(labelMap.image);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(clipX, 0, clipW, canvas.height);
+      ctx.clip();
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(outline, rect.x, rect.y, rect.w, rect.h);
+      ctx.restore();
+    }
     async function drawTilingGrid(display) {
       const tiling = $('showTiling').checked ? tilingManifest() : null;
       if (!tiling) return;
@@ -3801,14 +3990,17 @@
     async function drawCompositeLayer(display, layer, clipX, clipW) {
       if (layer === 'original') {
         await drawLayer(display, 'original', clipX, clipW);
+        await drawSelectedGrainOverlay(clipX, clipW);
         return;
       }
       if (layer === 'augmented') {
         await drawLayer(display, 'augmented', clipX, clipW);
+        await drawSelectedGrainOverlay(clipX, clipW);
         return;
       }
       if (layer === 'preprocessed') {
         await drawLayer(display, 'preprocessed', clipX, clipW);
+        await drawSelectedGrainOverlay(clipX, clipW);
         return;
       }
       if (layer === 'sulfide') {
@@ -3827,6 +4019,7 @@
         await drawLayer(display, baseLayerKey(display), clipX, clipW, {showImage: classVisible('showBackground')});
         await drawFinalOverlays(display, clipX, clipW);
       }
+      await drawSelectedGrainOverlay(clipX, clipW);
     }
     async function drawSideBySide(display) {
       const divider = Math.floor(canvas.width * state.splitter);
@@ -4248,6 +4441,12 @@
       $('decisionRationale').textContent = '';
       $('metricsTable').innerHTML = '';
       $('metricsDenominatorNote').textContent = '';
+      $('sulfideGrainsTable').innerHTML = '';
+      $('sulfideGrainsNote').textContent = '';
+      $('runTechDetails').innerHTML = '';
+      $('runTechNote').textContent = '';
+      state.grainRunId = null;
+      resetSelectedGrains(false);
       $('csvLink').removeAttribute('href');
       $('pdfLink').removeAttribute('href');
       $('runFilesZipLink').removeAttribute('href');
@@ -4266,6 +4465,8 @@
       state.run = preparedRun;
       state.images.clear();
       state.boundaryImages.clear();
+      state.grainOutlineImages.clear();
+      state.grainLabelMap = null;
       resetViewerToInputLayer();
     }
     async function saveMetadataFromDialog() {
@@ -4333,6 +4534,10 @@
       state.splitter = 0.5;
       state.images.clear();
       state.boundaryImages.clear();
+      state.grainOutlineImages.clear();
+      state.grainLabelMap = null;
+      state.grainRunId = null;
+      state.selectedGrainIds.clear();
       activePollRunId = null;
       $('fileInput').value = '';
       setUploadWarning(null);
@@ -4348,6 +4553,10 @@
       $('decisionRationale').textContent = '';
       $('metricsTable').innerHTML = '';
       $('metricsDenominatorNote').textContent = '';
+      $('sulfideGrainsTable').innerHTML = '';
+      $('sulfideGrainsNote').textContent = '';
+      $('runTechDetails').innerHTML = '';
+      $('runTechNote').textContent = '';
       $('csvLink').removeAttribute('href');
       $('pdfLink').removeAttribute('href');
       $('runFilesZipLink').removeAttribute('href');
@@ -4982,6 +5191,170 @@
         $('runFilesStatus').textContent = t('runFilesLoadFailed', {error: error.message || t('unknownError')});
       }
     }
+    function resetSelectedGrains(redraw = true) {
+      state.selectedGrainIds.clear();
+      state.grainLabelMap = null;
+      state.grainOutlineImages.clear();
+      if (redraw) drawMain();
+    }
+    function localizedGrainType(grain) {
+      return currentLanguage() === 'ru'
+        ? (grain.type_ru || grain.type || '')
+        : (grain.type_en || grain.type || '');
+    }
+    function formatGrainNumber(value, digits = 1) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '—';
+      return number.toLocaleString(localeCode(), {minimumFractionDigits: digits, maximumFractionDigits: digits});
+    }
+    function formatGrainPercent(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '—';
+      return `${number.toFixed(1)}%`;
+    }
+    function formatGrainContacts(grain) {
+      const contacts = (grain && grain.contacts) || {};
+      return [
+        `${t('sulfideGrainsContactMatrixShort')} ${Number(contacts.matrix_px || 0).toLocaleString(localeCode())}`,
+        `${t('sulfideGrainsContactTalcShort')} ${Number(contacts.talc_px || 0).toLocaleString(localeCode())}`,
+        `${t('sulfideGrainsContactOtherShort')} ${Number(contacts.other_contact_px || 0).toLocaleString(localeCode())}`
+      ].join(' / ');
+    }
+    function renderSulfideGrains(run) {
+      if (state.grainRunId !== (run && run.run_id)) {
+        state.grainRunId = run && run.run_id;
+        resetSelectedGrains(false);
+      }
+      const grains = (run && run.sulfide_grains) || {};
+      const items = Array.isArray(grains.items) ? grains.items : [];
+      $('sulfideGrainsNote').textContent = t('sulfideGrainsNote');
+      if (!items.length) {
+        $('sulfideGrainsTable').innerHTML = `<tbody><tr><td>${escapeHtml(t('sulfideGrainsEmpty'))}</td></tr></tbody>`;
+        return;
+      }
+      $('sulfideGrainsTable').innerHTML = `<thead><tr><th class="select">${escapeHtml(t('sulfideGrainsHeaderShow'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderId'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderType'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderArea'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderDiameter'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderPerimeter'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderShare'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderLiberation'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderContacts'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderLocked'))}</th></tr></thead><tbody>` + items.map(grain => {
+        const id = Number(grain.component_id || 0);
+        const checked = state.selectedGrainIds.has(id) ? ' checked' : '';
+        const area = Number(grain.area_px || 0).toLocaleString(localeCode());
+        const diameter = formatGrainNumber(grain.equivalent_diameter_px, 1);
+        const perimeter = formatGrainNumber(grain.perimeter_px, 1);
+        const share = `${Number(grain.share_percent || 0).toFixed(2)}%`;
+        const liberation = formatGrainPercent(Number(grain.liberation_proxy || 0) * 100);
+        const contacts = formatGrainContacts(grain);
+        const locked = grain.locked_composite_proxy ? t('sulfideGrainsLockedYes') : t('sulfideGrainsLockedNo');
+        return `<tr data-grain-row="${escapeHtml(id)}"><td class="select"><input type="checkbox" data-grain-id="${escapeHtml(id)}"${checked}></td><td class="grain-id">${escapeHtml(id)}</td><td>${escapeHtml(localizedGrainType(grain))}</td><td class="numeric">${escapeHtml(area)}</td><td class="numeric">${escapeHtml(diameter)}</td><td class="numeric">${escapeHtml(perimeter)}</td><td class="numeric">${escapeHtml(share)}</td><td class="numeric">${escapeHtml(liberation)}</td><td>${escapeHtml(contacts)}</td><td>${escapeHtml(locked)}</td></tr>`;
+      }).join('') + '</tbody>';
+      document.querySelectorAll('[data-grain-id]').forEach(input => {
+        input.addEventListener('change', event => {
+          const id = Number(event.target.dataset.grainId || 0);
+          if (!Number.isFinite(id) || id <= 0) return;
+          if (event.target.checked) state.selectedGrainIds.add(id);
+          else state.selectedGrainIds.delete(id);
+          state.grainOutlineImages.clear();
+          drawMain();
+        });
+      });
+    }
+    function techMissing(value) {
+      return value == null || value === '' || (Array.isArray(value) && !value.length);
+    }
+    function techText(value, options = {}) {
+      if (techMissing(value)) return escapeHtml(t('runTechNotAvailable'));
+      if (Array.isArray(value)) return value.length ? value.map(item => techText(item, options)).join('<br>') : escapeHtml(t('runTechNotAvailable'));
+      if (typeof value === 'number') return escapeHtml(Number.isInteger(value) ? value.toLocaleString(localeCode()) : Number(value).toFixed(3));
+      const text = String(value);
+      return options.path ? `<span class="run-tech-path">${escapeHtml(text)}</span>` : escapeHtml(text);
+    }
+    function techRow(labelKey, value, options = {}) {
+      return `<div class="run-tech-row"><dt>${escapeHtml(t(labelKey))}</dt><dd>${techText(value, options)}</dd></div>`;
+    }
+    function techCard(titleKey, rows) {
+      const body = rows.filter(Boolean).join('') || techRow('runTechStatus', t('runTechNotAvailable'));
+      return `<section class="run-tech-card"><h4>${escapeHtml(t(titleKey))}</h4><dl>${body}</dl></section>`;
+    }
+    function formatRuntimeModel(model = {}, checkpoint = null) {
+      const parts = [];
+      if (model.backend) parts.push(model.backend);
+      if (model.source && model.source !== model.backend) parts.push(model.source);
+      if (model.device) parts.push(`${t('runTechDevice')}: ${model.device}`);
+      if (model.threshold != null) parts.push(`${t('runTechThreshold')}: ${Number(model.threshold).toFixed(3)}`);
+      if (model.tile_size) parts.push(`${t('runTechTileSize')}: ${model.tile_size}`);
+      if (model.stride) parts.push(`${t('runTechStride')}: ${model.stride}`);
+      if (model.tiles) parts.push(`${t('runTechTileCount')}: ${model.tiles}`);
+      const backendText = String(model.backend || model.source || '').toLowerCase();
+      const modelFreeStage = backendText.includes('heuristic') || backendText.includes('rule') || backendText.includes('auto_candidate') || backendText.includes('provided');
+      const resolvedCheckpoint = modelFreeStage ? null : (checkpoint || model.checkpoint);
+      if (resolvedCheckpoint) parts.push(`${t('runTechCheckpoint')}: ${resolvedCheckpoint}`);
+      return parts;
+    }
+    function formatRunDimensions(run, tiling) {
+      if (tiling && tiling.analysis_width && tiling.analysis_height) return `${tiling.analysis_width} x ${tiling.analysis_height}`;
+      if (run && run.image && run.image.width && run.image.height) return `${run.image.width} x ${run.image.height}`;
+      return '';
+    }
+    function formatStageResults(run, runtime) {
+      const summary = runSummary(run);
+      const models = (runtime && runtime.models) || {};
+      const artifactFraction = summary.artifact_fraction_image == null ? null : `${fixedPercent(summary.artifact_fraction_image)}%`;
+      return [
+        techRow('runTechSulfidePath', [
+          `${t('runTechBackend')}: ${(models.binary_sulfide && models.binary_sulfide.backend) || runtime.backend || run.backend || ''}`,
+          `${t('metricSulfideFraction')}: ${fixedPercent(summary.sulfide_fraction)}%`,
+          `${t('metricComponentCount')}: ${summary.component_count ?? t('runTechNotAvailable')}`
+        ]),
+        techRow('runTechTalcPath', [
+          `${t('runTechSource')}: ${(models.talc && (models.talc.backend || models.talc.source)) || runtime.talc_backend || ''}`,
+          `${t('metricTalcFraction')}: ${fixedPercent(summary.talc_fraction)}%`,
+          models.talc && models.talc.talc_fraction_non_sulfide != null ? `${t('runTechNonSulfideTalc')}: ${fixedPercent(models.talc.talc_fraction_non_sulfide)}%` : ''
+        ].filter(Boolean)),
+        techRow('runTechFinalPath', [
+          oreClassText(summary),
+          `${t('metricOrdinaryFraction')}: ${fixedPercent(summary.ordinary_sulfide_fraction)}%`,
+          `${t('metricFineFraction')}: ${fixedPercent(summary.fine_sulfide_fraction)}%`
+        ]),
+        techRow('runTechArtefactPath', artifactFraction)
+      ];
+    }
+    function renderRunTechnicalDetails(run) {
+      const runtime = (run && run.runtime) || {};
+      const models = runtime.models || {};
+      const checkpoints = runtime.checkpoints || {};
+      const tiling = (run && run.tiling) || {};
+      const tileProgress = (run && run.tile_progress) || {};
+      const masks = (run && run.masks) || {};
+      const reports = (run && run.reports) || {};
+      $('runTechNote').textContent = t('runTechNote');
+      $('runTechDetails').innerHTML = [
+        techCard('runTechRunCard', [
+          techRow('runTechRunId', run && run.run_id),
+          techRow('runTechStatus', run && run.status),
+          techRow('runTechStage', stageLabel((run && (run.stage || run.status)) || '')),
+          techRow('runTechCreated', run && formatDate(run.created_at)),
+          techRow('runTechCompleted', run && formatDate(run.completed_at || runtime.completed_at)),
+          techRow('runTechElapsed', run && run.elapsed_seconds != null ? formatDurationSeconds(run.elapsed_seconds) : (runtime.elapsed_seconds != null ? formatDurationSeconds(runtime.elapsed_seconds) : ''))
+        ]),
+        techCard('runTechModelsCard', [
+          techRow('runTechBackend', runtime.backend || (run && run.backend)),
+          techRow('runTechBinaryModel', formatRuntimeModel(models.binary_sulfide || {}, checkpoints.binary_sulfide)),
+          techRow('runTechTalcModel', formatRuntimeModel(models.talc || {}, checkpoints.talc)),
+          techRow('runTechFinalModel', formatRuntimeModel(models.final_segmentation || {}, checkpoints.final_segmentation))
+        ]),
+        techCard('runTechTilesCard', [
+          techRow('runTechAnalysisSize', formatRunDimensions(run, tiling)),
+          techRow('runTechTileCount', tiling.tile_count || (models.binary_sulfide && models.binary_sulfide.tiles) || tileProgress.total),
+          techRow('runTechTileSize', tiling.tile_size || (models.binary_sulfide && models.binary_sulfide.tile_size)),
+          techRow('runTechStride', (models.binary_sulfide && models.binary_sulfide.stride) || tiling.stride),
+          techRow('runTechTileProgress', tileProgress.total ? `${tileProgress.processed || 0}/${tileProgress.total}` : '')
+        ]),
+        techCard('runTechResultsCard', formatStageResults(run, runtime)),
+        techCard('runTechArtifactsCard', [
+          techRow('runTechMasks', Object.keys(masks).join(', ')),
+          techRow('runTechReports', Object.keys(reports).join(', ')),
+          techRow('runTechRuntimeFile', reports.runtime_json, {path: true}),
+          techRow('runTechGrainFile', reports.component_features_csv, {path: true})
+        ])
+      ].join('');
+    }
     function renderResults(run) {
       $('resultPanel').classList.remove('hidden');
       const returnBatchId = state.returnToBatchId || (run.batch && run.batch.batch_id) || null;
@@ -5001,6 +5374,8 @@
         return `<tr class="metric-level-${level}" data-metric-key="${escapeHtml(row.key || '')}"><td class="metric-label" style="--metric-level:${level}">${escapeHtml(localizedMetricLabel(row))}</td><td>${escapeHtml(value)}</td><td>${escapeHtml(areaPx)}</td><td>${escapeHtml(physicalArea)}</td></tr>`;
       }).join('') + '</tbody>';
       $('metricsDenominatorNote').textContent = t('metricsDenominatorNote');
+      renderSulfideGrains(run);
+      renderRunTechnicalDetails(run);
     }
     async function refreshHistory() {
       const [runsResponse, batchesResponse] = await Promise.all([fetch('/api/runs'), fetch('/api/batches')]);
@@ -5246,6 +5621,12 @@
         $('decisionRationale').textContent = '';
         $('metricsTable').innerHTML = '';
         $('metricsDenominatorNote').textContent = '';
+        $('sulfideGrainsTable').innerHTML = '';
+        $('sulfideGrainsNote').textContent = '';
+        $('runTechDetails').innerHTML = '';
+        $('runTechNote').textContent = '';
+        state.grainRunId = null;
+        resetSelectedGrains(false);
         setSideLayer('none');
         setViewMode('original');
         drawMain();

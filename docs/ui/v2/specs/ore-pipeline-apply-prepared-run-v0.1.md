@@ -60,6 +60,29 @@ If the current workspace state is already a `prepared` run:
 3. The prepared run remains mutable only until `Start` is pressed.
 4. Once `Start` is pressed, it becomes a normal immutable evaluated run.
 
+### Start Always Applies the Current Settings
+
+`Apply` is a convenience preview step, not a precondition for the current
+augmentation/preprocessing controls to take effect. The controls remain freely
+editable after `Apply`, so the last-pressed `Apply` may reflect stale settings.
+
+To guarantee that "the changes the user made are applied", `Start` reconciles
+the loaded `prepared` run with the live controls:
+
+1. The frontend records a signature of the augmentation + preprocessing controls
+   at each successful `Apply` (`state.preparedSettingsSig`, keyed by the prepared
+   run id).
+2. On `Start` of a `prepared` run, if the current control signature differs from
+   the recorded one — or the prepared run has unknown provenance (e.g. it was
+   restored from history without a local `Apply`) — the frontend first re-prepares
+   the run *in place* with the live settings (`POST /api/runs/{id}/prepare`, same
+   run id, no new history entry), then starts it.
+3. If the signature is unchanged, `Start` continues the prepared run directly.
+
+The direct path "completed run loaded → change a setting → press `Start` without
+`Apply`" is unaffected: because the loaded run is `complete` (not `prepared`),
+`Start` submits a fresh run with the current controls.
+
 ## Step Semantics
 
 ### Augmentation Apply

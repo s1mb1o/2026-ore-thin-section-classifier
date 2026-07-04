@@ -86,6 +86,90 @@ def test_api_page_renders_endpoint_docs(page, ore_server):
     assert page.console_errors == []
 
 
+def _set_range(page, control_id, value):
+    """Set a range input's value and fire the input/change handlers, as a drag would."""
+    page.evaluate(
+        """([id, v]) => {
+            const el = document.getElementById(id);
+            el.value = String(v);
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+        }""",
+        [control_id, value],
+    )
+
+
+def _run_augmentation_brightness(page, run_id):
+    """Read the brightness actually stored in the given run's immutable run.json."""
+    return page.evaluate(
+        """async (id) => {
+            const r = await fetch(`/api/runs/${id}`);
+            const j = await r.json();
+            return j.augmentation.settings.color.brightness_pct;
+        }""",
+        run_id,
+    )
+
+
+def test_param_change_after_apply_without_reapply_is_applied_on_start(page, ore_server, sample_image):
+    """Regression: a result-affecting change made after Apply but before Start must still apply.
+
+    Flow (all via real clicks): upload -> Start -> complete; open Augmentation, set
+    brightness=10, Apply (creates a `prepared` run snapshotting brightness=10); then change
+    brightness to 45 WITHOUT pressing Apply again and press Start. The fixed Start handler
+    detects the drifted settings and re-prepares the run in place, so the completed run must
+    reflect brightness=45 (not the stale 10), and no duplicate history entry is created.
+    """
+    page.goto(ore_server, wait_until="networkidle")
+    page.set_input_files("#fileInput", str(sample_image))
+    page.wait_for_function("!document.getElementById('startBtn').disabled")
+
+    # 1) fresh run -> complete
+    page.locator("#startBtn").click()
+    page.wait_for_function("typeof state !== 'undefined' && state.run && state.run.status === 'complete'", timeout=60_000)
+    first_run_id = page.evaluate("state.run.run_id")
+
+    # 2) enable augmentation, set brightness=10 in the dialog, close it, Apply -> prepared (snapshot v1).
+    #    The brightness slider lives inside the modal <dialog>; the Apply button lives in the side
+    #    panel (inert while the modal is open), so the realistic flow opens the dialog to adjust the
+    #    slider, closes it, then presses Apply.
+    page.locator("#editAugmentationBtn").click()
+    page.wait_for_selector("#augmentationDialog[open]")
+    page.evaluate("() => { const c = document.getElementById('augmentationEnabled'); c.checked = true; c.dispatchEvent(new Event('change', {bubbles: true})); }")
+    _set_range(page, "augBrightness", 10)
+    page.locator("#closeAugmentationBtn").click()
+    page.wait_for_selector("#augmentationDialog[open]", state="hidden")
+    page.locator("#applyAugmentationBtn").click()
+    page.wait_for_function("typeof state !== 'undefined' && state.run && state.run.status === 'prepared'", timeout=60_000)
+    prepared_run_id = page.evaluate("state.run.run_id")
+    assert prepared_run_id != first_run_id
+    runs_after_apply = page.evaluate("async () => (await (await fetch('/api/runs')).json()).runs.length")
+
+    # 3) change brightness to 45 in the dialog WITHOUT pressing Apply again, close it, then Start
+    page.locator("#editAugmentationBtn").click()
+    page.wait_for_selector("#augmentationDialog[open]")
+    _set_range(page, "augBrightness", 45)
+    page.locator("#closeAugmentationBtn").click()
+    page.wait_for_selector("#augmentationDialog[open]", state="hidden")
+    page.locator("#startBtn").click()
+
+    # 4) wait for the re-prepared run to complete
+    page.wait_for_function(
+        "(firstId) => (typeof state !== 'undefined' && state.run && state.run.status === 'complete' && state.run.run_id !== firstId)",
+        arg=first_run_id,
+        timeout=60_000,
+    )
+    final_run_id = page.evaluate("state.run.run_id")
+
+    # 5) the latest change (45) must have been applied, not the Apply-time snapshot (10)
+    assert _run_augmentation_brightness(page, final_run_id) == 45.0
+    # re-prepared in place: same id as the prepared run, and Start's re-prepare added no new run
+    assert final_run_id == prepared_run_id
+    runs_after = page.evaluate("async () => (await (await fetch('/api/runs')).json()).runs.length")
+    assert runs_after == runs_after_apply  # Start reused the prepared run in place, no duplicate
+    assert page.console_errors == []
+
+
 def test_upload_and_heuristic_run_flow(page, ore_server, sample_image):
     page.goto(ore_server, wait_until="networkidle")
 

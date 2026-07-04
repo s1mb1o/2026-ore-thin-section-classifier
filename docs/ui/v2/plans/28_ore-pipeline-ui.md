@@ -69,7 +69,7 @@ Decision: use approach 2.
 
 5. Add run creation and progress.
    - `Start` creates a new immutable run directory under `outputs/ore_pipeline_ui/runs/`.
-   - Run metadata records original input, preprocess preset, preprocessed artifact, backend, stage, progress, and ETA.
+   - Run metadata records original input, preprocess preset, preprocessed artifact, backend, stage, progress, ETA, and elapsed runtime.
    - Default local backend is heuristic for smoke/demo reliability; optional `--backend ml --checkpoint ...` calls the existing ML pipeline.
 
 6. Add result visualization.
@@ -80,6 +80,14 @@ Decision: use approach 2.
 
 7. Add metrics and exports.
    - Metrics table includes total sulfide fraction, ordinary/fine intergrowth fractions, talc fraction, component count, and analyzed area.
+   - The result panel also lists each classified sulfide grain from `component_features.csv`
+     with ordinary/fine type, pixel area, sulfide-area share, and a checkbox
+     that strokes the selected grain union on the viewer through the generated
+     RGB component label-map artifact.
+   - After the grain table, the result panel shows a technical details widget
+     from `run.json` and `reports/runtime.json`: backend/model provenance, ML
+     checkpoints only for ML stages, tile dimensions/progress, elapsed time,
+     stage results, and present run artifacts.
    - Scale-aware extension: `docs/ui/v2/specs/ore-pipeline-scale-metrics-v0.1.md`
      and `docs/ui/v2/plans/33_ore-pipeline-scale-metrics.md` define pixel areas,
      calibrated physical areas, and `microns_per_pixel` / `pixel_size_um`
@@ -99,7 +107,7 @@ Decision: use approach 2.
 
 9. Add History page.
    - List all runs from the workspace.
-   - Show parent/edit lineage and open past runs.
+   - Show parent/edit lineage, text-only progress percent/elapsed time, and open past runs.
 
 ## Implemented V2 Runtime Augmentation
 

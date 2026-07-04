@@ -54,6 +54,10 @@ from ore_classifier.component_analysis import (  # noqa: E402
     summary_warnings,
     write_component_csv,
 )
+from ore_classifier.component_reports import (  # noqa: E402
+    ComponentLiberationProxy,
+    component_liberation_proxies,
+)
 from ore_classifier.gis_export import (  # noqa: E402
     GisClassSpec,
     write_geojson_export,
@@ -3099,15 +3103,18 @@ print(json.dumps({
         masks = data.get("masks") if isinstance(data.get("masks"), dict) else {}
         csv_value = reports.get("component_features_csv") or run_dir / "reports/component_features.csv"
         sulfide_value = masks.get("sulfide") or run_dir / "masks/sulfide_mask.png"
+        talc_value = masks.get("talc") or run_dir / "masks/talc_mask.png"
         try:
             csv_path = resolve_path(csv_value)
             sulfide_path = resolve_path(sulfide_value)
+            talc_path = resolve_path(talc_value)
         except (TypeError, ValueError):
             return empty
         if not csv_path.exists() or csv_path.stat().st_size <= 0 or not sulfide_path.exists():
             return empty
         try:
-            rows = self._read_sulfide_grain_rows(csv_path, summary)
+            liberation_rows = self._sulfide_liberation_proxies(sulfide_path, talc_path)
+            rows = self._read_sulfide_grain_rows(csv_path, summary, liberation_rows)
             label_map_path = self._ensure_sulfide_component_label_map(run_dir, sulfide_path)
             with Image.open(label_map_path) as image:
                 width, height = image.size
@@ -3125,7 +3132,21 @@ print(json.dumps({
             "items": rows,
         }
 
-    def _read_sulfide_grain_rows(self, csv_path: Path, summary: dict[str, Any]) -> list[dict[str, Any]]:
+    def _sulfide_liberation_proxies(
+        self,
+        sulfide_path: Path,
+        talc_path: Path | None = None,
+    ) -> dict[int, ComponentLiberationProxy]:
+        sulfide_mask = read_binary_mask(sulfide_path)
+        talc_mask = read_binary_mask(talc_path, sulfide_mask.shape) if talc_path and talc_path.exists() else None
+        return {row.component_id: row for row in component_liberation_proxies(sulfide_mask, talc_mask)}
+
+    def _read_sulfide_grain_rows(
+        self,
+        csv_path: Path,
+        summary: dict[str, Any],
+        liberation_rows: dict[int, ComponentLiberationProxy] | None = None,
+    ) -> list[dict[str, Any]]:
         label_text = {
             "ordinary_intergrowth": ("Обычные срастания", "ordinary intergrowth"),
             "fine_intergrowth": ("Тонкие срастания", "fine intergrowth"),
@@ -3141,7 +3162,17 @@ print(json.dumps({
             area_px = int(float(row.get("area_px") or 0))
             label = str(row.get("label") or "")
             type_ru, type_en = label_text.get(label, (label, label))
+            sulfide_area_share = area_px / max(denominator, 1)
             share_percent = area_px / max(denominator, 1) * 100.0
+            equivalent_diameter_px = math.sqrt(4.0 * area_px / math.pi) if area_px > 0 else 0.0
+            perimeter_px = self._component_perimeter_from_row(row, area_px)
+            proxy = (liberation_rows or {}).get(component_id)
+            matrix_contact = int(proxy.matrix_contact_px) if proxy else 0
+            talc_contact = int(proxy.talc_contact_px) if proxy else 0
+            other_contact = int(proxy.other_sulfide_contact_px) if proxy else 0
+            total_contact = matrix_contact + talc_contact + other_contact
+            liberation_proxy = float(proxy.liberation_score) if proxy else 0.0
+            locked_composite_proxy = bool(total_contact > 0 and (liberation_proxy < 0.75 or talc_contact > 0 or other_contact > 0))
             grains.append(
                 {
                     "component_id": component_id,
@@ -3149,7 +3180,19 @@ print(json.dumps({
                     "type_ru": type_ru,
                     "type_en": type_en,
                     "area_px": area_px,
+                    "equivalent_diameter_px": equivalent_diameter_px,
+                    "perimeter_px": perimeter_px,
+                    "sulfide_area_share": sulfide_area_share,
                     "share_percent": share_percent,
+                    "liberation_proxy": liberation_proxy,
+                    "locked_composite_proxy": locked_composite_proxy,
+                    "contacts": {
+                        "matrix_px": matrix_contact,
+                        "talc_px": talc_contact,
+                        "other_contact_px": other_contact,
+                        "total_px": total_contact,
+                    },
+                    "association_percentages": self._association_percentages(matrix_contact, talc_contact, other_contact),
                     "bbox": {
                         "x": int(float(row.get("bbox_x") or 0)),
                         "y": int(float(row.get("bbox_y") or 0)),
@@ -3163,6 +3206,23 @@ print(json.dumps({
                 }
             )
         return grains
+
+    @staticmethod
+    def _component_perimeter_from_row(row: dict[str, str], area_px: int) -> float:
+        raw_perimeter = row.get("perimeter_px")
+        if raw_perimeter not in (None, ""):
+            return float(raw_perimeter)
+        boundary_complexity = float(row.get("boundary_complexity") or 0.0)
+        return boundary_complexity * math.sqrt(max(area_px, 0))
+
+    @staticmethod
+    def _association_percentages(matrix_contact: int, talc_contact: int, other_contact: int) -> dict[str, float]:
+        total = max(matrix_contact + talc_contact + other_contact, 1)
+        return {
+            "matrix": matrix_contact / total * 100.0,
+            "talc": talc_contact / total * 100.0,
+            "other_contact": other_contact / total * 100.0,
+        }
 
     def _ensure_sulfide_component_label_map(self, run_dir: Path, sulfide_mask_path: Path) -> Path:
         output_path = run_dir / "masks/sulfide_component_labels_rgb.png"
