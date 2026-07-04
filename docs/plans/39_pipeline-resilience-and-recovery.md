@@ -88,6 +88,11 @@ recorded is still a bug.
   fallback), F3 (OOM → adaptive batch shrink via `_accumulate_prob_map`, memmap-backed),
   and talc-model failure → heuristic-candidate fallback. Unit-tested in
   `tests/test_resident_resilience.py`.
+- `scripts/run_resident_batch.py` (+ `resident_pipeline.py`): disk pre-flight
+  (`--min-free-disk-mb`, F4), atomic `pipeline_summary.json` write via temp-file +
+  `os.replace` (F4), and resume hardening (F5) that re-runs a prior run whose summary
+  is missing/corrupt or whose key artifacts (sulfide mask, ore summary, component CSV)
+  are absent — instead of trusting the sentinel blindly. Unit-tested.
 
 **Remaining surface:** the web runtime (`apps/ore_pipeline_web.py`) still needs the same
 `degradations`/`result_quality` wiring and the F7 job watchdog; deferred while that file

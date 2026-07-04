@@ -16,6 +16,7 @@ dedupe.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import time
 from pathlib import Path
@@ -426,10 +427,20 @@ class ResidentSulfidePipeline:
             },
         }
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "pipeline_summary.json").write_text(
-            json.dumps(pipeline_summary, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8"
+        _atomic_write_text(
+            out_dir / "pipeline_summary.json",
+            json.dumps(pipeline_summary, ensure_ascii=False, indent=2, default=str) + "\n",
         )
         return pipeline_summary
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text via a temp file + ``os.replace`` so a crash or ENOSPC mid-write can
+    never leave a half-written file (plan 39 F4). Used for the ``pipeline_summary.json``
+    resume sentinel so resume (F5) never trusts a truncated summary."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _is_oom_error(exc: BaseException) -> bool:

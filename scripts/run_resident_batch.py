@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,30 @@ from ore_classifier.rule_config_io import (  # noqa: E402
     add_rule_config_arguments,
     resolve_rule_config_from_args,
 )
+
+
+def _run_is_complete(run_dir: Path) -> bool:
+    """Whether a prior run can be trusted for resume (plan 39 F5).
+
+    A run counts as done only if its ``pipeline_summary.json`` sentinel parses AND the
+    key artifacts it references still exist. A present-but-corrupt or partially-written
+    run (e.g. crash mid-batch, ENOSPC) is re-run rather than silently skipped.
+    """
+    summary_path = run_dir / "pipeline_summary.json"
+    if not summary_path.exists():
+        return False
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(summary, dict):
+        return False
+    paths = summary.get("paths") if isinstance(summary.get("paths"), dict) else {}
+    for key in ("sulfide_mask", "ore_summary", "component_features"):
+        artifact = paths.get(key)
+        if not artifact or not Path(artifact).exists():
+            return False
+    return True
 
 
 def main() -> int:
@@ -52,6 +77,12 @@ def main() -> int:
     parser.add_argument("--no-auto-talc-candidate", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument(
+        "--min-free-disk-mb",
+        type=int,
+        default=2048,
+        help="Fail fast before inference if free disk at --out-dir is under this (plan 39 F4).",
+    )
     args = parser.parse_args()
     rule_config = resolve_rule_config_from_args(args)
 
@@ -63,6 +94,15 @@ def main() -> int:
         max_total=args.max_total,
     )
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    free_mb = shutil.disk_usage(args.out_dir).free / (1024 * 1024)
+    if free_mb < args.min_free_disk_mb:
+        print(
+            f"[resident] FATAL: only {free_mb:.0f} MiB free at {args.out_dir}; "
+            f"need >= {args.min_free_disk_mb} MiB (raise/lower with --min-free-disk-mb)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
 
     pipeline = ResidentSulfidePipeline(
         checkpoint=args.checkpoint,
@@ -89,10 +129,9 @@ def main() -> int:
         source_label = item["label"]
         run_id = rob.safe_run_id(source_label, str(rel_path))
         run_dir = args.out_dir / "runs" / source_label / run_id
-        pipeline_summary_path = run_dir / "pipeline_summary.json"
         print(f"[{index}/{len(selected)}] {source_label}: {rel_path}", flush=True)
 
-        if args.overwrite or not pipeline_summary_path.exists():
+        if args.overwrite or not _run_is_complete(run_dir):
             try:
                 pipeline.run_image(
                     image_path=image_path,
