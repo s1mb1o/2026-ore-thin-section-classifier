@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from ore_classifier.model_io import remap_segformer_state_dict_for_model
+from ore_classifier.model_io import (
+    _checkpoint_load_error,
+    forward_logits,
+    load_binary_segmentation_checkpoint,
+    remap_segformer_state_dict_for_model,
+    resolve_device,
+)
+from ore_classifier.models import create_resunet
 
 
 def tensor(*shape: int) -> torch.Tensor:
@@ -87,6 +96,93 @@ class ModelIOTest(unittest.TestCase):
         remapped = remap_segformer_state_dict_for_model(checkpoint_state, model_state)
 
         self.assertIs(remapped, checkpoint_state)
+
+
+class ResolveDeviceTest(unittest.TestCase):
+    def test_explicit_device_string_is_honored(self) -> None:
+        self.assertEqual(resolve_device("cpu"), torch.device("cpu"))
+        self.assertEqual(resolve_device("cuda:1"), torch.device("cuda:1"))
+
+    def test_auto_picks_an_available_backend(self) -> None:
+        device = resolve_device("auto")
+        self.assertIn(device.type, {"cuda", "mps", "cpu"})
+        if not torch.cuda.is_available() and not torch.backends.mps.is_available():
+            self.assertEqual(device.type, "cpu")
+
+
+class ForwardLogitsTest(unittest.TestCase):
+    def test_raw_tensor_output_is_interpolated_to_target(self) -> None:
+        model = lambda images: torch.zeros(images.shape[0], 2, 8, 8)  # noqa: E731
+        logits = forward_logits(model, torch.zeros(3, 3, 32, 32), (32, 32))
+        self.assertEqual(tuple(logits.shape), (3, 2, 32, 32))
+
+    def test_logits_attribute_output_is_unwrapped(self) -> None:
+        model = lambda images: SimpleNamespace(logits=torch.ones(1, 2, 16, 16))  # noqa: E731
+        logits = forward_logits(model, torch.zeros(1, 3, 16, 16), (16, 16))
+        # already at target size: no interpolation, values untouched
+        self.assertTrue(torch.equal(logits, torch.ones(1, 2, 16, 16)))
+
+
+class LoadCheckpointTest(unittest.TestCase):
+    def test_resunet_checkpoint_round_trip(self) -> None:
+        model = create_resunet(base_channels=4)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "best.pt"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "args": {"model": "resunet", "base_channels": 4},
+                    "epoch": 7,
+                    "best_iou_sulfide": 0.93,
+                },
+                path,
+            )
+            loaded, meta = load_binary_segmentation_checkpoint(path, torch.device("cpu"))
+        self.assertEqual(meta["model"], "resunet")
+        self.assertEqual(meta["epoch"], 7)
+        self.assertEqual(meta["best_iou_sulfide"], 0.93)
+        self.assertEqual(meta["state_dict_compatibility"], "exact")
+        original = model.state_dict()
+        for key, value in loaded.state_dict().items():
+            self.assertTrue(torch.equal(value, original[key]), key)
+
+    def test_unsupported_model_name_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bad.pt"
+            torch.save({"model": {}, "args": {"model": "unknown_arch"}}, path)
+            with self.assertRaises(ValueError):
+                load_binary_segmentation_checkpoint(path, torch.device("cpu"))
+
+    def test_incompatible_state_dict_raises_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mismatched.pt"
+            torch.save(
+                {
+                    "model": {"stem.weight": tensor(1)},
+                    "args": {"model": "resunet", "base_channels": 4},
+                },
+                path,
+            )
+            with self.assertRaises(RuntimeError) as ctx:
+                load_binary_segmentation_checkpoint(path, torch.device("cpu"))
+        self.assertIn(str(path), str(ctx.exception))
+        self.assertIn("stem.weight", str(ctx.exception))
+
+
+class CheckpointLoadErrorTest(unittest.TestCase):
+    def test_message_names_path_first_key_and_original_error(self) -> None:
+        message = _checkpoint_load_error(
+            Path("/models/x.pt"),
+            {"model": {"segformer.stages.0.w": tensor(1)}},
+            RuntimeError("size mismatch"),
+        )
+        self.assertIn("/models/x.pt", message)
+        self.assertIn("segformer.stages.0.w", message)
+        self.assertIn("size mismatch", message)
+
+    def test_empty_checkpoint_uses_placeholder_key(self) -> None:
+        message = _checkpoint_load_error(Path("x.pt"), {}, RuntimeError("boom"))
+        self.assertIn("<empty>", message)
 
 
 if __name__ == "__main__":

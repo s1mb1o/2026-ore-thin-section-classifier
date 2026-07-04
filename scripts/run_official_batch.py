@@ -45,6 +45,8 @@ def main() -> int:
     parser.add_argument("--min-component-area-px", type=int, default=128)
     parser.add_argument("--close-kernel-px", type=int, default=21)
     add_rule_config_arguments(parser)
+    parser.add_argument("--talc-checkpoint", type=Path, default=None, help="Optional trained talc segmentation checkpoint.")
+    parser.add_argument("--talc-threshold", type=float, default=0.5)
     parser.add_argument("--talc-min-area-px", type=int, default=320)
     parser.add_argument("--preview-max-side", type=int, default=1800)
     parser.add_argument("--no-auto-talc-candidate", action="store_true")
@@ -103,7 +105,9 @@ def main() -> int:
                 str(args.preview_max_side),
             ]
             cmd.extend(rule_config_cli_args(rule_config))
-            if not args.no_auto_talc_candidate:
+            if args.talc_checkpoint is not None:
+                cmd.extend(["--talc-checkpoint", str(args.talc_checkpoint), "--talc-threshold", str(args.talc_threshold)])
+            elif not args.no_auto_talc_candidate:
                 cmd.append("--auto-talc-candidate")
             try:
                 subprocess.run(cmd, check=True)
@@ -148,7 +152,9 @@ def build_summary_row(item: dict[str, Any], image_path: Path, run_dir: Path) -> 
     binary = read_json(Path(pipeline["paths"]["binary_sulfide_summary"]))
     ore = read_json(Path(pipeline["paths"]["ore_summary"]))
     talc_summary_path = pipeline["paths"].get("talc_candidate_summary")
-    talc_candidate = read_json(Path(talc_summary_path)) if talc_summary_path else {}
+    talc_candidate = read_optional_json(Path(talc_summary_path)) if talc_summary_path else {}
+    talc_model_summary_path = pipeline["paths"].get("talc_model_summary")
+    talc_model = read_optional_json(Path(talc_model_summary_path)) if talc_model_summary_path else {}
     paths = pipeline.get("paths", {})
     rule_config = pipeline.get("rule_config", {})
     source_label = item["label"]
@@ -167,7 +173,11 @@ def build_summary_row(item: dict[str, Any], image_path: Path, run_dir: Path) -> 
         "fine_sulfide_fraction": ore.get("fine_sulfide_fraction", ""),
         "talc_fraction": ore.get("talc_fraction", ""),
         "talc_source": pipeline.get("talc_source", ""),
+        "talc_checkpoint": pipeline.get("talc_checkpoint", ""),
+        "talc_threshold": pipeline.get("talc_threshold", ""),
         "talc_candidate_fraction": talc_candidate.get("talc_candidate_fraction", ""),
+        "talc_model_fraction_analyzed": talc_model.get("talc_fraction_analyzed", ""),
+        "talc_model_fraction_non_sulfide": talc_model.get("talc_fraction_non_sulfide", ""),
         "rule_fine_dark_inside_ratio": rule_config.get("fine_dark_inside_ratio", ""),
         "rule_fine_solidity_max": rule_config.get("fine_solidity_max", ""),
         "rule_fine_compactness_max": rule_config.get("fine_compactness_max", ""),
@@ -205,6 +215,12 @@ def write_batch_outputs(out_dir: Path, rows: list[dict[str, Any]], failures: lis
 
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_optional_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return read_json(path)
 
 
 def safe_run_id(label: str, rel_path: str) -> str:
