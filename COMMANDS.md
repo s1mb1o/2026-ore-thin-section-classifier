@@ -489,7 +489,21 @@ python3 scripts/build_grain_dataset.py \
 Runtime: ~30 s for the 345-image baseline batch (≈14.4k grain crops exported).
 
 2. Label grains in the browser (O=ordinary, F=fine, U=uncertain; arrows to move).
-Persists `annotations.json` in the dataset dir:
+Each grain shows its full feature report + heuristic reason so you can decide
+ordinary vs fine. Persists `annotations.json` in the dataset dir. Quickest launch
+is the repo-root wrapper `run_grain_app.sh` (prefers `.venv`, defaults to
+`outputs/grain_dataset_v0` on an OS-assigned port, passes extra args through):
+
+```bash
+./run_grain_app.sh                                   # default dataset, OS-assigned port
+./run_grain_app.sh --port 8082                       # fixed port
+./run_grain_app.sh --dataset-dir outputs/grain_dataset_v1
+./run_grain_app.sh --help                            # app help
+```
+
+Host/port/dataset can also be set via `GRAIN_HOST` / `GRAIN_PORT` /
+`GRAIN_DATASET_DIR`. The app prints the local URL on startup. Equivalent explicit
+invocation:
 
 ```bash
 python3 apps/grain_review_web.py --dataset-dir outputs/grain_dataset_v0 --port 0
