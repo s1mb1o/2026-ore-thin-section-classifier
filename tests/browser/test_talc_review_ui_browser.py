@@ -88,3 +88,19 @@ def test_tool_switch_reveals_similar_params(page, talc_server):
     page.wait_for_selector("#similarParams:not(.hidden)")
     assert page.locator("#similarParams").is_visible()
     assert page.console_errors == []
+
+
+def test_cluster_overlay_controls_update_live_stats(page, talc_server):
+    page.goto(talc_server, wait_until="networkidle")
+    page.wait_for_selector("#sampleList .sample-card")
+    page.wait_for_function("document.getElementById('emptyState').classList.contains('hidden')")
+
+    page.locator("#clusterSource").select_option("union")
+    page.locator("#clusterDensity").evaluate("(el) => { el.value = '1'; el.dispatchEvent(new Event('input', { bubbles: true })); }")
+    page.locator("#clusterOverlayToggle").check()
+
+    page.wait_for_function(
+        "() => document.getElementById('clusterStats').textContent.trim() !== 'Cluster overlay is off.'"
+    )
+    assert page.locator("#clusterStats").inner_text().strip() != "Cluster overlay is off."
+    assert page.console_errors == []

@@ -1022,6 +1022,30 @@ def render_html_page() -> str:
       </div>
       <div class="filter-hint">Luma = 0.299 R + 0.587 G + 0.114 B. Pixels brighter than the threshold are painted white; darker pixels stay visible.</div>
     </div>
+    <div class="cluster-controls">
+      <label class="cluster-toggle"><input type="checkbox" id="clusterOverlayToggle"> Show talc cluster areas</label>
+      <label class="field-label" for="clusterSource">Cluster source</label>
+      <select id="clusterSource" class="select-input" aria-label="Talc cluster source">
+        <option value="talc_node">Talc class</option>
+        <option value="union">Positive bag + Talc</option>
+      </select>
+      <div class="range-header">
+        <label class="field-label inline" for="clusterRadius">Radius</label>
+        <span id="clusterRadiusValue" class="range-value">64 px</span>
+      </div>
+      <input id="clusterRadius" type="range" min="8" max="240" step="4" value="64" aria-label="Talc cluster radius">
+      <div class="range-header">
+        <label class="field-label inline" for="clusterDensity">Min local talc</label>
+        <span id="clusterDensityValue" class="range-value">4%</span>
+      </div>
+      <input id="clusterDensity" type="range" min="1" max="60" step="1" value="4" aria-label="Minimum local talc density for cluster display">
+      <div class="range-header">
+        <label class="field-label inline" for="clusterOpacity">Opacity</label>
+        <span id="clusterOpacityValue" class="range-value">45%</span>
+      </div>
+      <input id="clusterOpacity" type="range" min="10" max="90" step="5" value="45" aria-label="Talc cluster overlay opacity">
+      <div id="clusterStats" class="filter-hint">Cluster overlay is off.</div>
+    </div>
     <div id="assetWarnings" class="asset-warnings hidden" role="status" aria-live="polite"></div>
     <div class="layers">
       <label><input type="checkbox" id="layerAuto"> Autodetected mask</label>
@@ -1240,6 +1264,9 @@ button, input, select, textarea { font: inherit; }
 .field-label.inline { margin: 0; }
 .brightness-filter { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; }
 .brightness-filter input[type="range"] { width: 100%; }
+.cluster-controls { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; }
+.cluster-controls input[type="range"] { width: 100%; }
+.cluster-toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
 .range-header, .range-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .range-actions { justify-content: flex-start; }
 .range-value { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
@@ -1288,6 +1315,7 @@ const ZOOM_STEP = 1.15;
 const SAM2_POINT_HOVER_PREVIEW_DELAY_MS = 2000;
 const BRIGHTNESS_THRESHOLD_STORAGE_KEY = 'talcBrightnessThreshold';
 const BRIGHTNESS_THRESHOLD_FORMULA = 'luma = 0.299*R + 0.587*G + 0.114*B; luma <= threshold keeps the pixel, luma > threshold paints it white';
+const CLUSTER_OVERLAY_STORAGE_KEY = 'talcClusterOverlaySettings';
 const MAX_SIMILAR_TALC_REGION_FRACTION = 0.35;
 const SIMILAR_TALC_SEED_PATCH_RADIUS = 5;
 const SIMILAR_TALC_POSITIVE_BAG_RADIUS = 70;
@@ -1301,6 +1329,7 @@ const state = {
   editClass: 'positive_bag',
   imageW: 1,
   imageH: 1,
+  maskVersion: 0,
   zoom: 1,
   viewPan: {
     active: false,
@@ -1337,6 +1366,11 @@ const state = {
   brightnessPreview: {
     source: null,
     threshold: null
+  },
+  clusterOverlay: {
+    key: null,
+    canvas: null,
+    stats: null
   },
   fillBoundaryLoaded: false,
   sam2Preview: {
@@ -1412,6 +1446,15 @@ const els = {
   brightnessThresholdValue: document.getElementById('brightnessThresholdValue'),
   brightnessThreshold90Btn: document.getElementById('brightnessThreshold90Btn'),
   brightnessThresholdOffBtn: document.getElementById('brightnessThresholdOffBtn'),
+  clusterOverlayToggle: document.getElementById('clusterOverlayToggle'),
+  clusterSource: document.getElementById('clusterSource'),
+  clusterRadius: document.getElementById('clusterRadius'),
+  clusterRadiusValue: document.getElementById('clusterRadiusValue'),
+  clusterDensity: document.getElementById('clusterDensity'),
+  clusterDensityValue: document.getElementById('clusterDensityValue'),
+  clusterOpacity: document.getElementById('clusterOpacity'),
+  clusterOpacityValue: document.getElementById('clusterOpacityValue'),
+  clusterStats: document.getElementById('clusterStats'),
   assetWarnings: document.getElementById('assetWarnings'),
   metricsBox: document.getElementById('metricsBox'),
   reviewerInput: document.getElementById('reviewerInput'),
@@ -1920,6 +1963,8 @@ function buildTintFromCanvas(sourceCanvas, rgba) {
 }
 
 function refreshCurrentTint() {
+  state.maskVersion += 1;
+  invalidateClusterOverlay();
   currentTintCanvas.width = state.imageW;
   currentTintCanvas.height = state.imageH;
   talcNodeTintCanvas.width = state.imageW;
@@ -2268,10 +2313,101 @@ function setBrightnessThreshold(value, persist = true) {
   drawWithAvailabilityStatus();
 }
 
+function clampNumber(value, fallback, minValue, maxValue) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(minValue, Math.min(maxValue, numeric));
+}
+
+function readClusterSettingsFromControls() {
+  return {
+    enabled: Boolean(els.clusterOverlayToggle && els.clusterOverlayToggle.checked),
+    source: els.clusterSource && els.clusterSource.value === 'union' ? 'union' : 'talc_node',
+    radiusPx: Math.round(clampNumber(els.clusterRadius ? els.clusterRadius.value : 64, 64, 8, 240)),
+    minDensityPercent: Math.round(clampNumber(els.clusterDensity ? els.clusterDensity.value : 4, 4, 1, 60)),
+    opacityPercent: Math.round(clampNumber(els.clusterOpacity ? els.clusterOpacity.value : 45, 45, 10, 90))
+  };
+}
+
+function updateClusterOverlayUi(persist = true) {
+  if (!els.clusterOverlayToggle) return;
+  const settings = readClusterSettingsFromControls();
+  els.clusterSource.value = settings.source;
+  els.clusterRadius.value = String(settings.radiusPx);
+  els.clusterRadiusValue.textContent = `${settings.radiusPx} px`;
+  els.clusterDensity.value = String(settings.minDensityPercent);
+  els.clusterDensityValue.textContent = `${settings.minDensityPercent}%`;
+  els.clusterOpacity.value = String(settings.opacityPercent);
+  els.clusterOpacityValue.textContent = `${settings.opacityPercent}%`;
+  if (!settings.enabled && els.clusterStats) els.clusterStats.textContent = 'Cluster overlay is off.';
+  if (persist) localStorage.setItem(CLUSTER_OVERLAY_STORAGE_KEY, JSON.stringify(settings));
+}
+
+function setClusterOverlaySettings(settings, persist = true) {
+  if (!els.clusterOverlayToggle || !settings) return;
+  els.clusterOverlayToggle.checked = Boolean(settings.enabled);
+  if (els.clusterSource) els.clusterSource.value = settings.source === 'union' ? 'union' : 'talc_node';
+  if (els.clusterRadius) els.clusterRadius.value = String(Math.round(clampNumber(settings.radiusPx, 64, 8, 240)));
+  if (els.clusterDensity) els.clusterDensity.value = String(Math.round(clampNumber(settings.minDensityPercent, 4, 1, 60)));
+  if (els.clusterOpacity) els.clusterOpacity.value = String(Math.round(clampNumber(settings.opacityPercent, 45, 10, 90)));
+  invalidateClusterOverlay();
+  updateClusterOverlayUi(persist);
+  drawWithAvailabilityStatus();
+}
+
+function loadClusterOverlaySettings() {
+  try {
+    const raw = localStorage.getItem(CLUSTER_OVERLAY_STORAGE_KEY);
+    if (raw) setClusterOverlaySettings(JSON.parse(raw), false);
+    else updateClusterOverlayUi(false);
+  } catch (err) {
+    console.warn('failed to load cluster overlay settings', err);
+    updateClusterOverlayUi(false);
+  }
+}
+
+function invalidateClusterOverlay() {
+  state.clusterOverlay.key = null;
+  state.clusterOverlay.canvas = null;
+  state.clusterOverlay.stats = null;
+}
+
+function clusterSourceLabel(source) {
+  return source === 'union' ? 'Positive bag + Talc' : 'Talc class';
+}
+
+function clusterOverlayStatsPayload() {
+  const stats = state.clusterOverlay.stats;
+  if (!stats) return null;
+  return {
+    source: stats.source,
+    radius_px: stats.radiusPx,
+    min_density_percent: stats.minDensityPercent,
+    opacity_percent: stats.opacityPercent,
+    source_talc_pixels: stats.sourcePixels,
+    highlighted_pixels: stats.highlightedPixels,
+    highlighted_fraction: stats.imagePixels > 0 ? stats.highlightedPixels / stats.imagePixels : 0
+  };
+}
+
+function clusterOverlayRebuildDeferred() {
+  return Boolean(state.drawing || state.shapeDrag || state.polygon.dragIndex !== null || state.rect.active);
+}
+
 function viewSettingsPayload() {
+  const clusterSettings = readClusterSettingsFromControls();
+  const clusterStats = clusterSettings.enabled ? clusterOverlayStatsPayload() : null;
   return {
     brightness_threshold_luma: currentBrightnessThreshold(),
     brightness_threshold_formula: BRIGHTNESS_THRESHOLD_FORMULA,
+    talc_cluster_overlay: {
+      enabled: clusterSettings.enabled,
+      source: clusterSettings.source,
+      radius_px: clusterSettings.radiusPx,
+      min_density_percent: clusterSettings.minDensityPercent,
+      opacity_percent: clusterSettings.opacityPercent,
+      stats: clusterStats
+    },
     similar_talc_strictness: clampSimilarStrictness(),
     background_mode: els.baseMode ? els.baseMode.value : null
   };
@@ -2319,6 +2455,138 @@ function brightnessFilteredBackground(base) {
   return brightnessPreviewCanvas;
 }
 
+function activeMaskPixelFromImageData(data, pixelIndex) {
+  const i = pixelIndex * 4;
+  return data[i] > 16 || data[i + 1] > 16 || data[i + 2] > 16;
+}
+
+function clusterMaskData(settings) {
+  if (settings.source === 'union') return captureCombinedMaskData().data;
+  return captureTalcNodeData().data;
+}
+
+function updateClusterStatsText(stats, settings) {
+  if (!els.clusterStats) return;
+  if (!settings.enabled) {
+    els.clusterStats.textContent = 'Cluster overlay is off.';
+    return;
+  }
+  if (!stats) {
+    els.clusterStats.textContent = 'No cluster overlay yet.';
+    return;
+  }
+  if (stats.sourcePixels === 0) {
+    els.clusterStats.textContent = `No pixels in ${clusterSourceLabel(stats.source)}.`;
+    return;
+  }
+  els.clusterStats.textContent = `Highlighted ${formatInt(stats.highlightedPixels)} px (${formatPct(stats.highlightedPixels, stats.imagePixels)}) from ${formatInt(stats.sourcePixels)} source px.`;
+}
+
+function clusterOverlayCanvasForCurrentSettings() {
+  const settings = readClusterSettingsFromControls();
+  if (!settings.enabled || !state.sample) {
+    updateClusterStatsText(null, settings);
+    return null;
+  }
+
+  const key = [
+    state.maskVersion,
+    state.imageW,
+    state.imageH,
+    settings.source,
+    settings.radiusPx,
+    settings.minDensityPercent,
+    settings.opacityPercent
+  ].join(':');
+  if (state.clusterOverlay.key === key && state.clusterOverlay.canvas) {
+    updateClusterStatsText(state.clusterOverlay.stats, settings);
+    return state.clusterOverlay.canvas;
+  }
+  if (clusterOverlayRebuildDeferred() && state.clusterOverlay.canvas) {
+    updateClusterStatsText(state.clusterOverlay.stats, settings);
+    return state.clusterOverlay.canvas;
+  }
+
+  const width = state.imageW;
+  const height = state.imageH;
+  const imagePixels = width * height;
+  const radius = settings.radiusPx;
+  const minDensity = settings.minDensityPercent / 100;
+  const opacity = settings.opacityPercent / 100;
+  const sourceData = clusterMaskData(settings);
+  const stride = width + 1;
+  const integral = new Uint32Array((width + 1) * (height + 1));
+  let sourcePixels = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    let rowCount = 0;
+    const integralRow = (y + 1) * stride;
+    const previousIntegralRow = y * stride;
+    const pixelRow = y * width;
+    for (let x = 0; x < width; x += 1) {
+      if (activeMaskPixelFromImageData(sourceData, pixelRow + x)) {
+        rowCount += 1;
+        sourcePixels += 1;
+      }
+      integral[integralRow + x + 1] = integral[previousIntegralRow + x + 1] + rowCount;
+    }
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const canvasCtx = canvas.getContext('2d', { willReadFrequently: true });
+  const imageData = canvasCtx.createImageData(width, height);
+  const out = imageData.data;
+  let highlightedPixels = 0;
+
+  if (sourcePixels > 0) {
+    for (let y = 0; y < height; y += 1) {
+      const y1 = Math.max(0, y - radius);
+      const y2 = Math.min(height, y + radius + 1);
+      const windowH = y2 - y1;
+      const pixelRow = y * width;
+      for (let x = 0; x < width; x += 1) {
+        const x1 = Math.max(0, x - radius);
+        const x2 = Math.min(width, x + radius + 1);
+        const count = integral[y2 * stride + x2] - integral[y1 * stride + x2] - integral[y2 * stride + x1] + integral[y1 * stride + x1];
+        const area = (x2 - x1) * windowH;
+        const density = area > 0 ? count / area : 0;
+        if (density >= minDensity) {
+          const outIndex = (pixelRow + x) * 4;
+          const densityGain = Math.min(1, (density - minDensity) / Math.max(minDensity, 0.01));
+          out[outIndex] = 236;
+          out[outIndex + 1] = 72;
+          out[outIndex + 2] = 153;
+          out[outIndex + 3] = Math.round(255 * opacity * (0.45 + densityGain * 0.55));
+          highlightedPixels += 1;
+        }
+      }
+    }
+  }
+
+  canvasCtx.putImageData(imageData, 0, 0);
+  state.clusterOverlay.key = key;
+  state.clusterOverlay.canvas = canvas;
+  state.clusterOverlay.stats = {
+    source: settings.source,
+    radiusPx: radius,
+    minDensityPercent: settings.minDensityPercent,
+    opacityPercent: settings.opacityPercent,
+    sourcePixels,
+    highlightedPixels,
+    imagePixels
+  };
+  updateClusterStatsText(state.clusterOverlay.stats, settings);
+  return canvas;
+}
+
+function drawClusterOverlay() {
+  const overlay = clusterOverlayCanvasForCurrentSettings();
+  if (!overlay) return;
+  ctx.drawImage(overlay, 0, 0);
+}
+
 function draw() {
   ctx.clearRect(0, 0, viewer.width, viewer.height);
   if (!state.sample) return;
@@ -2342,6 +2610,7 @@ function draw() {
   if (els.layers.ignore.checked && state.staticTints.ignore) ctx.drawImage(state.staticTints.ignore, 0, 0);
   if (els.layers.current.checked) ctx.drawImage(currentTintCanvas, 0, 0);
   if (els.layers.talcNode.checked) ctx.drawImage(talcNodeTintCanvas, 0, 0);
+  drawClusterOverlay();
   drawSimilarTalcPreview();
   drawSam2ResultPreview();
   drawShapeGuides();
@@ -4191,6 +4460,25 @@ els.brightnessThreshold.addEventListener('input', () => {
 });
 els.brightnessThreshold90Btn.addEventListener('click', () => setBrightnessThreshold(90));
 els.brightnessThresholdOffBtn.addEventListener('click', () => setBrightnessThreshold(255));
+[
+  els.clusterOverlayToggle,
+  els.clusterSource,
+  els.clusterRadius,
+  els.clusterDensity,
+  els.clusterOpacity
+].forEach((control) => {
+  if (!control) return;
+  control.addEventListener('input', () => {
+    invalidateClusterOverlay();
+    updateClusterOverlayUi(true);
+    drawWithAvailabilityStatus();
+  });
+  control.addEventListener('change', () => {
+    invalidateClusterOverlay();
+    updateClusterOverlayUi(true);
+    drawWithAvailabilityStatus();
+  });
+});
 els.sam2PromptMode.addEventListener('change', () => {
   clearSam2Preview({ redraw: false });
   updateSam2ApplyButton();
@@ -4384,6 +4672,7 @@ async function loadSample(sampleId, options = {}) {
 
 applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || 'system', false);
 setBrightnessThreshold(localStorage.getItem(BRIGHTNESS_THRESHOLD_STORAGE_KEY) || 255, false);
+loadClusterOverlaySettings();
 updateSimilarStrictnessUi();
 updateToolParams();
 

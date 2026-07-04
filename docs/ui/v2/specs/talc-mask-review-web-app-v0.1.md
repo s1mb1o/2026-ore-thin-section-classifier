@@ -234,6 +234,18 @@ starting point for reflected-light images. The filter must not alter the talc
 mask; it is stored only as review/view metadata in working state and reviewed
 patch JSON.
 
+The right panel also includes a display-only talc cluster overlay. It highlights
+areas where the selected talc source is locally dense, without modifying any
+mask. The reviewer can tune:
+
+- source: `Talc class` or `Positive bag + Talc`;
+- radius in pixels for the local-density window;
+- minimum local talc percentage required to highlight a region;
+- overlay opacity.
+
+The cluster overlay uses the current working masks, updates after edits, and is
+stored only as review/view metadata in working state and reviewed patch JSON.
+
 Segmentation class controls are a compact overlay widget on the image viewer.
 Each class row has a visibility checkbox and an edit-target radio button:
 
@@ -308,7 +320,7 @@ Fill click adds talc to the connected non-boundary region under the cursor.
 Boundaries are raw/closed blue annotation strokes, sulfide pixels, existing
 current talc-mask regions, and image edges. Fill is additive, undoable,
 autosaved, and respects the default sulfide-protection guard for newly added
-pixels. Fill writes the `positive_bag` class.
+pixels. Fill writes the selected edit class.
 
 ### Similar Tool
 
@@ -568,6 +580,13 @@ serving artifact bytes.
   "view_settings": {
     "brightness_threshold_luma": 90,
     "brightness_threshold_formula": "luma = 0.299*R + 0.587*G + 0.114*B; luma <= threshold keeps the pixel, luma > threshold paints it white",
+    "talc_cluster_overlay": {
+      "enabled": true,
+      "source": "talc_node",
+      "radius_px": 64,
+      "min_density_percent": 4,
+      "opacity_percent": 45
+    },
     "background_mode": "original"
   },
   "current_talc_mask_png_base64": "",
@@ -730,6 +749,8 @@ Required checks:
 - Mouse wheel zooms over the canvas without changing mask geometry.
 - Brightness threshold preview is available and does not change mask geometry
   or saved mask pixels.
+- Talc cluster overlay is available, tunable by source/radius/density/opacity,
+  and does not change mask geometry or saved mask pixels.
 - Brush left mouse draws the selected edit class; Brush right mouse erases it.
 - `B` selects Brush and `F` selects Fill without hijacking focused text inputs.
 - Fill, polygon, and rectangle are direct filled-area tools for drawing the
