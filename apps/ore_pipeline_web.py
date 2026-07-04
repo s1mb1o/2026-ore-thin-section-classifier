@@ -54,6 +54,7 @@ from ore_classifier.component_analysis import (  # noqa: E402
     summary_warnings,
     write_component_csv,
 )
+from ore_classifier.gis_export import GisClassSpec, write_geojson_export  # noqa: E402
 from ore_classifier.preprocessing import (  # noqa: E402
     apply_preprocessing,
     normalize_preprocess_settings,
@@ -116,6 +117,11 @@ REPORT_CLASS_SPECS = [
     (1, "Обычные срастания", "masks/ordinary_mask.png", (30, 185, 85)),
     (2, "Тонкие срастания", "masks/fine_mask.png", (230, 65, 65)),
     (3, "Тальк", "masks/talc_final_mask.png", (40, 120, 245)),
+]
+GIS_FINAL_CLASS_SPECS = [
+    GisClassSpec(1, "ordinary", "Обычные срастания"),
+    GisClassSpec(2, "fine", "Тонкие срастания"),
+    GisClassSpec(3, "talc", "Тальк"),
 ]
 CURATED_METADATA_SCHEMA_VERSION = "ore-pipeline-curated-metadata-v0.1"
 APP_SETTINGS_SCHEMA_VERSION = "ore-pipeline-app-settings-v0.1"
@@ -4085,6 +4091,35 @@ print(json.dumps({
         metadata["reports"] = {}
         metadata.pop("scale", None)
 
+    def _finalize_gis_exports(self, metadata: dict[str, Any], run_dir: Path, scale: dict[str, Any] | None) -> None:
+        final_mask_path = run_dir / "masks/final_mask.png"
+        if not final_mask_path.exists():
+            return
+        run_id = str(metadata.get("run_id") or run_dir.name)
+        geojson_path = run_dir / "reports/final_classes.geojson"
+        try:
+            collection = write_geojson_export(
+                final_mask_path,
+                geojson_path,
+                class_specs=GIS_FINAL_CLASS_SPECS,
+                run_id=run_id,
+                source_mask="masks/final_mask.png",
+                scale=scale,
+            )
+        except Exception as exc:  # noqa: BLE001 - GIS export should not fail the run.
+            self.record_system_event("warning", "GIS GeoJSON export failed", run_id=run_id, error=str(exc))
+            return
+
+        export_metadata = {
+            "schema_version": "ore-pipeline-gis-export-v0.1",
+            "coordinate_space": "local_image_pixel_top_left",
+            "geojson": str(geojson_path),
+            "feature_count": int((collection.get("metadata") or {}).get("feature_count") or 0),
+            "source_mask": str(final_mask_path),
+        }
+        metadata["gis_exports"] = export_metadata
+        metadata.setdefault("reports", {})["final_classes_geojson"] = str(geojson_path)
+
     def _finalize_run_metadata(self, metadata: dict[str, Any], run_dir: Path) -> None:
         summary = json.loads((run_dir / "reports/ore_summary.json").read_text(encoding="utf-8"))
         display = json.loads((run_dir / "display/display.json").read_text(encoding="utf-8"))["layers"]
@@ -4113,6 +4148,7 @@ print(json.dumps({
             "summary_json": str(run_dir / "reports/ore_summary.json"),
             "component_features_csv": str(run_dir / "reports/component_features.csv"),
         }
+        self._finalize_gis_exports(metadata, run_dir, scale)
         self._finalize_runtime_provenance(metadata, run_dir)
 
     def _cancel_requested(self, run_id: str) -> bool:

@@ -36,7 +36,7 @@ Status: done.
 
 ## Phase 1: GeoJSON
 
-Status: pending.
+Status: done.
 
 1. Add `src/ore_classifier/gis_export.py`.
 2. Convert final-mask class regions into polygon features with OpenCV contours.
