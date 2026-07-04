@@ -1,0 +1,211 @@
+/* ============================================================================
+   Nornickel «Скажи мне, кто твой шлиф» — presentation theme (separate look file)
+   Consumed by render_presentation.py and embedded into the self-contained HTML.
+   Dark technical microscopy look. Semantic ore colors:
+     sulfide/ordinary = green, fine = red, talc = blue, primary accent = teal.
+   ============================================================================ */
+
+:root {
+  --bg-base:      #0a0e13;
+  --bg-deep:      #0e141c;
+  --panel:        #121a24;
+  --panel-2:      #172230;
+  --panel-border: rgba(120,170,255,.12);
+  --ink:          #f4f7fb;
+  --text:         #c4ccdb;
+  --muted:        #8592a6;
+  --faint:        #5b6678;
+
+  --accent:       #16c2b3;   /* teal — matches the app primary */
+  --accent-deep:  #0e8f86;
+  --accent-bright:#3ee0d2;
+  --glow:         #59f2e6;
+
+  --sulfide:      #37c76a;   /* ordinary intergrowth / sulfide = green */
+  --fine:         #ef5b52;   /* fine intergrowth = red */
+  --talc:         #4f8df7;   /* talc = blue */
+  --warn:         #f2b23a;
+
+  --radius: 14px;
+  --maxw: 1180px;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text);
+  font: 400 18px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+body.notes-off .note { display: none; }
+
+/* ---------- top bar + progress ---------- */
+header.bar {
+  position: fixed; inset: 0 0 auto 0; height: 48px; z-index: 30;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px;
+  background: rgba(10,14,19,.72); backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  font-size: 13px; color: var(--muted);
+}
+header .brand { color: var(--ink); font-weight: 600; letter-spacing: .01em; }
+header .brand b { color: var(--accent); font-weight: 800; }
+header .hint { opacity: .6; }
+header .counter { font-variant-numeric: tabular-nums; }
+.progress {
+  position: fixed; top: 48px; left: 0; height: 2px; width: 0;
+  background: var(--accent); box-shadow: 0 0 12px var(--glow); z-index: 31;
+  transition: width .15s ease;
+}
+
+/* ---------- deck / slides ---------- */
+main.deck { scroll-snap-type: y proximity; }
+.slide {
+  position: relative; min-height: 100vh;
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 84px 7vw 64px; scroll-snap-align: start;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+  background: radial-gradient(130% 100% at 82% -10%, var(--bg-deep) 0%, var(--bg-base) 58%);
+}
+.slide.appendix {
+  background: radial-gradient(130% 100% at 82% -10%, #0c141b 0%, var(--bg-base) 58%);
+}
+.slide-inner { width: 100%; max-width: var(--maxw); margin: 0 auto; }
+
+/* title slide */
+.slide.title { text-align: left; }
+.slide.title h1 { font-size: clamp(30px, 4.4vw, 58px); line-height: 1.06; }
+.slide.title .kicker { color: var(--accent-bright); }
+
+/* ---------- typography ---------- */
+h1, h2, h3, h4 { color: var(--ink); font-weight: 700; letter-spacing: -.01em; margin: 0 0 .5em; }
+h1 { font-size: clamp(28px, 3.6vw, 46px); }
+h2 { font-size: clamp(23px, 2.7vw, 34px); line-height: 1.14; }
+h3 { font-size: clamp(18px, 1.7vw, 22px); color: var(--accent-bright); margin-top: 1.1em; }
+h2 .num { color: var(--accent); font-weight: 800; margin-right: .3em; }
+p { margin: 0 0 .85em; }
+strong { color: var(--ink); font-weight: 700; }
+a { color: var(--accent-bright); text-decoration: none; border-bottom: 1px solid rgba(89,242,230,.3); }
+ul, ol { margin: 0 0 .9em; padding-left: 1.3em; }
+li { margin: .28em 0; }
+li::marker { color: var(--accent); }
+small, .small { font-size: 14px; color: var(--muted); }
+hr { border: none; border-top: 1px solid var(--panel-border); margin: 1.4em 0; }
+
+/* eyebrow/kicker */
+.kicker {
+  display: inline-block; font-size: 13px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--accent); margin-bottom: .7em;
+}
+
+/* speaker notes: a fully-italic paragraph becomes a note (Lenta convention) */
+.note {
+  margin: 1.1em 0 0; padding: .7em 0 .2em 1em;
+  border-left: 3px solid var(--accent-deep);
+  color: var(--muted); font-style: italic; font-size: 15px; line-height: 1.55;
+}
+.note em { font-style: italic; }
+
+/* ---------- code ---------- */
+code {
+  font-family: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .88em; background: rgba(255,255,255,.06); color: #d8e0ee;
+  padding: .12em .4em; border-radius: 6px;
+}
+pre {
+  background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: var(--radius); padding: 16px 18px; overflow-x: auto;
+  font-size: 14px; line-height: 1.5; margin: 0 0 1em;
+}
+pre code { background: none; padding: 0; color: #cdd6e6; font-size: 13.5px; }
+
+/* pipeline arrows inside code blocks read as a flow */
+pre .arrow { color: var(--accent); }
+
+/* ---------- tables ---------- */
+.table-wrap { overflow-x: auto; margin: 0 0 1em; border-radius: var(--radius); }
+table { border-collapse: collapse; width: 100%; font-size: 15px; background: var(--panel); }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,.07); }
+thead th { color: var(--ink); font-weight: 700; background: var(--panel-2); border-bottom: 1px solid var(--panel-border); }
+tbody tr:last-child td { border-bottom: none; }
+td.num, th.num, td[align="right"], th[align="right"] { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:hover { background: rgba(255,255,255,.03); }
+
+/* ---------- figures / screenshots ---------- */
+figure { margin: 0 0 1em; }
+figure img, .shot img, img.shot {
+  max-width: 100%; height: auto; display: block;
+  border-radius: 12px; border: 1px solid var(--panel-border);
+  box-shadow: 0 18px 50px rgba(0,0,0,.5);
+}
+figure.frame { background: var(--panel); padding: 10px; border-radius: 16px; border: 1px solid var(--panel-border); }
+figure.frame img { box-shadow: 0 8px 26px rgba(0,0,0,.45); }
+figcaption { margin-top: .5em; font-size: 13.5px; color: var(--muted); text-align: center; }
+
+/* two/three-column layouts (authored via HTML in the md) */
+.cols { display: grid; gap: 26px; align-items: start; }
+.cols.c2 { grid-template-columns: 1fr 1fr; }
+.cols.c2-60 { grid-template-columns: 1.4fr 1fr; }
+.cols.c3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 900px) { .cols.c2, .cols.c2-60, .cols.c3 { grid-template-columns: 1fr; } }
+
+/* stat tiles */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin: .4em 0 1em; }
+.stat { background: var(--panel); border: 1px solid var(--panel-border); border-radius: var(--radius); padding: 16px 18px; }
+.stat .v { font-size: 30px; font-weight: 800; color: var(--ink); line-height: 1.05; font-variant-numeric: tabular-nums; }
+.stat .k { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.stat.sulfide .v { color: var(--sulfide); }
+.stat.fine .v { color: var(--fine); }
+.stat.talc .v { color: var(--talc); }
+.stat.accent .v { color: var(--accent-bright); }
+
+/* class color chips */
+.chip { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; margin-right: 14px; }
+.chip::before { content: ""; width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+.chip.sulfide::before, .chip.ordinary::before { background: var(--sulfide); }
+.chip.fine::before { background: var(--fine); }
+.chip.talc::before { background: var(--talc); }
+.chip.artifact::before { background: #c06bd6; }
+
+/* callout / honesty box */
+.callout {
+  border-left: 3px solid var(--warn); background: rgba(242,178,58,.07);
+  padding: 12px 16px; border-radius: 0 12px 12px 0; margin: 0 0 1em; font-size: 15.5px;
+}
+.callout.good { border-left-color: var(--sulfide); background: rgba(55,199,106,.07); }
+.callout.info { border-left-color: var(--accent); background: rgba(22,194,179,.07); }
+.callout b { color: var(--ink); }
+
+/* pill / tag */
+.pill { display: inline-block; font-size: 12.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+  background: rgba(22,194,179,.14); color: var(--accent-bright); border: 1px solid rgba(22,194,179,.25); }
+
+/* ---------- features page mode ---------- */
+body.page { background: radial-gradient(120% 80% at 80% -10%, var(--bg-deep) 0%, var(--bg-base) 60%); }
+.page-wrap { max-width: 1220px; margin: 0 auto; padding: 84px 6vw 80px; }
+.page-head { margin-bottom: 34px; }
+.page-head h1 { font-size: clamp(30px, 4vw, 50px); }
+.page-head p { color: var(--muted); max-width: 760px; }
+.features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+.card {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--bg-deep) 100%);
+  border: 1px solid var(--panel-border); border-radius: 18px; padding: 22px 24px;
+}
+.card h2 { font-size: 20px; color: var(--accent-bright); margin-bottom: .5em; }
+.card h3 { font-size: 16px; color: var(--ink); margin-top: .9em; }
+.card ul { padding-left: 1.15em; }
+.card li { margin: .3em 0; font-size: 15.5px; }
+.card p { font-size: 15.5px; }
+.card.span2 { grid-column: span 2; }
+@media (max-width: 720px) { .card.span2 { grid-column: span 1; } }
+
+/* print / PDF */
+@media print {
+  header.bar, .progress { display: none; }
+  .slide { min-height: auto; page-break-after: always; border: none; padding: 30px 24px; }
+  body { background: #fff; color: #111; }
+  .note { display: none; }
+}
