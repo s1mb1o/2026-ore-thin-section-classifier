@@ -46,6 +46,7 @@
       --red: #d83f45;
       --blue: #2870d8;
       --artifact: #c63cff;
+      --talc-cluster: #ec4899;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     :root[data-theme="dark"] {
@@ -79,6 +80,7 @@
       --red: #f06267;
       --blue: #5c94f5;
       --artifact: #d16bff;
+      --talc-cluster: #f472b6;
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); }
@@ -441,6 +443,7 @@
         </div>
         <div class="metadata-entry">
           <button id="metadataBtn" type="button" disabled data-i18n="editMetadata">Редактировать метаданные...</button>
+          <button id="configurationBtn" type="button" disabled data-i18n="configuration">Конфигурация...</button>
         </div>
       </div>
       <div class="panel">
@@ -521,6 +524,7 @@
                 <label class="check"><input type="checkbox" data-legend-toggle="showOrdinary" checked><span class="swatch" style="background:var(--green)"></span><span data-i18n="classOrdinaryShort">обычные</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showFine" checked><span class="swatch" style="background:var(--red)"></span><span data-i18n="classFineShort">тонкие</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showTalc" checked><span class="swatch" style="background:var(--blue)"></span><span data-i18n="classTalc">тальк</span></label>
+                <label class="check"><input type="checkbox" data-legend-toggle="showTalcClusters" checked><span class="swatch" style="background:var(--talc-cluster)"></span><span data-i18n="classTalcClusters">кластеры талька</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showFinalArtifacts" checked><span class="swatch" style="background:var(--artifact)"></span><span data-i18n="classArtefacts">артефакты</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showBackground" checked> <span data-i18n="classBackground">фон</span></label>
               </div>
@@ -536,6 +540,7 @@
                 <label class="check"><input type="checkbox" data-legend-toggle="showOrdinary" checked><span class="swatch" style="background:var(--green)"></span><span data-i18n="classOrdinaryShort">обычные</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showFine" checked><span class="swatch" style="background:var(--red)"></span><span data-i18n="classFineShort">тонкие</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showTalc" checked><span class="swatch" style="background:var(--blue)"></span><span data-i18n="classTalc">тальк</span></label>
+                <label class="check"><input type="checkbox" data-legend-toggle="showTalcClusters" checked><span class="swatch" style="background:var(--talc-cluster)"></span><span data-i18n="classTalcClusters">кластеры талька</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showFinalArtifacts" checked><span class="swatch" style="background:var(--artifact)"></span><span data-i18n="classArtefacts">артефакты</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showBackground" checked> <span data-i18n="classBackground">фон</span></label>
               </div>
@@ -666,6 +671,14 @@
             <div class="settings-actions">
               <button id="testRuntimeBtn" type="button" data-i18n="settingsRuntimeTest">Проверить</button>
               <span id="runtimeTestStatus" class="muted"></span>
+            </div>
+          </div>
+          <div class="panel">
+            <h2 data-i18n="settingsTalcClusterDefaults">Кластеризация талька по умолчанию</h2>
+            <div class="settings-grid">
+              <label class="settings-field"><span data-i18n="talcClusterRadius">Радиус, px</span><input id="settingsTalcClusterRadius" type="number" min="1" max="4096" step="1" value="64"></label>
+              <label class="settings-field"><span data-i18n="talcClusterMinLocal">Мин. локальный тальк, %</span><input id="settingsTalcClusterMinLocal" type="number" min="0.01" max="100" step="0.1" value="4"></label>
+              <label class="settings-field"><span data-i18n="talcClusterOpacity">Прозрачность, %</span><input id="settingsTalcClusterOpacity" type="number" min="1" max="100" step="1" value="45"></label>
             </div>
           </div>
           <div class="panel">
@@ -944,6 +957,30 @@
       </div>
     </div>
   </dialog>
+  <dialog id="configurationDialog" class="metadata-dialog">
+    <div class="modal-head">
+      <strong data-i18n="configurationTitle">Конфигурация запуска</strong>
+      <button id="closeConfigurationBtn" data-i18n="close">Закрыть</button>
+    </div>
+    <div class="metadata-body">
+      <section class="metadata-panel">
+        <p class="muted" data-i18n="configurationIntro">Эти параметры сохраняются в run и используются при следующем запуске задачи.</p>
+        <div class="metadata-grid">
+          <div class="metadata-section-title" data-i18n="talcClusterization">Кластеризация талька</div>
+          <label class="metadata-field"><span data-i18n="talcClusterRadius">Радиус, px</span><input id="configTalcClusterRadius" type="number" min="1" max="4096" step="1" value="64"></label>
+          <label class="metadata-field"><span data-i18n="talcClusterMinLocal">Мин. локальный тальк, %</span><input id="configTalcClusterMinLocal" type="number" min="0.01" max="100" step="0.1" value="4"></label>
+          <label class="metadata-field"><span data-i18n="talcClusterOpacity">Прозрачность, %</span><input id="configTalcClusterOpacity" type="number" min="1" max="100" step="1" value="45"></label>
+        </div>
+      </section>
+    </div>
+    <div class="modal-foot">
+      <button id="resetConfigurationBtn" type="button" data-i18n="configurationResetDefaults">Сбросить к настройкам</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id="cancelConfigurationBtn" type="button" data-i18n="cancel">Отмена</button>
+        <button id="saveConfigurationBtn" type="button" class="primary" data-i18n="configurationSave">Сохранить конфигурацию</button>
+      </div>
+    </div>
+  </dialog>
   <dialog id="historyPreviewDialog" class="preview-dialog">
     <div class="modal-head">
       <strong data-i18n="historyPreviewTitle">Превью запуска</strong>
@@ -1042,6 +1079,7 @@
       preparedSettingsSig: null,
       curatedMetadata: null,
       settings: null,
+      runConfiguration: null,
       batch: null,
       batchPollId: null,
       historyMode: 'all',
@@ -1076,6 +1114,7 @@
         showOrdinary: true,
         showFine: true,
         showTalc: true,
+        showTalcClusters: true,
         showFinalArtifacts: true
       },
       editor: {
@@ -1143,6 +1182,12 @@
         random_seed: 0
       }
     };
+    const DEFAULT_TALC_CLUSTERIZATION = {
+      schema_version: 'ore-pipeline-talc-clusterization-v0.1',
+      radius_px: 64,
+      min_local_talc_percent: 4,
+      opacity_percent: 45
+    };
     const DEFAULT_APP_SETTINGS = {
       language: DEFAULT_LANGUAGE,
       theme: 'system',
@@ -1155,6 +1200,7 @@
         talc_threshold: 0.5
       },
       preprocess: {...DEFAULT_PREPROCESS_PRESET},
+      talc_clusterization: {...DEFAULT_TALC_CLUSTERIZATION},
       metadata_defaults: {}
     };
     const API_REFERENCE = [
@@ -1553,6 +1599,11 @@
         settingsTalcBackendMl: 'ML model',
         settingsTalcCheckpoint: 'Talc checkpoint',
         settingsTalcThreshold: 'Talc threshold',
+        settingsTalcClusterDefaults: 'Кластеризация талька по умолчанию',
+        talcClusterization: 'Кластеризация талька',
+        talcClusterRadius: 'Радиус, px',
+        talcClusterMinLocal: 'Мин. локальный тальк, %',
+        talcClusterOpacity: 'Прозрачность, %',
         settingsRuntimeTest: 'Проверить',
         settingsRuntimeTesting: 'Проверка runtime...',
         settingsRuntimeTestOkHeuristic: 'Эвристический backend доступен.',
@@ -1768,6 +1819,7 @@
         classOrdinary: 'обычные срастания',
         classFine: 'тонкие срастания',
         classTalc: 'тальк',
+        classTalcClusters: 'кластеры талька',
         classArtefacts: 'артефакты',
         showTiling: 'показать тайлы',
         overlayOpacity: 'прозрачность',
@@ -1778,6 +1830,11 @@
         saveCsv: 'Сохранить CSV',
         savePdf: 'Сохранить PDF-отчет',
         viewRunFiles: 'Просмотреть файлы',
+        configuration: 'Конфигурация...',
+        configurationTitle: 'Конфигурация запуска',
+        configurationIntro: 'Эти параметры сохраняются в run и используются при следующем запуске задачи.',
+        configurationResetDefaults: 'Сбросить к настройкам',
+        configurationSave: 'Сохранить конфигурацию',
         runFilesTitle: 'Файлы запуска',
         runFilesLoading: 'Загрузка списка файлов...',
         runFilesEmpty: 'Файлов нет.',
@@ -1878,7 +1935,7 @@
         metricsHeaderValue: 'Значение',
         metricsHeaderAreaPx: 'Площадь, px',
         metricsHeaderPhysicalArea: 'Физическая площадь',
-        metricsDenominatorNote: 'Сульфиды, тальк и остальное считаются от проанализированной области; обычные и тонкие срастания — от площади сульфидов; артефакты — от всего изображения.',
+        metricsDenominatorNote: 'Сульфиды, тальк, кластеры талька и остальное считаются от проанализированной области; обычные и тонкие срастания — от площади сульфидов; артефакты — от всего изображения.',
         sulfideGrainsTitle: 'Сульфидные зерна',
         sulfideGrainsNote: 'Доля считается от общей площади сульфидов. Контакты — пиксели в кольце толщиной 1 px вокруг зерна: М = матрица, Т = тальк, П = прочие сульфиды. «Сросток» — прокси-флаг: контакт с тальком/другими сульфидами или мало контакта с матрицей. Это OM-маски, не химический MLA-анализ. Отмеченные строки обводятся на изображении.',
         sulfideGrainsEmpty: 'Сульфидные зерна не найдены.',
@@ -1927,6 +1984,7 @@
         runTechTileProgress: 'Прогресс тайлов',
         runTechSulfidePath: 'Сульфидный этап',
         runTechTalcPath: 'Тальковый этап',
+        runTechTalcClusters: 'Кластеры талька',
         runTechFinalPath: 'Финальный этап',
         runTechArtefactPath: 'Артефакты',
         runTechNonSulfideTalc: 'Тальк среди не-сульфидов',
@@ -1957,6 +2015,7 @@
         metricOrdinaryFraction: 'Доля обычных срастаний',
         metricFineFraction: 'Доля тонких срастаний',
         metricTalcFraction: 'Доля талька',
+        metricTalcClusterFraction: 'Площадь кластеров талька',
         metricComponentCount: 'Компоненты сульфидов',
         metricAnalyzedFraction: 'Доля проанализированной области',
         metricOtherFraction: 'Остальное',
@@ -2064,6 +2123,11 @@
         settingsTalcBackendMl: 'ML model',
         settingsTalcCheckpoint: 'Talc checkpoint',
         settingsTalcThreshold: 'Talc threshold',
+        settingsTalcClusterDefaults: 'Default talc clusterization',
+        talcClusterization: 'Talc clusterization',
+        talcClusterRadius: 'Radius, px',
+        talcClusterMinLocal: 'Min local talc, %',
+        talcClusterOpacity: 'Opacity, %',
         settingsRuntimeTest: 'Test',
         settingsRuntimeTesting: 'Testing runtime...',
         settingsRuntimeTestOkHeuristic: 'Heuristic backend is available.',
@@ -2279,6 +2343,7 @@
         classOrdinary: 'ordinary intergrowth',
         classFine: 'fine intergrowth',
         classTalc: 'talc',
+        classTalcClusters: 'talc cluster areas',
         classArtefacts: 'artefacts',
         showTiling: 'show tiling',
         overlayOpacity: 'opacity',
@@ -2289,6 +2354,11 @@
         saveCsv: 'Save to CSV',
         savePdf: 'Save PDF Report',
         viewRunFiles: 'View files',
+        configuration: 'Configuration...',
+        configurationTitle: 'Run configuration',
+        configurationIntro: 'These parameters are saved in the run and used on the next task execution.',
+        configurationResetDefaults: 'Reset to settings',
+        configurationSave: 'Save configuration',
         runFilesTitle: 'Run files',
         runFilesLoading: 'Loading file list...',
         runFilesEmpty: 'No files.',
@@ -2389,7 +2459,7 @@
         metricsHeaderValue: 'Value',
         metricsHeaderAreaPx: 'Area, px',
         metricsHeaderPhysicalArea: 'Physical area',
-        metricsDenominatorNote: 'Sulfides, talc, and other use analyzed area as denominator; ordinary and fine intergrowths use sulfide area; artefacts use the whole image.',
+        metricsDenominatorNote: 'Sulfides, talc, talc cluster areas, and other use analyzed area as denominator; ordinary and fine intergrowths use sulfide area; artefacts use the whole image.',
         sulfideGrainsTitle: 'Sulfide grains',
         sulfideGrainsNote: 'Share is calculated from total sulfide area. Contacts are pixels in the 1-px ring around a grain: M = matrix, T = talc, O = other sulfides. Locked/composite is a proxy flag: talc/other-sulfide contact or low matrix contact. These are OM-mask proxies, not chemistry-based MLA analysis. Checked rows are stroked on the image.',
         sulfideGrainsEmpty: 'No sulfide grains found.',
@@ -2438,6 +2508,7 @@
         runTechTileProgress: 'Tile progress',
         runTechSulfidePath: 'Sulfide stage',
         runTechTalcPath: 'Talc stage',
+        runTechTalcClusters: 'Talc clusters',
         runTechFinalPath: 'Final stage',
         runTechArtefactPath: 'Artefacts',
         runTechNonSulfideTalc: 'Non-sulfide talc',
@@ -2468,6 +2539,7 @@
         metricOrdinaryFraction: 'Ordinary intergrowth fraction',
         metricFineFraction: 'Fine intergrowth fraction',
         metricTalcFraction: 'Talc fraction',
+        metricTalcClusterFraction: 'Talc cluster areas',
         metricComponentCount: 'Sulfide components',
         metricAnalyzedFraction: 'Analyzed-area fraction',
         metricOtherFraction: 'Other',
@@ -2872,6 +2944,7 @@
         ordinary_sulfide_fraction: 'metricOrdinaryFraction',
         fine_sulfide_fraction: 'metricFineFraction',
         talc_fraction: 'metricTalcFraction',
+        talc_cluster_fraction: 'metricTalcClusterFraction',
         component_count: 'metricComponentCount',
         analyzed_fraction: 'metricAnalyzedFraction',
         other_fraction: 'metricOtherFraction',
@@ -3031,6 +3104,11 @@
     function formatScaleFactor(value) {
       return normalizedPanoramaScaleFactor(value).toFixed(2).replace(/\.?0+$/, '');
     }
+    function formatSettingNumber(value, digits = 1) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '';
+      return number.toFixed(digits).replace(/\.?0+$/, '');
+    }
     function preprocessPresetValue(values, primary, aliases = [], fallback = undefined) {
       if (Object.prototype.hasOwnProperty.call(values, primary)) return values[primary];
       for (const alias of aliases) {
@@ -3102,6 +3180,20 @@
       const talcThreshold = Number.isFinite(talcThresholdValue) ? Math.max(0.01, Math.min(0.99, talcThresholdValue)) : 0.5;
       return {backend, checkpoint, talc_backend: talcBackend, talc_checkpoint: talcCheckpoint, talc_threshold: talcThreshold};
     }
+    function normalizedTalcClusterization(settings = {}, fallback = DEFAULT_TALC_CLUSTERIZATION) {
+      const values = settings && typeof settings === 'object' ? settings : {};
+      const fallbackValues = fallback && typeof fallback === 'object' ? fallback : DEFAULT_TALC_CLUSTERIZATION;
+      return {
+        schema_version: 'ore-pipeline-talc-clusterization-v0.1',
+        radius_px: Math.round(clampNumber(values.radius_px ?? values.radiusPx ?? fallbackValues.radius_px, 1, 4096)),
+        min_local_talc_percent: clampNumber(
+          values.min_local_talc_percent ?? values.minLocalTalcPercent ?? values.min_density_percent ?? fallbackValues.min_local_talc_percent,
+          0.01,
+          100
+        ),
+        opacity_percent: clampNumber(values.opacity_percent ?? values.opacityPercent ?? fallbackValues.opacity_percent, 1, 100)
+      };
+    }
     function normalizedAppSettings(settings = {}) {
       const values = settings && typeof settings === 'object' ? settings : {};
       const language = I18N[values.language] ? values.language : DEFAULT_APP_SETTINGS.language;
@@ -3114,6 +3206,7 @@
         show_tiling: Boolean(values.show_tiling),
         runtime: normalizedRuntimeSettings(values.runtime || {}, DEFAULT_APP_SETTINGS.runtime),
         preprocess: normalizedPreprocessPreset(values.preprocess || {}, DEFAULT_APP_SETTINGS.preprocess),
+        talc_clusterization: normalizedTalcClusterization(values.talc_clusterization || {}, DEFAULT_APP_SETTINGS.talc_clusterization),
         metadata_defaults: {...metadataDefaults}
       };
     }
@@ -3133,6 +3226,7 @@
             }
           : DEFAULT_APP_SETTINGS.runtime,
         preprocess: storedPreprocessPreset(),
+        talc_clusterization: DEFAULT_APP_SETTINGS.talc_clusterization,
         metadata_defaults: metadataDefaultsFromLocalStorage()
       });
     }
@@ -3392,6 +3486,9 @@
       $('settingsPanoramaMaxSidePx').value = normalized.preprocess.panorama_max_side_px;
       $('settingsPanoramaScaleFactor').value = formatScaleFactor(normalized.preprocess.panorama_scale_factor);
       updatePanoramaScalingControls('settings');
+      $('settingsTalcClusterRadius').value = normalized.talc_clusterization.radius_px;
+      $('settingsTalcClusterMinLocal').value = formatSettingNumber(normalized.talc_clusterization.min_local_talc_percent, 2);
+      $('settingsTalcClusterOpacity').value = formatSettingNumber(normalized.talc_clusterization.opacity_percent, 1);
       const defaults = normalized.metadata_defaults || {};
       $('settingsMetaProject').value = defaults.project || '';
       $('settingsMetaInstrument').value = defaults.om_instrument || '';
@@ -3435,8 +3532,61 @@
           panorama_max_side_px: normalizedPanoramaMaxSide($('settingsPanoramaMaxSidePx').value),
           panorama_scale_factor: normalizedPanoramaScaleFactor($('settingsPanoramaScaleFactor').value)
         },
+        talc_clusterization: normalizedTalcClusterization({
+          radius_px: $('settingsTalcClusterRadius').value,
+          min_local_talc_percent: $('settingsTalcClusterMinLocal').value,
+          opacity_percent: $('settingsTalcClusterOpacity').value
+        }, currentAppSettings().talc_clusterization),
         metadata_defaults: collectSettingsMetadataDefaults()
       });
+    }
+    function defaultRunConfiguration() {
+      return {talc_clusterization: normalizedTalcClusterization(currentAppSettings().talc_clusterization)};
+    }
+    function normalizedRunConfiguration(config = {}, fallback = defaultRunConfiguration()) {
+      const values = config && typeof config === 'object' ? config : {};
+      const fallbackValues = fallback && typeof fallback === 'object' ? fallback : defaultRunConfiguration();
+      return {
+        talc_clusterization: normalizedTalcClusterization(
+          values.talc_clusterization || values.talcClusterization || values,
+          fallbackValues.talc_clusterization || currentAppSettings().talc_clusterization
+        )
+      };
+    }
+    function currentRunConfiguration() {
+      return normalizedRunConfiguration(state.runConfiguration || (state.run && state.run.talc_clusterization ? {talc_clusterization: state.run.talc_clusterization} : {}));
+    }
+    function configurationPayload() {
+      return currentRunConfiguration();
+    }
+    function resetRunConfigurationToDefaults() {
+      state.runConfiguration = defaultRunConfiguration();
+    }
+    function applyConfigurationToControls(config = currentRunConfiguration()) {
+      const normalized = normalizedRunConfiguration(config);
+      $('configTalcClusterRadius').value = normalized.talc_clusterization.radius_px;
+      $('configTalcClusterMinLocal').value = formatSettingNumber(normalized.talc_clusterization.min_local_talc_percent, 2);
+      $('configTalcClusterOpacity').value = formatSettingNumber(normalized.talc_clusterization.opacity_percent, 1);
+    }
+    function collectConfigurationForm() {
+      return normalizedRunConfiguration({
+        talc_clusterization: {
+          radius_px: $('configTalcClusterRadius').value,
+          min_local_talc_percent: $('configTalcClusterMinLocal').value,
+          opacity_percent: $('configTalcClusterOpacity').value
+        }
+      }, currentRunConfiguration());
+    }
+    function openConfigurationDialog() {
+      if (!$('configurationDialog') || !(state.upload || state.run)) return;
+      applyConfigurationToControls(currentRunConfiguration());
+      $('configurationDialog').showModal();
+    }
+    function saveConfigurationFromDialog() {
+      state.runConfiguration = collectConfigurationForm();
+      $('configurationDialog').close();
+      updateViewControls();
+      drawMain();
     }
     function setSettingsStatus(key = null, params = {}) {
       settingsStatusMessage = key ? {key, params} : null;
@@ -3599,7 +3749,7 @@
     // detect when a prepared run was built from Apply-time settings that no longer match the
     // current controls, and re-prepare it so the latest changes are always applied.
     function settingsSignature() {
-      return JSON.stringify({p: presetPayload(), a: augmentationPayload()});
+      return JSON.stringify({p: presetPayload(), a: augmentationPayload(), c: currentRunConfiguration()});
     }
     function rememberPreparedSettings(runId) {
       state.preparedSettingsSig = runId ? {runId, sig: settingsSignature()} : null;
@@ -3618,6 +3768,7 @@
       $('startBtn').disabled = active || !state.upload;
       $('stopBtn').disabled = !active || String((run && run.status) || '').toLowerCase() === 'canceling';
       $('fixBtn').disabled = active || !(state.upload || (run && run.status === 'complete'));
+      $('configurationBtn').disabled = active || !(state.upload || run);
     }
     function previewForCanvasAspect() {
       const source = displaySource();
@@ -3812,6 +3963,8 @@
         }
         if (toggleKey === 'showTalc') return finiteFraction(summary.talc_fraction)
           ?? fractionFromAreas(summary, 'talc_area_px', 'analysis_area_px');
+        if (toggleKey === 'showTalcClusters') return finiteFraction(summary.talc_cluster_fraction)
+          ?? fractionFromAreas(summary, 'talc_cluster_area_px', 'analysis_area_px');
         if (toggleKey === 'showFinalArtifacts') return artifact;
         if (toggleKey === 'showBackground') {
           return finiteFraction(summary.other_fraction)
@@ -3967,6 +4120,7 @@
       if (classVisible('showOrdinary')) await drawOverlay(display.ordinary_overlay, clipX, clipW, overlayOptions);
       if (classVisible('showFine')) await drawOverlay(display.fine_overlay, clipX, clipW, overlayOptions);
       if (classVisible('showTalc')) await drawOverlay(display.talc_overlay, clipX, clipW, overlayOptions);
+      if (classVisible('showTalcClusters')) await drawOverlay(display.talc_cluster_overlay, clipX, clipW, overlayOptions);
       if (classVisible('showFinalArtifacts')) await drawOverlay(display.artifact_overlay, clipX, clipW, {...overlayOptions, tintColor: cssColor('--artifact') || '#c63cff'});
     }
     function selectedGrainSignature() {
@@ -4432,6 +4586,7 @@
     function renderMetadataStatus() {
       if (!$('metadataBtn')) return;
       $('metadataBtn').disabled = !state.upload;
+      $('configurationBtn').disabled = !(state.upload || state.run);
     }
     function metadataFields() {
       return Array.from(document.querySelectorAll('[data-metadata-field]'));
@@ -4631,6 +4786,7 @@
     function resetPageForClearedImage() {
       state.upload = null;
       state.run = null;
+      state.runConfiguration = null;
       state.curatedMetadata = null;
       state.returnToBatchId = null;
       state.viewMode = 'original';
@@ -4653,6 +4809,7 @@
       applyShowTilingDefault();
       updateRunControls(null);
       $('fixBtn').disabled = true;
+      $('configurationBtn').disabled = true;
       $('resultPanel').classList.add('hidden');
       $('backToBatchBtn').classList.add('hidden');
       $('textOutput').textContent = '';
@@ -4696,6 +4853,7 @@
       state.upload = payload;
       state.run = null;
       state.curatedMetadata = null;
+      resetRunConfigurationToDefaults();
       activePollRunId = null;
       state.zoom = 1; state.pan = {x: 0, y: 0};
       state.sideLayer = 'none';
@@ -4714,7 +4872,7 @@
       drawMain();
     }
     function currentBatchSettings() {
-      return {preprocess: presetPayload(), augmentation: augmentationPayload()};
+      return {preprocess: presetPayload(), augmentation: augmentationPayload(), ...configurationPayload()};
     }
     function batchIsActive(batch = state.batch) {
       return Boolean(batch && ACTIVE_RUN_STATUSES.has(String(batch.status || '').toLowerCase()));
@@ -4993,7 +5151,7 @@
       setUploadWarning(null);
       startPreviewPreparationProgress(18, 96);
       try {
-        const body = JSON.stringify({...presetPayload(), augmentation: augmentationPayload(), changed_step: changedStep});
+        const body = JSON.stringify({...presetPayload(), augmentation: augmentationPayload(), ...configurationPayload(), changed_step: changedStep});
         const applyingToPreparedRun = runCanBePreparedFromApply(state.run);
         const response = applyingToPreparedRun
           ? await fetch(`/api/runs/${encodeURIComponent(state.run.run_id)}/prepare`, {
@@ -5011,6 +5169,7 @@
         }, 900);
         if (payload.run_id) {
           state.run = payload;
+          state.runConfiguration = normalizedRunConfiguration({talc_clusterization: payload.talc_clusterization});
           rememberPreparedSettings(payload.run_id);
           activePollRunId = null;
           state.curatedMetadata = normalizeMetadataPayload((payload.input && payload.input.curated_metadata) || state.curatedMetadata || null);
@@ -5083,19 +5242,20 @@
         // earlier Apply-time settings that no longer match the current controls, re-prepare it in
         // place first so the latest changes are not silently dropped.
         if (preparedRun && preparedRunSettingsAreStale(preparedRun)) {
-          const prepBody = JSON.stringify({...presetPayload(), augmentation: augmentationPayload(), changed_step: 'augmentation'});
+          const prepBody = JSON.stringify({...presetPayload(), augmentation: augmentationPayload(), ...configurationPayload(), changed_step: 'augmentation'});
           const prepResponse = await fetch(`/api/runs/${encodeURIComponent(preparedRun.run_id)}/prepare`, {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: prepBody
           });
           const prepPayload = await prepResponse.json();
           if (!prepResponse.ok) throw new Error(prepPayload.error || 'prepare failed');
           state.run = prepPayload;
+          state.runConfiguration = normalizedRunConfiguration({talc_clusterization: prepPayload.talc_clusterization});
           rememberPreparedSettings(prepPayload.run_id);
           preparedRun = runIsPrepared(prepPayload) ? prepPayload : null;
         }
         const startPayload = preparedRun
-          ? {}
-          : {upload_id: state.upload.upload_id, ...presetPayload(), augmentation: augmentationPayload()};
+          ? {...configurationPayload()}
+          : {upload_id: state.upload.upload_id, ...presetPayload(), augmentation: augmentationPayload(), ...configurationPayload()};
         const curatedMetadata = currentMetadataPayloadForSubmission();
         if (curatedMetadata) startPayload.curated_metadata = curatedMetadata;
         const startUrl = preparedRun
@@ -5108,6 +5268,7 @@
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'start failed');
         state.run = payload;
+        state.runConfiguration = normalizedRunConfiguration({talc_clusterization: payload.talc_clusterization});
         activePollRunId = payload.run_id;
         $('fixBtn').disabled = true;
         updateRunControls(payload);
@@ -5170,6 +5331,7 @@
       const payload = await response.json();
       if (activePollRunId !== runId) return;
       state.run = payload;
+      if (payload && payload.talc_clusterization) state.runConfiguration = normalizedRunConfiguration({talc_clusterization: payload.talc_clusterization});
       setProgress(payload.progress || 0);
       const eta = payload.eta_seconds == null || Number(payload.progress || 0) >= 100
         ? ''
@@ -5576,6 +5738,7 @@
       const summary = runSummary(run);
       const models = (runtime && runtime.models) || {};
       const artifactFraction = summary.artifact_fraction_image == null ? null : `${fixedPercent(summary.artifact_fraction_image)}%`;
+      const clusterSettings = normalizedTalcClusterization((run && run.talc_clusterization) || summary.talc_clusterization || {});
       return [
         techRow('runTechSulfidePath', [
           `${t('runTechBackend')}: ${(models.binary_sulfide && models.binary_sulfide.backend) || runtime.backend || run.backend || ''}`,
@@ -5587,6 +5750,12 @@
           `${t('metricTalcFraction')}: ${fixedPercent(summary.talc_fraction)}%`,
           models.talc && models.talc.talc_fraction_non_sulfide != null ? `${t('runTechNonSulfideTalc')}: ${fixedPercent(models.talc.talc_fraction_non_sulfide)}%` : ''
         ].filter(Boolean)),
+        techRow('runTechTalcClusters', [
+          `${t('metricTalcClusterFraction')}: ${fixedPercent(summary.talc_cluster_fraction)}%`,
+          `${t('talcClusterRadius')}: ${clusterSettings.radius_px}`,
+          `${t('talcClusterMinLocal')}: ${formatSettingNumber(clusterSettings.min_local_talc_percent, 2)}`,
+          `${t('talcClusterOpacity')}: ${formatSettingNumber(clusterSettings.opacity_percent, 1)}`
+        ]),
         techRow('runTechFinalPath', [
           oreClassText(summary),
           `${t('metricOrdinaryFraction')}: ${fixedPercent(summary.ordinary_sulfide_fraction)}%`,
@@ -5881,6 +6050,14 @@
       if (event.target === $('augmentationDialog')) $('augmentationDialog').close();
     });
     $('metadataBtn').addEventListener('click', openMetadataDialog);
+    $('configurationBtn').addEventListener('click', openConfigurationDialog);
+    $('closeConfigurationBtn').addEventListener('click', () => $('configurationDialog').close());
+    $('cancelConfigurationBtn').addEventListener('click', () => $('configurationDialog').close());
+    $('saveConfigurationBtn').addEventListener('click', saveConfigurationFromDialog);
+    $('resetConfigurationBtn').addEventListener('click', () => applyConfigurationToControls(defaultRunConfiguration()));
+    $('configurationDialog').addEventListener('click', event => {
+      if (event.target === $('configurationDialog')) $('configurationDialog').close();
+    });
     $('closeMetadataBtn').addEventListener('click', () => $('metadataDialog').close());
     $('cancelMetadataBtn').addEventListener('click', () => $('metadataDialog').close());
     $('saveMetadataBtn').addEventListener('click', saveMetadataFromDialog);
@@ -5952,6 +6129,7 @@
       }
       state.run = payload;
       state.upload = upload;
+      state.runConfiguration = normalizedRunConfiguration({talc_clusterization: payload.talc_clusterization});
       state.curatedMetadata = normalizeMetadataPayload((payload.input && payload.input.curated_metadata) || null);
       state.returnToBatchId = options.returnToBatchId || (payload.batch && payload.batch.batch_id) || null;
       activePollRunId = runIsActive(payload) ? payload.run_id : null;

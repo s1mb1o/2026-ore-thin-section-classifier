@@ -33,6 +33,8 @@ Root-level `docs/plans/`, `docs/specs/`, and `docs/notes/` are reserved for non-
 - `plans/36_ore-pipeline-source-disagreement-map.md`
 - `TODO_CANDIDATES.md`
 - `plans/40_ore-pipeline-panorama-compliance-card.md`
+- `specs/ore-pipeline-talc-cluster-areas-v0.1.md`
+- `plans/43_ore-pipeline-talc-cluster-areas.md`
 - `notes/2026-07-04-ore-pipeline-cli-batch-contract.md`
 
 ## Talc Review UI

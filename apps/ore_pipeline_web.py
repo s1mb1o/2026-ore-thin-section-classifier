@@ -586,6 +586,38 @@ def normalize_settings_runtime(payload: Any, base: dict[str, Any] | None = None,
     }
 
 
+def normalize_talc_clusterization_payload(payload: Any, base: dict[str, Any] | None = None) -> dict[str, Any]:
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ApiError(HTTPStatus.BAD_REQUEST, "settings.talc_clusterization must be an object")
+    fallback = base if isinstance(base, dict) else DEFAULT_TALC_CLUSTERIZATION
+    radius = normalized_int(
+        payload_value(payload, "radius_px", ("radiusPx", "radius")),
+        int(fallback.get("radius_px", DEFAULT_TALC_CLUSTERIZATION["radius_px"])),
+        1,
+        4096,
+    )
+    min_local_talc = normalized_float(
+        payload_value(payload, "min_local_talc_percent", ("minLocalTalcPercent", "min_density_percent", "minDensityPercent")),
+        float(fallback.get("min_local_talc_percent", DEFAULT_TALC_CLUSTERIZATION["min_local_talc_percent"])),
+        0.01,
+        100.0,
+    )
+    opacity = normalized_float(
+        payload_value(payload, "opacity_percent", ("opacityPercent", "opacity")),
+        float(fallback.get("opacity_percent", DEFAULT_TALC_CLUSTERIZATION["opacity_percent"])),
+        1.0,
+        100.0,
+    )
+    return {
+        "schema_version": TALC_CLUSTERIZATION_SCHEMA_VERSION,
+        "radius_px": radius,
+        "min_local_talc_percent": min_local_talc,
+        "opacity_percent": opacity,
+    }
+
+
 def normalize_app_settings_payload(
     payload: Any,
     base: dict[str, Any] | None = None,
@@ -603,6 +635,8 @@ def normalize_app_settings_payload(
             fallback["runtime"] = normalize_settings_runtime(base["runtime"])
         if isinstance(base.get("preprocess"), dict):
             fallback["preprocess"] = normalize_settings_preprocess(base["preprocess"])
+        if isinstance(base.get("talc_clusterization"), dict):
+            fallback["talc_clusterization"] = normalize_talc_clusterization_payload(base["talc_clusterization"])
         if isinstance(base.get("metadata_defaults"), dict):
             fallback["metadata_defaults"] = {
                 str(key): json_safe_value(value)
@@ -631,6 +665,10 @@ def normalize_app_settings_payload(
             validate_checkpoint=validate_runtime,
         ),
         "preprocess": normalize_settings_preprocess(payload.get("preprocess", fallback["preprocess"]), fallback["preprocess"]),
+        "talc_clusterization": normalize_talc_clusterization_payload(
+            payload.get("talc_clusterization", fallback["talc_clusterization"]),
+            fallback["talc_clusterization"],
+        ),
         "metadata_defaults": {
             str(key): json_safe_value(value)
             for key, value in metadata_defaults.items()
@@ -885,6 +923,46 @@ def colored_overlay(mask: np.ndarray, class_id: int | None, rgba: tuple[int, int
     return Image.fromarray(overlay, mode="RGBA")
 
 
+def talc_cluster_overlay_color(opacity_percent: float) -> tuple[int, int, int, int]:
+    opacity = max(0.01, min(1.0, float(opacity_percent) / 100.0))
+    return (*TALC_CLUSTER_COLOR[:3], int(round(255 * opacity)))
+
+
+def compute_talc_cluster_mask(
+    talc_mask: np.ndarray,
+    analyzed_mask: np.ndarray | None,
+    settings: dict[str, Any],
+) -> tuple[np.ndarray, dict[str, Any]]:
+    normalized = normalize_talc_clusterization_payload(settings)
+    talc = (talc_mask > 0).astype(np.float32)
+    if analyzed_mask is None:
+        analyzed = np.ones(talc.shape, dtype=np.float32)
+    else:
+        if analyzed_mask.shape != talc.shape:
+            analyzed_mask = read_binary_mask_from_array((analyzed_mask > 0).astype(np.uint8) * 255, talc.shape)
+        analyzed = (analyzed_mask > 0).astype(np.float32)
+    talc *= analyzed
+    radius = int(normalized["radius_px"])
+    kernel = (radius * 2 + 1, radius * 2 + 1)
+    talc_count = cv2.boxFilter(talc, ddepth=cv2.CV_32F, ksize=kernel, normalize=False, borderType=cv2.BORDER_CONSTANT)
+    analyzed_count = cv2.boxFilter(analyzed, ddepth=cv2.CV_32F, ksize=kernel, normalize=False, borderType=cv2.BORDER_CONSTANT)
+    density = np.divide(talc_count, analyzed_count, out=np.zeros_like(talc_count), where=analyzed_count > 0)
+    cluster = (analyzed > 0) & (density >= float(normalized["min_local_talc_percent"]) / 100.0)
+    cluster_mask = cluster.astype(np.uint8) * 255
+    analyzed_area = int(analyzed.sum())
+    talc_area = int(talc.sum())
+    cluster_area = int(cluster.sum())
+    stats = {
+        **normalized,
+        "source_talc_area_px": talc_area,
+        "analysis_area_px": analyzed_area,
+        "area_px": cluster_area,
+        "fraction": cluster_area / max(analyzed_area, 1),
+        "fraction_image": cluster_area / max(int(talc.size), 1),
+    }
+    return cluster_mask, stats
+
+
 def masked_rgb_layer(image: Image.Image, active_mask: np.ndarray) -> Image.Image:
     rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
     mask = active_mask.astype(bool)
@@ -1014,6 +1092,7 @@ def metric_rows(summary: dict[str, Any], scale: dict[str, Any] | None = None) ->
     ordinary_area_px = int(summary.get("ordinary_sulfide_area_px") or 0)
     fine_area_px = int(summary.get("fine_sulfide_area_px") or 0)
     talc_area_px = int(summary.get("talc_area_px") or 0)
+    talc_cluster_area_px = int(summary.get("talc_cluster_area_px") or 0)
     artifact_area_px = int(summary.get("artifact_area_px") or 0)
     other_area_px = max(analyzed_area_px - sulfide_area_px - talc_area_px, 0)
     other_fraction = other_area_px / max(analyzed_area_px, 1)
@@ -1071,6 +1150,15 @@ def metric_rows(summary: dict[str, Any], scale: dict[str, Any] | None = None) ->
             area_px=talc_area_px,
             level=1,
             parent_key="analyzed_fraction",
+            denominator="analyzed_area",
+        ),
+        row(
+            "talc_cluster_fraction",
+            float(summary.get("talc_cluster_fraction") or 0.0),
+            percent=float(summary.get("talc_cluster_fraction") or 0.0) * 100.0,
+            area_px=talc_cluster_area_px,
+            level=2,
+            parent_key="talc_fraction",
             denominator="analyzed_area",
         ),
         row(
@@ -2084,9 +2172,14 @@ class OrePipelineStore:
         run_async: bool = True,
         curated_metadata: Any = None,
         augmentation_settings: dict[str, Any] | None = None,
+        talc_clusterization: dict[str, Any] | None = None,
         batch_link: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized_curated_metadata = normalize_curated_metadata_payload(curated_metadata)
+        normalized_talc_clusterization = normalize_talc_clusterization_payload(
+            talc_clusterization,
+            self.app_settings().get("talc_clusterization"),
+        )
         upload = self.prepare_upload(upload_id, preset, augmentation_settings)
         run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000_000:09d}_{hashlib.sha1(upload_id.encode()).hexdigest()[:8]}"
         run_dir = self.runs_dir / run_id
@@ -2097,6 +2190,7 @@ class OrePipelineStore:
             upload,
             preset,
             curated_metadata=normalized_curated_metadata,
+            talc_clusterization=normalized_talc_clusterization,
             batch_link=batch_link,
         )
         started_at_iso = utc_now_iso()
@@ -2137,6 +2231,7 @@ class OrePipelineStore:
         preset: dict[str, Any],
         *,
         augmentation_settings: dict[str, Any] | None = None,
+        talc_clusterization: dict[str, Any] | None = None,
         changed_step: str,
     ) -> dict[str, Any]:
         if changed_step not in {"augmentation", "preprocess"}:
@@ -2148,6 +2243,10 @@ class OrePipelineStore:
         upload_id = str((parent.get("input") or {}).get("upload_id") or "")
         if not upload_id:
             raise ApiError(HTTPStatus.BAD_REQUEST, "run has no upload_id")
+        normalized_talc_clusterization = normalize_talc_clusterization_payload(
+            talc_clusterization,
+            parent.get("talc_clusterization") if isinstance(parent.get("talc_clusterization"), dict) else self.app_settings().get("talc_clusterization"),
+        )
         upload = self.prepare_upload(upload_id, preset, augmentation_settings)
         if status == "complete":
             target_run_id = f"apply_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000_000:09d}_{hashlib.sha1((run_id + changed_step).encode()).hexdigest()[:8]}"
@@ -2169,6 +2268,7 @@ class OrePipelineStore:
             upload,
             preset,
             curated_metadata=(parent.get("input") or {}).get("curated_metadata"),
+            talc_clusterization=normalized_talc_clusterization,
         )
         metadata = self._read_run(target_run_id)
         metadata["status"] = "prepared"
@@ -2208,11 +2308,17 @@ class OrePipelineStore:
         *,
         run_async: bool = True,
         curated_metadata: Any = None,
+        talc_clusterization: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         run_dir = self.runs_dir / run_id
         metadata = self._read_run(run_id)
         if str(metadata.get("status") or "").lower() != "prepared":
             raise ApiError(HTTPStatus.CONFLICT, "run is not prepared")
+        if talc_clusterization is not None:
+            metadata["talc_clusterization"] = normalize_talc_clusterization_payload(
+                talc_clusterization,
+                metadata.get("talc_clusterization") if isinstance(metadata.get("talc_clusterization"), dict) else self.app_settings().get("talc_clusterization"),
+            )
         normalized_curated_metadata = normalize_curated_metadata_payload(curated_metadata)
         if normalized_curated_metadata:
             shutil.rmtree(run_dir / "metadata", ignore_errors=True)
@@ -2282,7 +2388,13 @@ class OrePipelineStore:
             self._write_masks_from_sulfide_edit(parent_dir, run_dir, mask)
         else:
             self._write_masks_from_final_edit(parent_dir, run_dir, mask)
-        run_metadata = self._base_run_metadata(run_id, run_dir, parent["input"]["upload_id"], parent["preprocess"]["preset"])
+        run_metadata = self._base_run_metadata(
+            run_id,
+            run_dir,
+            parent["input"]["upload_id"],
+            parent["preprocess"]["preset"],
+            talc_clusterization=parent.get("talc_clusterization"),
+        )
         run_metadata["status"] = "complete"
         run_metadata["progress"] = 100
         run_metadata["backend"] = parent.get("backend", self.backend)
@@ -3280,7 +3392,7 @@ print(json.dumps({
         if str(data.get("status") or "").lower() != "complete":
             return data
         display = data.get("display") if isinstance(data.get("display"), dict) else {}
-        if display.get("non_sulfide_base"):
+        if display.get("non_sulfide_base") and display.get("talc_cluster_overlay"):
             return data
         run_dir = self.runs_dir / run_id
         required = [run_dir / "input/preprocessed.png", run_dir / "masks/sulfide_mask.png", run_dir / "masks/final_mask.png"]
@@ -3292,6 +3404,15 @@ print(json.dumps({
                 preprocessing_enabled=bool((data.get("preprocess") or {}).get("enabled", True)),
             )
             refreshed_display = json.loads((run_dir / "display/display.json").read_text(encoding="utf-8"))["layers"]
+            if (run_dir / "reports/ore_summary.json").exists():
+                refreshed_summary = json.loads((run_dir / "reports/ore_summary.json").read_text(encoding="utf-8"))
+                data["summary"] = refreshed_summary
+                if isinstance(refreshed_summary.get("talc_clusterization"), dict):
+                    data["talc_clusterization"] = refreshed_summary["talc_clusterization"]
+                scale = calibrated_scale_from_metadata(data, refreshed_summary)
+                data["metrics"] = metric_rows(refreshed_summary, scale)
+            if (run_dir / "masks/talc_cluster_mask.png").exists():
+                data.setdefault("masks", {})["talc_cluster"] = str(run_dir / "masks/talc_cluster_mask.png")
         except Exception as exc:  # noqa: BLE001 - compatibility layer should not break run loading.
             self.record_system_event("warning", "non-sulfide display regeneration failed", run_id=run_id, error=str(exc))
             return data
@@ -3466,6 +3587,7 @@ print(json.dumps({
         preset: dict[str, Any],
         *,
         curated_metadata: Any = None,
+        talc_clusterization: dict[str, Any] | None = None,
         batch_link: dict[str, Any] | None = None,
     ) -> None:
         input_dir = run_dir / "input"
@@ -3481,7 +3603,7 @@ print(json.dumps({
             shutil.copy2(resolve_path(preprocessed_full_source), preprocessed_full_path)
         original_for_analysis = downscaled_image(source_path, size=(upload["preprocess"]["width"], upload["preprocess"]["height"]))
         save_image(input_dir / "original_for_analysis.png", original_for_analysis)
-        metadata = self._base_run_metadata(run_id, run_dir, upload["upload_id"], preset)
+        metadata = self._base_run_metadata(run_id, run_dir, upload["upload_id"], preset, talc_clusterization=talc_clusterization)
         metadata["input"]["original_source_path"] = upload["original_path"]
         metadata["input"]["original_artifact_path"] = str(original_artifact)
         if preprocessed_full_source:
@@ -3509,7 +3631,19 @@ print(json.dumps({
         metadata["tiling"] = upload.get("tiling") or (upload.get("preprocess") or {}).get("tiling") or {}
         self._write_json(run_dir / "run.json", metadata)
 
-    def _base_run_metadata(self, run_id: str, run_dir: Path, upload_id: str, preset: dict[str, Any]) -> dict[str, Any]:
+    def _base_run_metadata(
+        self,
+        run_id: str,
+        run_dir: Path,
+        upload_id: str,
+        preset: dict[str, Any],
+        *,
+        talc_clusterization: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        normalized_talc_clusterization = normalize_talc_clusterization_payload(
+            talc_clusterization,
+            self.app_settings().get("talc_clusterization"),
+        )
         return {
             "schema_version": "ore-pipeline-ui-run-v0.1",
             "run_id": run_id,
@@ -3526,6 +3660,7 @@ print(json.dumps({
                 "preprocessed_path": str(run_dir / "input/preprocessed.png"),
             },
             "preprocess": {"enabled": bool(preset.get("preprocessing_enabled", preset.get("enabled", True))), "preset": preset},
+            "talc_clusterization": normalized_talc_clusterization,
             "image": {},
             "summary": {},
             "metrics": [],
@@ -3841,6 +3976,18 @@ print(json.dumps({
             return None
         return read_binary_mask(mask_path, expected_shape_hw)
 
+    def _run_talc_clusterization(self, run_dir: Path, override: dict[str, Any] | None = None) -> dict[str, Any]:
+        fallback = self.app_settings().get("talc_clusterization")
+        run_metadata_path = run_dir / "run.json"
+        if run_metadata_path.exists():
+            try:
+                metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
+                if isinstance(metadata.get("talc_clusterization"), dict):
+                    fallback = metadata["talc_clusterization"]
+            except (json.JSONDecodeError, OSError):
+                pass
+        return normalize_talc_clusterization_payload(override, fallback)
+
     def _write_masks_from_artifact_edit(self, parent_dir: Path, run_dir: Path, artifact_mask: np.ndarray) -> None:
         save_image(run_dir / "input/artifact_mask.png", Image.fromarray(artifact_mask, mode="L"))
         sulfide_mask = np.asarray(Image.open(parent_dir / "masks/sulfide_mask.png").convert("L"))
@@ -3866,6 +4013,7 @@ print(json.dumps({
             final_mask=final_mask,
             artifact_mask=artifact_mask,
             preprocessing_enabled=bool((parent_metadata.get("preprocess") or {}).get("enabled", True)),
+            talc_clusterization=parent_metadata.get("talc_clusterization"),
         )
 
     def _write_masks_from_sulfide_edit(self, parent_dir: Path, run_dir: Path, sulfide_mask: np.ndarray) -> None:
@@ -3897,6 +4045,7 @@ print(json.dumps({
             final_mask=final_mask,
             artifact_mask=artifact_mask,
             preprocessing_enabled=bool((parent_metadata.get("preprocess") or {}).get("enabled", True)),
+            talc_clusterization=parent_metadata.get("talc_clusterization"),
         )
 
     def _write_masks_from_final_edit(self, parent_dir: Path, run_dir: Path, final_mask: np.ndarray) -> None:
@@ -3926,6 +4075,7 @@ print(json.dumps({
             final_mask=final_mask,
             artifact_mask=artifact_mask,
             preprocessing_enabled=bool((parent_metadata.get("preprocess") or {}).get("enabled", True)),
+            talc_clusterization=parent_metadata.get("talc_clusterization"),
         )
 
     def _copy_run_inputs(self, parent: dict[str, Any], parent_dir: Path, run_dir: Path) -> None:
@@ -3957,6 +4107,7 @@ print(json.dumps({
         final_mask: np.ndarray,
         artifact_mask: np.ndarray | None = None,
         preprocessing_enabled: bool | None = None,
+        talc_clusterization: dict[str, Any] | None = None,
     ) -> None:
         masks_dir = run_dir / "masks"
         reports_dir = run_dir / "reports"
@@ -3974,9 +4125,20 @@ print(json.dumps({
             analyzed_mask=analyzed_mask,
             final_mask=final_mask,
         )
+        cluster_settings = self._run_talc_clusterization(run_dir, talc_clusterization)
+        talc_cluster_mask, talc_cluster_stats = compute_talc_cluster_mask(talc_mask, analyzed_mask, cluster_settings)
+        summary = {
+            **summary,
+            "talc_clusterization": cluster_settings,
+            "talc_cluster_area_px": int(talc_cluster_stats["area_px"]),
+            "talc_cluster_fraction": float(talc_cluster_stats["fraction"]),
+            "talc_cluster_fraction_image": float(talc_cluster_stats["fraction_image"]),
+            "talc_cluster_source_talc_area_px": int(talc_cluster_stats["source_talc_area_px"]),
+        }
         Image.fromarray((sulfide_mask > 0).astype(np.uint8) * 255, mode="L").save(masks_dir / "sulfide_mask.png")
         self._write_sulfide_component_label_map(masks_dir / "sulfide_component_labels_rgb.png", sulfide_mask)
         Image.fromarray((talc_mask > 0).astype(np.uint8) * 255, mode="L").save(masks_dir / "talc_mask.png")
+        Image.fromarray(talc_cluster_mask, mode="L").save(masks_dir / "talc_cluster_mask.png")
         Image.fromarray((analyzed_mask > 0).astype(np.uint8) * 255, mode="L").save(masks_dir / "analyzed_mask.png")
         Image.fromarray(final_mask.astype(np.uint8), mode="L").save(masks_dir / "final_mask.png")
         if artifact_mask is not None:
@@ -4005,6 +4167,29 @@ print(json.dumps({
         analyzed_mask = np.asarray(Image.open(analyzed_path).convert("L")) if analyzed_path.exists() else None
         artifact_path = run_dir / "masks/artifact_mask.png"
         artifact_mask = np.asarray(Image.open(artifact_path).convert("L")) if artifact_path.exists() else None
+        talc_cluster_path = run_dir / "masks/talc_cluster_mask.png"
+        if talc_cluster_path.exists():
+            talc_cluster_mask = np.asarray(Image.open(talc_cluster_path).convert("L"))
+        else:
+            cluster_settings = self._run_talc_clusterization(run_dir)
+            talc_cluster_mask, talc_cluster_stats = compute_talc_cluster_mask((final_mask == 3).astype(np.uint8) * 255, analyzed_mask, cluster_settings)
+            Image.fromarray(talc_cluster_mask, mode="L").save(talc_cluster_path)
+            summary_path = run_dir / "reports/ore_summary.json"
+            if summary_path.exists():
+                try:
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                    summary.update(
+                        {
+                            "talc_clusterization": cluster_settings,
+                            "talc_cluster_area_px": int(talc_cluster_stats["area_px"]),
+                            "talc_cluster_fraction": float(talc_cluster_stats["fraction"]),
+                            "talc_cluster_fraction_image": float(talc_cluster_stats["fraction_image"]),
+                            "talc_cluster_source_talc_area_px": int(talc_cluster_stats["source_talc_area_px"]),
+                        }
+                    )
+                    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                except (json.JSONDecodeError, OSError):
+                    pass
         if preprocessing_enabled is None:
             run_metadata_path = run_dir / "run.json"
             if run_metadata_path.exists():
@@ -4049,6 +4234,18 @@ print(json.dumps({
                 colored_overlay(final_mask, 3, CLASS_COLORS[3]),
                 display_dir / "talc_overlay",
                 "talc_overlay",
+                self.preview_max_sides,
+                nearest=True,
+                prefer_png=True,
+            ),
+            "talc_cluster_overlay": save_preview_pyramid(
+                colored_overlay(
+                    talc_cluster_mask,
+                    None,
+                    talc_cluster_overlay_color(self._run_talc_clusterization(run_dir).get("opacity_percent", DEFAULT_TALC_CLUSTERIZATION["opacity_percent"])),
+                ),
+                display_dir / "talc_cluster_overlay",
+                "talc_cluster_overlay",
                 self.preview_max_sides,
                 nearest=True,
                 prefer_png=True,
@@ -4231,6 +4428,11 @@ print(json.dumps({
         display = json.loads((run_dir / "display/display.json").read_text(encoding="utf-8"))["layers"]
         with Image.open(run_dir / "input/preprocessed.png") as image:
             metadata["image"] = {"width": image.size[0], "height": image.size[1], "name": Path(metadata["input"]["original_artifact_path"]).name}
+        metadata["talc_clusterization"] = normalize_talc_clusterization_payload(
+            summary.get("talc_clusterization") if isinstance(summary.get("talc_clusterization"), dict) else metadata.get("talc_clusterization"),
+            self.app_settings().get("talc_clusterization"),
+        )
+        summary["talc_clusterization"] = metadata["talc_clusterization"]
         metadata["summary"] = summary
         scale = calibrated_scale_from_metadata(metadata, summary)
         if scale:
@@ -4254,6 +4456,7 @@ print(json.dumps({
             "sulfide_component_labels": str(run_dir / "masks/sulfide_component_labels_rgb.png"),
             "final": str(run_dir / "masks/final_mask.png"),
             "talc": str(run_dir / "masks/talc_mask.png"),
+            "talc_cluster": str(run_dir / "masks/talc_cluster_mask.png"),
             "analyzed": str(run_dir / "masks/analyzed_mask.png"),
         }
         if (run_dir / "masks/artifact_mask.png").exists():
@@ -4391,6 +4594,7 @@ print(json.dumps({
                     run_async=child_run_async,
                     curated_metadata=item.get("curated_metadata"),
                     augmentation_settings=settings.get("augmentation"),
+                    talc_clusterization=settings.get("talc_clusterization"),
                     batch_link={
                         "batch_id": batch_id,
                         "item_id": item["item_id"],
@@ -4489,6 +4693,10 @@ print(json.dumps({
             "schema_version": "ore-pipeline-batch-settings-v0.1",
             "preprocess": preset_from_payload(preprocess_payload if isinstance(preprocess_payload, dict) else {}),
             "augmentation": normalize_augmentation_settings(augmentation_payload),
+            "talc_clusterization": normalize_talc_clusterization_payload(
+                values.get("talc_clusterization"),
+                self.app_settings().get("talc_clusterization"),
+            ),
             "backend": self.backend,
             "checkpoint": str(self.checkpoint) if self.checkpoint else None,
             "talc_backend": self.talc_backend,
@@ -5564,6 +5772,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
                         run_async=True,
                         curated_metadata=payload.get("curated_metadata"),
                         augmentation_settings=augmentation_from_payload(payload),
+                        talc_clusterization=payload_value(payload, "talc_clusterization", ("talcClusterization",)),
                     )
                 )
             finally:
@@ -5584,6 +5793,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
                         run_id,
                         preset_from_payload(payload),
                         augmentation_settings=augmentation_from_payload(payload),
+                        talc_clusterization=payload_value(payload, "talc_clusterization", ("talcClusterization",)),
                         changed_step=str(payload.get("changed_step") or ""),
                     )
                 )
@@ -5597,6 +5807,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
                     run_id,
                     run_async=True,
                     curated_metadata=payload.get("curated_metadata"),
+                    talc_clusterization=payload_value(payload, "talc_clusterization", ("talcClusterization",)),
                 )
             )
             return

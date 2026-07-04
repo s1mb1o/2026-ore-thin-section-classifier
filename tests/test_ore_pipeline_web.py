@@ -31,8 +31,10 @@ from apps.ore_pipeline_web import (  # noqa: E402
     OrePipelineStore,
     RunCancelled,
     build_pdf_report_pages,
+    compute_talc_cluster_mask,
     gpu_status_payload,
     load_font,
+    normalize_talc_clusterization_payload,
     render_html_page,
     text_width,
     wrap_text_lines,
@@ -116,6 +118,43 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertGreater(pdf_path.stat().st_size, 50_000)
         self.assertGreaterEqual(run["elapsed_seconds"], 0)
         self.assertEqual(run["elapsed_seconds"], persisted_run["elapsed_seconds"])
+
+    def test_talc_cluster_mask_uses_local_density_window(self) -> None:
+        talc = np.zeros((7, 7), dtype=np.uint8)
+        talc[3, 3] = 255
+        analyzed = np.ones((7, 7), dtype=np.uint8) * 255
+
+        cluster, stats = compute_talc_cluster_mask(
+            talc,
+            analyzed,
+            {"radius_px": 1, "min_local_talc_percent": 10, "opacity_percent": 55},
+        )
+
+        self.assertEqual(int((cluster > 0).sum()), 9)
+        self.assertEqual(stats["area_px"], 9)
+        self.assertEqual(stats["source_talc_area_px"], 1)
+        self.assertAlmostEqual(stats["fraction"], 9 / 49)
+        self.assertEqual(stats["radius_px"], 1)
+        self.assertEqual(stats["opacity_percent"], 55)
+
+        no_cluster, no_stats = compute_talc_cluster_mask(
+            talc,
+            analyzed,
+            {"radius_px": 1, "min_local_talc_percent": 20, "opacity_percent": 55},
+        )
+        self.assertEqual(int((no_cluster > 0).sum()), 0)
+        self.assertEqual(no_stats["area_px"], 0)
+
+    def test_talc_clusterization_normalization_accepts_ui_aliases(self) -> None:
+        normalized = normalize_talc_clusterization_payload(
+            {"radiusPx": 32, "minDensityPercent": 6.5, "opacityPercent": 35},
+            {"radius_px": 64, "min_local_talc_percent": 4, "opacity_percent": 45},
+        )
+
+        self.assertEqual(normalized["schema_version"], "ore-pipeline-talc-clusterization-v0.1")
+        self.assertEqual(normalized["radius_px"], 32)
+        self.assertEqual(normalized["min_local_talc_percent"], 6.5)
+        self.assertEqual(normalized["opacity_percent"], 35)
 
     def test_async_start_returns_payload_while_worker_updates_run_json(self) -> None:
         upload = self.store.register_upload_from_path(self.image_path)
@@ -241,6 +280,12 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertEqual(image.mode, "RGB")
             self.assertEqual(image.size, (128, 96))
         self.assertIn("ordinary_overlay", run["display"])
+        self.assertIn("talc_cluster_overlay", run["display"])
+        self.assertIn("talc_cluster", run["masks"])
+        self.assertIn("talc_cluster_area_px", run["summary"])
+        self.assertIn("talc_cluster_fraction", run["summary"])
+        self.assertIn("talc_clusterization", run)
+        self.assertTrue((self.store.runs_dir / run["run_id"] / "masks/talc_cluster_mask.png").exists())
         self.assertEqual(run["runtime"]["backend"], "heuristic")
         self.assertIsNone(run["runtime"]["checkpoints"]["binary_sulfide"])
         self.assertEqual(run["runtime"]["models"]["binary_sulfide"]["backend"], "heuristic")
@@ -253,6 +298,7 @@ class OrePipelineWebTest(unittest.TestCase):
         metric_keys = [row["key"] for row in history[0]["metrics"]]
         self.assertEqual(metric_keys[:4], ["analyzed_fraction", "sulfide_fraction", "ordinary_sulfide_fraction", "fine_sulfide_fraction"])
         self.assertIn("other_fraction", metric_keys)
+        self.assertIn("talc_cluster_fraction", metric_keys)
         self.assertIn("artifact_fraction_image", metric_keys)
         self.assertEqual(history[0]["metrics"][0]["level"], 0)
         self.assertEqual(next(row for row in history[0]["metrics"] if row["key"] == "sulfide_fraction")["level"], 1)
@@ -1156,6 +1202,11 @@ class OrePipelineWebTest(unittest.TestCase):
                     "panorama_max_side_px": 4096,
                     "panorama_scale_factor": 0.25,
                 },
+                "talc_clusterization": {
+                    "radius_px": 96,
+                    "min_local_talc_percent": 7.5,
+                    "opacity_percent": 60,
+                },
                 "metadata_defaults": {
                     "project": "system-default-project",
                     "om_instrument": "scope-1",
@@ -1181,6 +1232,9 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(settings["preprocess"]["panorama_max_side_px"], 4096)
         self.assertEqual(settings["preprocess"]["panorama_scale_factor"], 0.25)
         self.assertEqual(settings["metadata_defaults"]["project"], "system-default-project")
+        self.assertEqual(settings["talc_clusterization"]["radius_px"], 96)
+        self.assertEqual(settings["talc_clusterization"]["min_local_talc_percent"], 7.5)
+        self.assertEqual(settings["talc_clusterization"]["opacity_percent"], 60)
         self.assertNotIn("sample_id", settings["metadata_defaults"])
 
         restarted = OrePipelineStore(
@@ -1201,6 +1255,7 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(restarted.app_settings()["metadata_defaults"]["om_instrument"], "scope-1")
         self.assertEqual(restarted.app_settings()["preprocess"]["panorama_scaling_mode"], "scale_factor")
         self.assertEqual(restarted.app_settings()["preprocess"]["panorama_scale_factor"], 0.25)
+        self.assertEqual(restarted.app_settings()["talc_clusterization"]["radius_px"], 96)
 
         server = OrePipelineHTTPServer(("127.0.0.1", 0), restarted)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1663,7 +1718,21 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn('id="uploadProgressWrap"', html)
         self.assertIn('id="uploadProgressBar"', html)
         self.assertIn('id="metadataBtn"', html)
+        self.assertIn('id="configurationBtn"', html)
         self.assertIn('id="metadataDialog"', html)
+        self.assertIn('id="configurationDialog"', html)
+        self.assertIn('id="configTalcClusterRadius"', html)
+        self.assertIn('id="configTalcClusterMinLocal"', html)
+        self.assertIn('id="configTalcClusterOpacity"', html)
+        self.assertIn('id="settingsTalcClusterRadius"', html)
+        self.assertIn('id="settingsTalcClusterMinLocal"', html)
+        self.assertIn('id="settingsTalcClusterOpacity"', html)
+        self.assertIn("settingsTalcClusterDefaults", html)
+        self.assertIn("talcClusterization", html)
+        self.assertIn("function normalizedTalcClusterization", html)
+        self.assertIn("function currentRunConfiguration", html)
+        self.assertIn("function openConfigurationDialog", html)
+        self.assertIn("...configurationPayload()", html)
         self.assertIn('id="runFilesBtn"', html)
         self.assertIn('id="runFilesDialog"', html)
         self.assertIn('id="runFilesTable"', html)
@@ -1988,8 +2057,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertNotIn('id="runTechDetails"', metrics_panel)
         self.assertIn('class="metrics-table"', html)
         self.assertIn("metricsDenominatorNote", html)
-        self.assertIn("Сульфиды, тальк и остальное считаются от проанализированной области", html)
-        self.assertIn("Sulfides, talc, and other use analyzed area as denominator", html)
+        self.assertIn("Сульфиды, тальк, кластеры талька и остальное считаются от проанализированной области", html)
+        self.assertIn("Sulfides, talc, talc cluster areas, and other use analyzed area as denominator", html)
         self.assertIn("metricsHeaderAreaPx", html)
         self.assertIn("metricsHeaderPhysicalArea", html)
         self.assertIn("metricOtherFraction", html)
@@ -2164,11 +2233,13 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn('data-legend-toggle="showOrdinary"', final_controls)
         self.assertIn('data-legend-toggle="showFine"', final_controls)
         self.assertIn('data-legend-toggle="showTalc"', final_controls)
+        self.assertIn('data-legend-toggle="showTalcClusters"', final_controls)
         self.assertIn('data-legend-toggle="showFinalArtifacts"', final_controls)
         self.assertIn('data-legend-toggle="showBackground"', final_controls)
         self.assertIn("classOrdinaryShort", final_controls)
         self.assertIn("classFineShort", final_controls)
         self.assertIn("classTalc", final_controls)
+        self.assertIn("classTalcClusters", final_controls)
         self.assertIn("classArtefacts", final_controls)
         self.assertIn("--artifact", html)
         self.assertIn("--sulfide", html)
@@ -2187,6 +2258,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("ordinary_sulfide_area_px", html)
         self.assertIn("fine_sulfide_area_px", html)
         self.assertIn("artifact_fraction_image", html)
+        self.assertIn("talc_cluster_fraction", html)
+        self.assertIn("talc_cluster_overlay", html)
         self.assertIn("if (layer === 'sulfide')", html)
         self.assertIn("if (toggleKey === 'showNonSulfide') return Math.max(0, 1 - sulfide);", html)
         self.assertIn("const showSulfide = classVisible('showSulfide')", html)
@@ -2195,6 +2268,7 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("if (showSulfide)", html)
         self.assertIn("if (classVisible('showSulfideArtifacts'))", html)
         self.assertIn("if (classVisible('showFinalArtifacts'))", html)
+        self.assertIn("if (classVisible('showTalcClusters'))", html)
         self.assertIn("showImage: classVisible('showBackground')", html)
         self.assertIn("await drawOverlay(display.sulfide_overlay", html)
         self.assertIn("await drawOverlay(display.artifact_overlay", html)
