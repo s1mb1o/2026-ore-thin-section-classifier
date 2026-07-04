@@ -24,6 +24,7 @@ shifts, and marked `done` (or pruned) when a session finishes or hands off.
 
 | Updated | Session | Doing now | Files / areas claimed | Status |
 | --- | --- | --- | --- | --- |
+| 2026-07-04T13:05:42+0300 | ore-viewer-share-comparison | Done: added client-side full-preview side-by-side PNG export next to Fix me, with focused tests and service restart. | `apps/static/ore_pipeline_ui.html`, `tests/test_ore_pipeline_web.py`, `ChangeLog.md`, `docs/session-sync.md`, `docs/session-activity.md` | done |
 | 2026-07-04T12:39:08+0300 | publish-v2-current-tree | Done: inspected, validated, committed, and pushed the remaining v2 worktree changes. | `docs/notes/2026-07-04-talc-grade-signal.md`, `scripts/analyze_talc_grade_signal.py`, `docs/ui/v2/notes/2026-07-04-talc-ui-video-script-ru.md`, `docs/session-activity.md` | done |
 | 2026-07-04T12:21:39+0300 | talc-ui-video-script | Done: created Russian 5-minute talc UI video script with timeline, voiceover, subtitles, and recording checklist. | `docs/ui/v2/notes/2026-07-04-talc-ui-video-script-ru.md`, `docs/session-activity.md` | done |
 | 2026-07-04T12:38:23+0300 | demo-video-v2-ui | Done: created the 5:00 1080p Russian narrated/subtitled v2 UI demo MP4, source script/SRT/build artifacts, contact sheet, and Whisper STT verification report. | `outputs/demo_video_v2_ui_20260704/`, `ChangeLog.md`, `docs/session-sync.md`, `docs/session-activity.md` | done |

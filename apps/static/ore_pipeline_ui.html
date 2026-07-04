@@ -131,6 +131,7 @@
     .viewer-mode-row { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
     .primary-view-controls { display: grid; gap: 8px; width: auto; min-width: 0; max-width: 100%; }
     .side-by-side-control { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+    .viewer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
     .segmented { display: inline-flex; max-width: 100%; border: 1px solid var(--line); border-radius: 7px; overflow-x: auto; overflow-y: hidden; background: var(--control-bg); scrollbar-width: thin; }
     .segmented button { border: 0; border-right: 1px solid var(--line); border-radius: 0; background: transparent; padding: 7px 10px; white-space: nowrap; flex: 0 0 auto; }
     .segmented button:last-child { border-right: 0; }
@@ -509,7 +510,10 @@
               </div>
             </div>
           </div>
-          <button id="fixBtn" disabled data-i18n="fixMe">Исправить</button>
+          <div class="viewer-actions">
+            <button id="shareComparisonBtn" disabled data-i18n="shareComparison">Поделиться сравнением</button>
+            <button id="fixBtn" disabled data-i18n="fixMe">Исправить</button>
+          </div>
         </div>
         <div class="viewer-shell">
           <div id="segmentationClassToggles" class="segmentation-legend-overlay hidden">
@@ -1825,6 +1829,10 @@
         overlayOpacity: 'прозрачность',
         boundaryOnly: 'только контуры',
         fixMe: 'Исправить',
+        shareComparison: 'Поделиться сравнением',
+        shareComparisonNoLayer: 'Выберите слой сравнения справа.',
+        shareComparisonDownloaded: 'Изображение сравнения сохранено.',
+        shareComparisonFailed: 'Не удалось создать изображение сравнения: {error}',
         textOutputTitle: 'Текстовый вывод',
         metricsTitle: 'Метрики',
         saveCsv: 'Сохранить CSV',
@@ -2349,6 +2357,10 @@
         overlayOpacity: 'opacity',
         boundaryOnly: 'contours only',
         fixMe: 'Fix me',
+        shareComparison: 'Share comparison',
+        shareComparisonNoLayer: 'Select a right comparison layer first.',
+        shareComparisonDownloaded: 'Comparison image downloaded.',
+        shareComparisonFailed: 'Could not create comparison image: {error}',
         textOutputTitle: 'Text output',
         metricsTitle: 'Metrics',
         saveCsv: 'Save to CSV',
@@ -3769,6 +3781,7 @@
       $('stopBtn').disabled = !active || String((run && run.status) || '').toLowerCase() === 'canceling';
       $('fixBtn').disabled = active || !(state.upload || (run && run.status === 'complete'));
       $('configurationBtn').disabled = active || !(state.upload || run);
+      updateShareComparisonControl();
     }
     function previewForCanvasAspect() {
       const source = displaySource();
@@ -3821,6 +3834,9 @@
         if (item.max_side >= desired) break;
       }
       return chosen;
+    }
+    function largestPreview(previews) {
+      return previews && previews.length ? previews[previews.length - 1] : null;
     }
     async function loadImage(url) {
       if (!url) return null;
@@ -3915,6 +3931,16 @@
     }
     function sideLayerAvailable(layer) {
       return layer === 'none' || layerAvailable(layer);
+    }
+    function shareComparisonAvailable() {
+      return !runIsActive(state.run)
+        && state.sideLayer !== 'none'
+        && layerAvailable(state.viewMode)
+        && sideLayerAvailable(state.sideLayer);
+    }
+    function updateShareComparisonControl() {
+      const button = $('shareComparisonBtn');
+      if (button) button.disabled = !shareComparisonAvailable();
     }
     function visibleCompositeLayers() {
       const layers = [state.viewMode];
@@ -4056,6 +4082,7 @@
       });
       updateSegmentationToggleVisibility();
       updateSplitterOverlay();
+      updateShareComparisonControl();
       if ($('showTiling')) {
         const available = tilingAvailable();
         $('showTiling').disabled = !available;
@@ -4290,6 +4317,164 @@
       ctx.fillRect(divider - 2, 0, 4, canvas.height);
       ctx.fillStyle = cssColor('--accent') || '#27b8bb';
       ctx.fillRect(divider - 12, canvas.height / 2 - 32, 24, 64);
+    }
+    function firstLargestPreview(display, keys) {
+      for (const key of keys) {
+        const preview = largestPreview(display && display[key]);
+        if (preview && preview.url) return preview;
+      }
+      return null;
+    }
+    function comparisonBasePreview(display, layer) {
+      if (['original', 'augmented', 'preprocessed'].includes(layer)) return firstLargestPreview(display, [layer]);
+      if (layer === 'sulfide') {
+        if (classVisible('showNonSulfide') && !classVisible('showSulfide')) {
+          return firstLargestPreview(display, ['non_sulfide_base', baseLayerKey(display), 'preprocessed', 'augmented', 'original', 'sulfide_overlay']);
+        }
+        return firstLargestPreview(display, [baseLayerKey(display), 'preprocessed', 'augmented', 'original', 'non_sulfide_base', 'sulfide_overlay']);
+      }
+      if (layer === 'final') {
+        return firstLargestPreview(display, [baseLayerKey(display), 'preprocessed', 'augmented', 'original', 'ordinary_overlay', 'fine_overlay', 'talc_overlay']);
+      }
+      return null;
+    }
+    async function drawComparisonImageLayer(targetCtx, display, key, width, height, options = {}) {
+      if (options.showImage === false) return false;
+      const preview = largestPreview(display && display[key]);
+      const image = await loadImage(preview && preview.url);
+      if (!image) return false;
+      targetCtx.drawImage(image, 0, 0, width, height);
+      return true;
+    }
+    async function drawComparisonOverlay(targetCtx, previews, width, height, options = {}) {
+      const preview = largestPreview(previews);
+      const image = await loadImage(preview && preview.url);
+      if (!image) return false;
+      const tintKey = options.tintColor ? `${preview.url}:tint:${options.tintColor}` : preview.url;
+      const tinted = options.tintColor ? tintedOverlayCanvasForImage(image, preview.url, options.tintColor) : image;
+      const source = options.boundaryOnly ? boundaryCanvasForImage(tinted, tintKey) : tinted;
+      targetCtx.save();
+      targetCtx.globalAlpha = options.opacity == null ? 1 : Number(options.opacity);
+      targetCtx.drawImage(source, 0, 0, width, height);
+      targetCtx.restore();
+      return true;
+    }
+    async function drawComparisonFinalOverlays(targetCtx, display, width, height) {
+      const overlayOptions = {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly};
+      if (classVisible('showOrdinary')) await drawComparisonOverlay(targetCtx, display.ordinary_overlay, width, height, overlayOptions);
+      if (classVisible('showFine')) await drawComparisonOverlay(targetCtx, display.fine_overlay, width, height, overlayOptions);
+      if (classVisible('showTalc')) await drawComparisonOverlay(targetCtx, display.talc_overlay, width, height, overlayOptions);
+      if (classVisible('showTalcClusters')) await drawComparisonOverlay(targetCtx, display.talc_cluster_overlay, width, height, overlayOptions);
+      if (classVisible('showFinalArtifacts')) {
+        await drawComparisonOverlay(targetCtx, display.artifact_overlay, width, height, {...overlayOptions, tintColor: cssColor('--artifact') || '#c63cff'});
+      }
+    }
+    async function drawSelectedGrainOverlayForComparison(targetCtx, width, height) {
+      if (!state.selectedGrainIds.size) return;
+      const labelMap = await loadGrainLabelMap();
+      const outline = buildSelectedGrainOutline(labelMap);
+      if (!labelMap || !outline) return;
+      targetCtx.save();
+      targetCtx.imageSmoothingEnabled = false;
+      targetCtx.drawImage(outline, 0, 0, width, height);
+      targetCtx.restore();
+    }
+    async function renderComparisonLayer(display, layer) {
+      const basePreview = comparisonBasePreview(display, layer);
+      const baseImage = await loadImage(basePreview && basePreview.url);
+      if (!baseImage) return null;
+      const output = document.createElement('canvas');
+      output.width = Math.max(1, baseImage.width);
+      output.height = Math.max(1, baseImage.height);
+      const outputCtx = output.getContext('2d');
+      outputCtx.fillStyle = cssColor('--viewer-bg') || '#11151b';
+      outputCtx.fillRect(0, 0, output.width, output.height);
+
+      if (['original', 'augmented', 'preprocessed'].includes(layer)) {
+        await drawComparisonImageLayer(outputCtx, display, layer, output.width, output.height);
+      } else if (layer === 'sulfide') {
+        const showSulfide = classVisible('showSulfide');
+        const showNonSulfide = classVisible('showNonSulfide');
+        if (showNonSulfide) {
+          await drawComparisonImageLayer(outputCtx, display, showSulfide ? baseLayerKey(display) : 'non_sulfide_base', output.width, output.height);
+        }
+        if (showSulfide) {
+          await drawComparisonOverlay(outputCtx, display.sulfide_overlay, output.width, output.height, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly});
+        }
+        if (classVisible('showSulfideArtifacts')) {
+          await drawComparisonOverlay(outputCtx, display.artifact_overlay, output.width, output.height, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, tintColor: cssColor('--artifact') || '#c63cff'});
+        }
+      } else if (layer === 'final') {
+        await drawComparisonImageLayer(outputCtx, display, baseLayerKey(display), output.width, output.height, {showImage: classVisible('showBackground')});
+        await drawComparisonFinalOverlays(outputCtx, display, output.width, output.height);
+      }
+
+      await drawSelectedGrainOverlayForComparison(outputCtx, output.width, output.height);
+      return output;
+    }
+    function canvasToBlobAsync(sourceCanvas, type = 'image/png') {
+      return new Promise((resolve, reject) => {
+        sourceCanvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('PNG encoding failed')), type);
+      });
+    }
+    function safeFilenamePart(value) {
+      return String(value || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'layer';
+    }
+    async function exportSideBySideComparison() {
+      if (!shareComparisonAvailable()) {
+        setStatus('shareComparisonNoLayer');
+        return;
+      }
+      const button = $('shareComparisonBtn');
+      if (button) button.disabled = true;
+      try {
+        const source = displaySource();
+        const display = source && source.display ? source.display : {};
+        const left = await renderComparisonLayer(display, state.viewMode);
+        const right = await renderComparisonLayer(display, state.sideLayer);
+        if (!left || !right) {
+          setStatus('shareComparisonNoLayer');
+          return;
+        }
+        const gap = 4;
+        const rawWidth = left.width + right.width + gap;
+        const rawHeight = Math.max(left.height, right.height);
+        const maxCanvasSide = 32760;
+        const scale = Math.min(1, maxCanvasSide / Math.max(1, rawWidth), maxCanvasSide / Math.max(1, rawHeight));
+        const output = document.createElement('canvas');
+        output.width = Math.max(1, Math.floor(rawWidth * scale));
+        output.height = Math.max(1, Math.floor(rawHeight * scale));
+        const outputCtx = output.getContext('2d');
+        outputCtx.fillStyle = cssColor('--viewer-bg') || '#11151b';
+        outputCtx.fillRect(0, 0, output.width, output.height);
+        const leftW = Math.floor(left.width * scale);
+        const leftH = Math.floor(left.height * scale);
+        const gapW = Math.max(1, Math.floor(gap * scale));
+        const rightW = Math.floor(right.width * scale);
+        const rightH = Math.floor(right.height * scale);
+        const leftY = Math.floor((output.height - leftH) / 2);
+        const rightY = Math.floor((output.height - rightH) / 2);
+        outputCtx.drawImage(left, 0, leftY, leftW, leftH);
+        outputCtx.fillStyle = cssColor('--line') || '#2b3442';
+        outputCtx.fillRect(leftW, 0, gapW, output.height);
+        outputCtx.drawImage(right, leftW + gapW, rightY, rightW, rightH);
+
+        const blob = await canvasToBlobAsync(output);
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const runPart = state.run && state.run.run_id ? state.run.run_id : 'current';
+        link.href = url;
+        link.download = `comparison_${safeFilenamePart(runPart)}_${safeFilenamePart(state.viewMode)}_${safeFilenamePart(state.sideLayer)}.png`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        setStatus('shareComparisonDownloaded');
+      } catch (error) {
+        setStatus('shareComparisonFailed', {error: error.message || String(error)});
+      } finally {
+        updateShareComparisonControl();
+      }
     }
     function setViewMode(mode) {
       if (!layerAvailable(mode)) {
@@ -6285,6 +6470,7 @@
     setPage(pageFromLocation(), {push: false});
     refreshHistory();
 
+    $('shareComparisonBtn').addEventListener('click', exportSideBySideComparison);
     $('fixBtn').addEventListener('click', openFixDialog);
     $('closeFixBtn').addEventListener('click', () => $('fixDialog').close());
     document.querySelectorAll('#editLayerTabs button').forEach(btn => btn.addEventListener('click', () => switchEditorLayer(btn.dataset.layer)));
