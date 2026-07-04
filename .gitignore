@@ -17,6 +17,10 @@ outputs/*
 # Large model/checkpoint files should stay in shared caches or external storage.
 models/*
 !models/README.md
+# Small learned artifacts that ship with the code (production defaults).
+!models/component_grade/
+models/component_grade/*
+!models/component_grade/hgb_weak100_20260704/
 
 # The official dataset is linked from the original project.
 dataset
