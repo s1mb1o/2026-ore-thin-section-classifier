@@ -57,6 +57,12 @@ def main() -> int:
         default=None,
         help="Optional grade-classifier CNN checkpoint (efficientnet_b3). Adds a parallel learned ordinary/fine grade opinion to the summary.",
     )
+    parser.add_argument(
+        "--component-model",
+        type=Path,
+        default=None,
+        help="Learned per-component grade classifier (model.joblib) used instead of the shape rule for ordinary/fine.",
+    )
     args = parser.parse_args()
 
     talc_source_count = sum(1 for enabled in (args.talc_mask is not None, args.auto_talc_candidate, args.talc_checkpoint is not None) if enabled)
@@ -175,6 +181,8 @@ def main() -> int:
     analyze_cmd.extend(rule_config_cli_args(rule_config))
     if talc_mask_path is not None:
         analyze_cmd.extend(["--talc-mask", str(talc_mask_path)])
+    if args.component_model is not None:
+        analyze_cmd.extend(["--component-model", str(args.component_model)])
     run(analyze_cmd)
 
     grade_branch: dict[str, object] | None = None
@@ -198,6 +206,7 @@ def main() -> int:
         "talc_checkpoint_meta": talc_summary.get("checkpoint_meta") if talc_summary else None,
         "grade_checkpoint": str(args.grade_checkpoint) if args.grade_checkpoint is not None else None,
         "grade_branch": grade_branch,
+        "component_model": str(args.component_model) if args.component_model is not None else None,
         "rule_config": rule_config,
         "paths": {
             "binary_sulfide_summary": str(inference_dir / "summary.json"),

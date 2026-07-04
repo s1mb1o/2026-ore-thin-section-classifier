@@ -66,6 +66,7 @@ class ResidentSulfidePipeline:
         talc_checkpoint: str | Path | None = None,
         talc_threshold: float = 0.5,
         preview_max_side: int = 1800,
+        component_model: str | Path | None = None,
     ) -> None:
         if stride > tile_size:
             raise ValueError("stride must be <= tile_size")
@@ -86,6 +87,14 @@ class ResidentSulfidePipeline:
         self.threshold = threshold
         self.talc_threshold = talc_threshold
         self.preview_max_side = preview_max_side
+        self.component_model_path: str | None = None
+        self.component_model = None
+        if component_model is not None:
+            from ore_classifier.component_grade_model import resolve_component_model
+
+            self.component_model = resolve_component_model(component_model)
+            if self.component_model is not None:
+                self.component_model_path = str(component_model)
         self._weight = _tile_weight(tile_size)
 
     # -- sulfide inference (mirrors scripts/infer_binary_sulfide.py main()) --
@@ -379,11 +388,15 @@ class ResidentSulfidePipeline:
             fine_compactness_max=rule_config["fine_compactness_max"],
             talc_fraction_threshold=rule_config["talc_fraction_threshold"],
         )
+        component_classifier = None
+        if self.component_model is not None:
+            component_classifier = self.component_model.labeler(Path(image_path).name)
         summary, components, classified = analyze_components(
             sulfide_mask=sulfide_arr,
             talc_mask=talc_mask,
             analyzed_mask=analyzed_mask,
             config=component_cfg,
+            component_classifier=component_classifier,
         )
         save_component_outputs(
             out_dir=analysis_dir,
@@ -406,6 +419,7 @@ class ResidentSulfidePipeline:
             "talc_checkpoint": self.talc_checkpoint,
             "talc_threshold": self.talc_threshold if self.talc_checkpoint is not None else None,
             "talc_checkpoint_meta": talc_summary.get("checkpoint_meta") if talc_summary else None,
+            "component_model": self.component_model_path,
             "rule_config": rule_config,
             "paths": {
                 "binary_sulfide_summary": str(inference_dir / "summary.json"),

@@ -86,6 +86,7 @@ DEFAULT_SULFIDE_BACKEND = "ml" if DEFAULT_CHECKPOINT.exists() else "heuristic"
 DEFAULT_TALC_BACKEND = "ml" if DEFAULT_TALC_CHECKPOINT.exists() else "heuristic"
 DEFAULT_GRADE_CHECKPOINT = ROOT / "models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt"
 DEFAULT_GRAIN_BACKEND = "heuristic"
+DEFAULT_COMPONENT_MODEL = ROOT / "models/component_grade/hgb_weak100_20260704/model.joblib"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 220 * 1024 * 1024
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
@@ -1635,6 +1636,7 @@ class OrePipelineStore:
         talc_threshold: float = DEFAULT_TALC_THRESHOLD,
         grain_backend: str = DEFAULT_GRAIN_BACKEND,
         grade_checkpoint: Path | None = None,
+        component_model: Path | None = None,
     ) -> None:
         self.workspace_dir = resolve_path(workspace_dir)
         self.uploads_dir = self.workspace_dir / "uploads"
@@ -1654,6 +1656,8 @@ class OrePipelineStore:
         self.grade_checkpoint = resolve_path(grade_checkpoint) if grade_checkpoint else None
         self._grade_model: Any = None
         self._grade_model_checkpoint: Path | None = None
+        self.component_model_path = resolve_path(component_model) if component_model else None
+        self._component_grade_model: Any = None
         self.processing_max_side = int(processing_max_side)
         self.panorama_max_side = int(panorama_max_side)
         self.preview_max_sides = preview_max_sides
@@ -4294,6 +4298,7 @@ print(json.dumps({
             talc_mask=talc_mask,
             analyzed_mask=analyzed_mask,
             config=ComponentRuleConfig(),
+            component_classifier=self._component_classifier_for(run_dir),
         )
         final_mask = final_mask_from_classified(classified, talc_mask)
         self._write_run_outputs(
@@ -4395,6 +4400,7 @@ print(json.dumps({
             talc_mask=talc_mask,
             analyzed_mask=analyzed_mask,
             config=ComponentRuleConfig(),
+            component_classifier=self._component_classifier_for(run_dir),
         )
         final_mask = final_mask_from_classified(classified, talc_mask)
         self._write_run_outputs(
@@ -4471,6 +4477,7 @@ print(json.dumps({
             talc_mask=talc_mask,
             analyzed_mask=analyzed_mask,
             config=ComponentRuleConfig(),
+            component_classifier=self._component_classifier_for(run_dir),
         )
         final_mask = final_mask_from_classified(classified, talc_mask)
         self._write_run_outputs(
@@ -4857,6 +4864,24 @@ print(json.dumps({
         metadata.setdefault("reports", {})["final_classes_geojson"] = str(geojson_path)
         if shapefile_metadata:
             metadata["reports"]["final_classes_shapefile_zip"] = str(shapefile_zip_path)
+
+    def _component_classifier_for(self, run_dir: Path) -> Any:
+        # Learned per-component ordinary/fine classifier (component_grade_model).
+        # None -> analyze_components falls back to the shape rule.
+        if self.component_model_path is None:
+            return None
+        if self._component_grade_model is None:
+            from ore_classifier.component_grade_model import ComponentGradeModel
+
+            self._component_grade_model = ComponentGradeModel.load(self.component_model_path)
+        image_name = None
+        try:
+            metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            raw = (metadata.get("input") or {}).get("original_name") or (metadata.get("input") or {}).get("original_artifact_path")
+            image_name = Path(raw).name if raw else None
+        except Exception:  # noqa: BLE001 - magnification hint only
+            image_name = None
+        return self._component_grade_model.labeler(image_name)
 
     def _maybe_predict_grade(self, run_dir: Path, runtime: dict[str, Any] | None = None) -> dict[str, Any] | None:
         # Optional parallel learned grade opinion (efficientnet_b3, ordinary vs fine).
@@ -7221,6 +7246,11 @@ def main() -> int:
         default=DEFAULT_GRADE_CHECKPOINT if DEFAULT_GRADE_CHECKPOINT.exists() else None,
         help="Grade-classifier CNN checkpoint (efficientnet_b3). Adds a parallel learned ordinary/fine grade opinion to each run.",
     )
+    parser.add_argument(
+        "--component-model",
+        default=str(DEFAULT_COMPONENT_MODEL) if DEFAULT_COMPONENT_MODEL.exists() else None,
+        help="Learned per-component grade classifier (model.joblib) replacing the ordinary/fine shape rule. Pass 'none' to force the rule.",
+    )
     parser.add_argument("--processing-max-side", type=int, default=2600)
     parser.add_argument("--panorama-max-side", type=int, default=1800)
     parser.add_argument("--preview-max-sides", default="1024,2048,4096")
@@ -7238,6 +7268,7 @@ def main() -> int:
         talc_threshold=args.talc_threshold,
         grain_backend=args.grain_backend,
         grade_checkpoint=args.grade_checkpoint,
+        component_model=None if (args.component_model in (None, "", "none", "rule")) else Path(args.component_model),
     )
     server = OrePipelineHTTPServer((args.host, args.port), store)
     host, port = server.server_address[:2]
