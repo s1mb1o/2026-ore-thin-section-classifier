@@ -72,7 +72,10 @@ class TalcZoneConfig:
     proximity_radius: int = 25           # bridge flakes within this radius into a zone
     zone_min_flake_frac: float = 0.0003  # a zone needs at least this much flake area
     zone_min_flake_fill: float = 0.05    # and flakes must be >=5% of the bridged region
-    classify_threshold: float = 0.50     # talcose if zone_fraction > this
+    # talcose if zone_fraction > this. Calibrated for the MODEL (SegFormer-B2)
+    # ore mask (best accuracy 89% on the 82 set). For the brightness FALLBACK ore
+    # mask use ~0.50 (the fallback shifts fractions up); pass an override then.
+    classify_threshold: float = 0.37
 
 
 @dataclass
