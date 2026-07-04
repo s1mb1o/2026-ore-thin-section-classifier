@@ -100,6 +100,75 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertTrue(settings["preprocess"]["contrast_correction"])
         self.assertTrue(settings["preprocess"]["panorama_scaling"])
 
+    def test_describe_decode_bomb_flags_bombs_but_not_real_images(self) -> None:
+        describe = ore_pipeline_web.describe_decode_bomb
+        # The demonstrated bomb: tiny file, thousands of megapixels.
+        self.assertIsNotNone(describe(46000, 46000, "RGB", 6_170_050))
+        # Largest real dataset image (26 MP, 13 MB) and a highly-compressed real one.
+        self.assertIsNone(describe(6240, 4160, "RGB", 13_000_000))
+        self.assertIsNone(describe(6240, 3895, "RGB", 1_090_000))
+        # Tiny solid image has a high ratio but a trivial decoded footprint.
+        self.assertIsNone(describe(100, 100, "RGB", 1_000))
+        # Megapixel-limit boundary.
+        self.assertIsNone(describe(20000, 9950, "RGB", 5_000_000))
+        self.assertIsNotNone(describe(20000, 10050, "RGB", 5_000_000))
+        # Sub-limit dimensions but an extreme expansion ratio on a large raster.
+        self.assertIsNotNone(describe(14000, 14000, "RGB", 1_000_000))
+        # Malformed header values are ignored (no false positive / crash).
+        self.assertIsNone(describe(0, 0, "RGB", 10))
+        self.assertIsNone(describe("bad", 100, "RGB", 10))
+
+    def test_detect_decode_bomb_setting_defaults_on_and_round_trips(self) -> None:
+        self.assertTrue(self.store.app_settings()["detect_decode_bomb"])
+        self.assertTrue(self.store.detect_decode_bomb_enabled())
+        saved = self.store.save_app_settings({"detect_decode_bomb": False})
+        self.assertFalse(saved["detect_decode_bomb"])
+        self.assertFalse(self.store.app_settings()["detect_decode_bomb"])
+        self.assertFalse(self.store.detect_decode_bomb_enabled())
+        # Public settings expose the flag too (used by the UI form).
+        self.assertFalse(self.store.public_app_settings()["detect_decode_bomb"])
+
+    def _header_only_png_bytes(self, width: int, height: int) -> bytes:
+        """A PNG whose IHDR declares width x height but carries no full raster.
+
+        Image.open(...).size/.mode read only the header, so the decode-bomb check
+        (which runs before any full decode) can be exercised without allocating a
+        multi-gigabyte raster in the test.
+        """
+        import struct
+        import zlib
+
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+        ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit RGB
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(b"\x00")) + chunk(b"IEND", b"")
+
+    def test_upload_rejects_decode_bomb_when_enabled(self) -> None:
+        bomb = self._header_only_png_bytes(46000, 46000)
+        with self.assertRaises(ApiError) as ctx:
+            self.store.register_upload_from_bytes(bomb, "bomb.png")
+        self.assertEqual(ctx.exception.code, "decode_bomb")
+        self.assertEqual(ctx.exception.status, int(HTTPStatus.REQUEST_ENTITY_TOO_LARGE))
+
+    def test_upload_skips_decode_bomb_check_when_disabled(self) -> None:
+        self.store.save_app_settings({"detect_decode_bomb": False})
+        bomb = self._header_only_png_bytes(46000, 46000)
+        # With the guard off the upload proceeds past the dimension check to decoding.
+        # Stub the decode so the test does not actually allocate the multi-GB raster
+        # (which is exactly the DoS this guard exists to prevent); we only need to
+        # prove the guard was bypassed. Dimensions still come from the real header.
+        with mock.patch.object(ore_pipeline_web, "load_image_pil", return_value=Image.new("RGB", (128, 128))):
+            result = self.store.register_upload_from_bytes(bomb, "bomb.png")
+        self.assertEqual(result["width"], 46000)
+        self.assertEqual(result["height"], 46000)
+
+    def test_settings_page_exposes_decode_bomb_toggle(self) -> None:
+        html = render_html_page()
+        self.assertIn('id="settingsDetectDecodeBomb"', html)
+        self.assertIn("settingsDetectDecodeBomb", html)
+        self.assertIn("uploadDecodeBomb", html)
+
     def test_run_and_upload_ids_reject_path_traversal(self) -> None:
         escaped_run_dir = self.store.workspace_dir / "escaped_run"
         escaped_run_dir.mkdir(parents=True)

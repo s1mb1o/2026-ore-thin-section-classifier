@@ -88,6 +88,15 @@ DEFAULT_GRADE_CHECKPOINT = ROOT / "models/grade_classifier/effb3_ordfine_ppaug_2
 DEFAULT_GRAIN_BACKEND = "heuristic"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 220 * 1024 * 1024
+# Decode-bomb heuristics. A small compressed file can decode to a huge in-memory
+# raster (a crafted solid-colour PNG reaches thousands of megapixels at >1000x
+# expansion), which is a cheap OOM/DoS against the upload path. Both signals below
+# are read from the image header *before* any full-resolution decode. Thresholds are
+# grounded in the real dataset, whose largest image is ~26 MP with expansion ratios
+# up to ~93x, so these leave generous headroom for legitimate thin sections.
+DECODE_BOMB_MAX_MEGAPIXELS = 200
+DECODE_BOMB_MAX_EXPANSION_RATIO = 300
+DECODE_BOMB_RATIO_MIN_DECODED_MB = 512
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 LOG_ENTRY_LIMIT = 300
 STATUS_LOG_LIMIT = 80
@@ -182,6 +191,7 @@ DEFAULT_APP_SETTINGS = {
     "language": "ru",
     "theme": "system",
     "show_tiling": False,
+    "detect_decode_bomb": True,
     "runtime": {
         "backend": DEFAULT_SULFIDE_BACKEND,
         "checkpoint": str(DEFAULT_CHECKPOINT.resolve()) if DEFAULT_CHECKPOINT.exists() else "",
@@ -217,10 +227,11 @@ SETTINGS_METADATA_DEFAULT_FIELDS = {
 
 
 class ApiError(RuntimeError):
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, code: str | None = None) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
+        self.code = code
 
 
 class RunCancelled(RuntimeError):
@@ -318,6 +329,42 @@ def load_image_pil(path: Path, max_side: int | None = None) -> Image.Image:
             return image.convert("RGB")
     except Exception as exc:  # noqa: BLE001 - report unsupported image to the UI.
         raise ApiError(HTTPStatus.BAD_REQUEST, f"failed to decode image: {exc}") from exc
+
+
+_MODE_BYTES_PER_PIXEL = {
+    "1": 1, "L": 1, "P": 1, "LA": 2, "La": 2, "I;16": 2, "I;16B": 2,
+    "I": 4, "F": 4, "RGB": 3, "YCbCr": 3, "HSV": 3, "RGBA": 4, "RGBa": 4,
+    "RGBX": 4, "CMYK": 4,
+}
+
+
+def describe_decode_bomb(width: Any, height: Any, mode: str, file_size: int) -> str | None:
+    """Return a short reason if the (header-declared) image looks like a decode bomb.
+
+    Uses only header-derived values (dimensions, colour mode, compressed file size),
+    so it runs before any full-resolution decode. Returns ``None`` when the image is
+    within limits. See ``DECODE_BOMB_*`` constants for the thresholds and rationale.
+    """
+    try:
+        w = int(width)
+        h = int(height)
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    megapixels = (w * h) / 1_000_000
+    if megapixels > DECODE_BOMB_MAX_MEGAPIXELS:
+        return f"{w}x{h} px (~{megapixels:.0f} MP) exceeds the {DECODE_BOMB_MAX_MEGAPIXELS} MP limit"
+    bytes_per_pixel = _MODE_BYTES_PER_PIXEL.get(str(mode), 3)
+    decoded_bytes = w * h * bytes_per_pixel
+    if int(file_size) > 0 and decoded_bytes >= DECODE_BOMB_RATIO_MIN_DECODED_MB * 1024 * 1024:
+        ratio = decoded_bytes / int(file_size)
+        if ratio > DECODE_BOMB_MAX_EXPANSION_RATIO:
+            return (
+                f"decoded size ~{decoded_bytes / 1e9:.1f} GB is {ratio:.0f}x the "
+                f"{int(file_size) / 1e6:.1f} MB file"
+            )
+    return None
 
 
 def image_dimensions(path: Path) -> tuple[int, int]:
@@ -721,7 +768,7 @@ def normalize_app_settings_payload(
         raise ApiError(HTTPStatus.BAD_REQUEST, "settings must be an object")
     fallback = default_app_settings()
     if isinstance(base, dict):
-        fallback.update({key: base[key] for key in ("language", "theme", "show_tiling") if key in base})
+        fallback.update({key: base[key] for key in ("language", "theme", "show_tiling", "detect_decode_bomb") if key in base})
         if isinstance(base.get("runtime"), dict):
             fallback["runtime"] = normalize_settings_runtime(base["runtime"])
         if isinstance(base.get("preprocess"), dict):
@@ -752,6 +799,7 @@ def normalize_app_settings_payload(
         "language": language,
         "theme": theme,
         "show_tiling": bool(payload.get("show_tiling", fallback["show_tiling"])),
+        "detect_decode_bomb": bool(payload.get("detect_decode_bomb", fallback["detect_decode_bomb"])),
         "runtime": normalize_settings_runtime(
             payload.get("runtime", fallback["runtime"]),
             fallback["runtime"],
@@ -2144,6 +2192,21 @@ class OrePipelineStore:
         sha1: str | None = None,
     ) -> dict[str, Any]:
         width, height = image_dimensions(original_path)
+        if self.detect_decode_bomb_enabled():
+            file_size = original_path.stat().st_size
+            mode = "RGB"
+            if original_path.suffix.lower() not in RAW_EXTENSIONS:
+                try:
+                    with Image.open(original_path) as header:
+                        mode = header.mode
+                except Exception:  # noqa: BLE001 - fall back to an RGB byte estimate.
+                    mode = "RGB"
+            reason = describe_decode_bomb(width, height, mode, file_size)
+            if reason:
+                self.record_system_event(
+                    "warning", "upload rejected as decode bomb", name=original_name, reason=reason
+                )
+                raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, reason, code="decode_bomb")
         preview_dir = upload_dir / "display/original"
         previews = save_preview_pyramid(
             load_image_pil(original_path, max_side=max(self.preview_max_sides)),
@@ -2851,6 +2914,9 @@ class OrePipelineStore:
 
     def public_app_settings(self) -> dict[str, Any]:
         return public_app_settings(self.app_settings())
+
+    def detect_decode_bomb_enabled(self) -> bool:
+        return bool(self.app_settings().get("detect_decode_bomb", True))
 
     def auth_enabled(self) -> bool:
         return bool(self.app_settings().get("auth", {}).get("password_enabled"))
@@ -6609,6 +6675,13 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         )
         self.log_message('"%s" %s %s', getattr(self, "requestline", ""), str(code), str(size))
 
+    def _send_api_error(self, exc: ApiError) -> None:
+        self._record_handler_error(exc, exc.status)
+        body: dict[str, Any] = {"error": exc.message}
+        if exc.code:
+            body["code"] = exc.code
+        self.send_json(body, status=exc.status)
+
     def _record_handler_error(self, exc: Exception, status: int) -> None:
         parsed = urllib.parse.urlparse(getattr(self, "path", ""))
         self.server.store.record_system_event(
@@ -6675,8 +6748,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         try:
             self._handle_get()
         except ApiError as exc:
-            self._record_handler_error(exc, exc.status)
-            self.send_json({"error": exc.message}, status=exc.status)
+            self._send_api_error(exc)
         except Exception as exc:  # noqa: BLE001 - keep local app alive.
             self._record_handler_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -6685,8 +6757,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         try:
             self._handle_post()
         except ApiError as exc:
-            self._record_handler_error(exc, exc.status)
-            self.send_json({"error": exc.message}, status=exc.status)
+            self._send_api_error(exc)
         except Exception as exc:  # noqa: BLE001 - keep local app alive.
             self._record_handler_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -6695,8 +6766,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         try:
             self._handle_put()
         except ApiError as exc:
-            self._record_handler_error(exc, exc.status)
-            self.send_json({"error": exc.message}, status=exc.status)
+            self._send_api_error(exc)
         except Exception as exc:  # noqa: BLE001 - keep local app alive.
             self._record_handler_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -6705,8 +6775,7 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         try:
             self._handle_delete()
         except ApiError as exc:
-            self._record_handler_error(exc, exc.status)
-            self.send_json({"error": exc.message}, status=exc.status)
+            self._send_api_error(exc)
         except Exception as exc:  # noqa: BLE001 - keep local app alive.
             self._record_handler_error(exc, HTTPStatus.INTERNAL_SERVER_ERROR)
             self.send_json({"error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)

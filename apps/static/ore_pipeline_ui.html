@@ -737,6 +737,8 @@
               <label class="settings-field full"><span data-i18n="settingsPassword">Пароль</span><input id="settingsPassword" type="password" autocomplete="new-password"></label>
               <label class="check settings-field"><input type="checkbox" id="settingsClearPassword"> <span data-i18n="settingsClearPassword">убрать пароль</span></label>
               <div class="settings-field full"><span id="settingsPasswordState" class="muted"></span></div>
+              <label class="check settings-field full"><input type="checkbox" id="settingsDetectDecodeBomb"> <span data-i18n="settingsDetectDecodeBomb">Обнаруживать «декомпрессионные бомбы» в изображениях</span></label>
+              <div class="settings-field full"><span class="muted" data-i18n="settingsDetectDecodeBombHint">Отклоняет подозрительно большие изображения до декодирования, защищая сервис от исчерпания памяти.</span></div>
             </div>
           </div>
           <div class="panel">
@@ -1328,6 +1330,7 @@
       language: DEFAULT_LANGUAGE,
       theme: 'system',
       show_tiling: false,
+      detect_decode_bomb: true,
       runtime: {
         backend: 'ml',
         checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt',
@@ -1666,6 +1669,7 @@
           language: 'ru',
           theme: 'system',
           show_tiling: false,
+          detect_decode_bomb: true,
           runtime: {backend: 'heuristic', checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt'},
           preprocess: {...DEFAULT_PREPROCESS_PRESET},
           metadata_defaults: {}
@@ -1766,6 +1770,8 @@
         settingsShowTilingDefault: 'показывать тайлы по умолчанию',
         settingsSecurity: 'Безопасность',
         settingsSecurityIntro: 'Если пароль задан, доступ к интерфейсу и API потребует входа.',
+        settingsDetectDecodeBomb: 'Обнаруживать «декомпрессионные бомбы» в изображениях',
+        settingsDetectDecodeBombHint: 'Отклоняет подозрительно большие изображения до декодирования, защищая сервис от исчерпания памяти.',
         settingsPassword: 'Пароль',
         settingsClearPassword: 'убрать пароль',
         settingsPasswordEnabled: 'Пароль задан. Оставьте поле пустым, чтобы не менять его.',
@@ -1941,6 +1947,7 @@
         cancel: 'Отмена',
         invalidImageFormat: 'Неподдерживаемый формат файла: {name}. Поддерживаются PNG, JPEG, TIFF, RAW.',
         uploadFailed: 'Не удалось загрузить файл: {error}',
+        uploadDecodeBomb: 'Файл отклонён как возможная «декомпрессионная бомба» ({error}). Если это настоящее изображение, отключите проверку в Настройках → Безопасность.',
         uploadProgressUploading: 'Загрузка файла: {progress}%',
         uploadProgressPreparing: 'Подготовка предпросмотра: {progress}%',
         uploadProgressComplete: 'Предпросмотр готов.',
@@ -2330,6 +2337,8 @@
         settingsShowTilingDefault: 'show tiling by default',
         settingsSecurity: 'Security',
         settingsSecurityIntro: 'If a password is set, opening the UI and API requires login.',
+        settingsDetectDecodeBomb: 'Detect image decode bombs',
+        settingsDetectDecodeBombHint: 'Rejects suspiciously large images before decoding to protect the service from memory exhaustion.',
         settingsPassword: 'Password',
         settingsClearPassword: 'remove password',
         settingsPasswordEnabled: 'Password is set. Leave the field empty to keep it unchanged.',
@@ -2505,6 +2514,7 @@
         cancel: 'Cancel',
         invalidImageFormat: 'Unsupported file format: {name}. Supported formats: PNG, JPEG, TIFF, RAW.',
         uploadFailed: 'Could not upload file: {error}',
+        uploadDecodeBomb: 'File rejected as a possible decode bomb ({error}). If this is a genuine image, disable the check in Settings → Security.',
         uploadProgressUploading: 'Uploading file: {progress}%',
         uploadProgressPreparing: 'Preparing preview: {progress}%',
         uploadProgressComplete: 'Preview is ready.',
@@ -3492,6 +3502,7 @@
         language,
         theme,
         show_tiling: Boolean(values.show_tiling),
+        detect_decode_bomb: values.detect_decode_bomb !== false,
         runtime: normalizedRuntimeSettings(values.runtime || {}, DEFAULT_APP_SETTINGS.runtime),
         preprocess: normalizedPreprocessPreset(values.preprocess || {}, DEFAULT_APP_SETTINGS.preprocess),
         talc_clusterization: normalizedTalcClusterization(values.talc_clusterization || {}, DEFAULT_APP_SETTINGS.talc_clusterization),
@@ -3505,6 +3516,7 @@
         language: storedLanguageChoice(),
         theme: storedThemeChoice(),
         show_tiling: false,
+        detect_decode_bomb: true,
         runtime: state.systemStatus && state.systemStatus.app
           ? {
               backend: state.systemStatus.app.backend,
@@ -3764,6 +3776,7 @@
       $('settingsLanguage').value = normalized.language;
       $('settingsTheme').value = normalized.theme;
       $('settingsShowTiling').checked = normalized.show_tiling;
+      if ($('settingsDetectDecodeBomb')) $('settingsDetectDecodeBomb').checked = normalized.detect_decode_bomb;
       $('settingsPassword').value = '';
       $('settingsClearPassword').checked = false;
       $('settingsPasswordState').textContent = t(normalized.auth.password_enabled ? 'settingsPasswordEnabled' : 'settingsPasswordDisabled');
@@ -3814,6 +3827,7 @@
         language: $('settingsLanguage').value,
         theme: $('settingsTheme').value,
         show_tiling: $('settingsShowTiling').checked,
+        detect_decode_bomb: $('settingsDetectDecodeBomb') ? $('settingsDetectDecodeBomb').checked : true,
         runtime: {
           backend: $('settingsBackend').value,
           checkpoint: $('settingsCheckpoint').value.trim(),
@@ -5146,7 +5160,9 @@
             return;
           }
           if (xhr.status < 200 || xhr.status >= 300) {
-            reject(new Error(payload.error || 'upload failed'));
+            const uploadError = new Error(payload.error || 'upload failed');
+            uploadError.code = payload.code || null;
+            reject(uploadError);
             return;
           }
           resolve(payload);
@@ -5156,6 +5172,12 @@
         xhr.open('POST', '/api/uploads');
         xhr.send(body);
       });
+    }
+    function showUploadError(error) {
+      const message = error && error.message ? error.message : t('unknownError');
+      const key = error && error.code === 'decode_bomb' ? 'uploadDecodeBomb' : 'uploadFailed';
+      setUploadWarning(key, {error: message});
+      setStatus('statusFailed', {error: message});
     }
     function handleSelectedFile(file) {
       if (!file) return;
@@ -5167,9 +5189,7 @@
         return;
       }
       uploadFile(file).catch(error => {
-        const message = error && error.message ? error.message : t('unknownError');
-        setUploadWarning('uploadFailed', {error: message});
-        setStatus('statusFailed', {error: message});
+        showUploadError(error);
       });
     }
     function renderUploadCard(upload) {
@@ -5670,7 +5690,11 @@
       body.append('file', file);
       const response = await fetch('/api/uploads', {method: 'POST', body});
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'upload failed');
+      if (!response.ok) {
+        const uploadError = new Error(payload.error || 'upload failed');
+        uploadError.code = payload.code || null;
+        throw uploadError;
+      }
       return payload;
     }
     async function addBatchFiles(files) {
@@ -5860,9 +5884,7 @@
       } catch (error) {
         clearUploadProgress();
         setProgress(0);
-        const message = error && error.message ? error.message : t('unknownError');
-        setUploadWarning('uploadFailed', {error: message});
-        setStatus('statusFailed', {error: message});
+        showUploadError(error);
       } finally {
         if (button) button.disabled = false;
       }
