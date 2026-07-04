@@ -1,0 +1,10 @@
+# Test-only dependencies (not required to run the apps or ML pipeline).
+#
+# Install with:  pip install -r requirements-dev.txt
+# Then install the browser once: python -m playwright install chromium
+#
+# pytest runs the whole tests/ suite. The in-browser UI smoke tests under
+# tests/browser/ need Playwright + a Chromium build; they SKIP automatically
+# (never error) when Playwright or its browser is missing.
+pytest
+playwright

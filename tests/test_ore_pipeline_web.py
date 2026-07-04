@@ -8,6 +8,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -46,9 +47,12 @@ def mask_data_url(mask: np.ndarray) -> str:
 
 class OrePipelineWebTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.root = ROOT / "outputs/test_ore_pipeline_web"
-        shutil.rmtree(self.root, ignore_errors=True)
-        self.root.mkdir(parents=True, exist_ok=True)
+        # Each test gets its own isolated workspace. A previous test's async run
+        # job runs on a daemon thread that can outlive the test; a shared fixed
+        # workspace let that thread litter run artifacts into the next test's
+        # store, causing order-dependent flakiness. A unique per-test directory
+        # keeps every store's runs/uploads/batches private.
+        self.root = Path(tempfile.mkdtemp(prefix="test_ore_pipeline_web_"))
         self.image_path = self.root / "sample.png"
         rgb = np.full((120, 160, 3), (54, 62, 52), dtype=np.uint8)
         cv2.circle(rgb, (44, 46), 18, (226, 225, 212), -1)
@@ -70,6 +74,9 @@ class OrePipelineWebTest(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        # The workspace is unique per test, so a leaked async worker from this
+        # test can only touch its own (soon-discarded) directory; ignore_errors
+        # keeps a live write from failing the cleanup.
         shutil.rmtree(self.root, ignore_errors=True)
 
     def test_pdf_report_wraps_long_russian_conclusion_text(self) -> None:
@@ -1548,8 +1555,13 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("function runCanBePreparedFromApply(run)", html)
         self.assertIn("function clearResultsPanel()", html)
         self.assertIn("function clearRunResultsForStart(preparedRun = null)", html)
-        self.assertIn("const preparedRun = runIsPrepared(state.run) ? state.run : null;", html)
+        self.assertIn("let preparedRun = runIsPrepared(state.run) ? state.run : null;", html)
         self.assertLess(html.index("clearRunResultsForStart(preparedRun);"), html.index("const response = await fetch(startUrl"))
+        # Start must always apply the current controls: a prepared run whose Apply-time
+        # settings drifted is re-prepared in place before starting (see spec
+        # ore-pipeline-apply-prepared-run-v0.1.md).
+        self.assertIn("function preparedRunSettingsAreStale(run)", html)
+        self.assertIn("preparedRunSettingsAreStale(preparedRun)", html)
         self.assertIn("/prepare", html)
         self.assertIn("/start", html)
         self.assertIn("changed_step: changedStep", html)
