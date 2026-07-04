@@ -38,6 +38,7 @@ from ore_classifier.model_io import (
     load_binary_segmentation_checkpoint,
     resolve_device,
 )
+from ore_classifier.pseudo_labels import brightness_sulfide_pseudo_mask
 from ore_classifier.rule_config_io import default_rule_config
 from ore_classifier.talc_candidate import (
     TalcCandidateConfig,
@@ -93,29 +94,42 @@ class ResidentSulfidePipeline:
         width, height = image.size
         tiles = iter_tiles(width=width, height=height, tile_size=self.tile_size, stride=self.stride)
 
-        # Accumulate full-resolution probabilities on disk-backed memmaps (mirrors
-        # scripts/infer_binary_sulfide.py). Two in-RAM float32 HxW buffers OOM the
-        # long-lived resident process on large panoramas (up to ~27025x21227 px).
-        with tempfile.TemporaryDirectory(prefix="resident_infer_", dir=str(out_dir)) as tmp:
-            prob_sum = np.memmap(Path(tmp) / "prob_sum.dat", mode="w+", dtype=np.float32, shape=(height, width))
-            weight_sum = np.memmap(Path(tmp) / "weight_sum.dat", mode="w+", dtype=np.float32, shape=(height, width))
-            processed = 0
-            with torch.no_grad():
-                for batch_tiles in _batched(tiles, self.batch_size):
-                    tensor = torch.stack([_preprocess_tile(image, tile) for tile in batch_tiles]).to(self.device)
-                    logits = forward_logits(self.model, tensor, (self.tile_size, self.tile_size))
-                    probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy().astype(np.float32)
-                    for tile, prob in zip(batch_tiles, probs, strict=True):
-                        valid_h = min(tile.height, height - tile.y)
-                        valid_w = min(tile.width, width - tile.x)
-                        tile_weight_valid = self._weight[:valid_h, :valid_w]
-                        y_slice = slice(tile.y, tile.y + valid_h)
-                        x_slice = slice(tile.x, tile.x + valid_w)
-                        prob_sum[y_slice, x_slice] += prob[:valid_h, :valid_w] * tile_weight_valid
-                        weight_sum[y_slice, x_slice] += tile_weight_valid
-                        processed += 1
+        # Tiled probability accumulation with graceful degradation (plan 39 F2/F3):
+        # OOM -> shrink batch and retry (memmap accumulators keep this off-RAM); a hard
+        # model failure -> brightness-heuristic fallback. Every degradation is recorded
+        # on this run so the result is never silently presented as nominal.
+        degradations: list[dict[str, Any]] = []
 
-            prob = np.asarray(prob_sum / np.maximum(weight_sum, 1e-6), dtype=np.float32)
+        def _model_forward(batch_tiles: list[Tile]) -> np.ndarray:
+            tensor = torch.stack([_preprocess_tile(image, tile) for tile in batch_tiles]).to(self.device)
+            logits = forward_logits(self.model, tensor, (self.tile_size, self.tile_size))
+            return torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy().astype(np.float32)
+
+        try:
+            prob, processed, effective_batch, oom_degradations = _accumulate_prob_map(
+                forward_fn=_model_forward,
+                tiles=tiles,
+                weight=self._weight,
+                width=width,
+                height=height,
+                batch_size=self.batch_size,
+                out_dir=out_dir,
+            )
+            degradations.extend(oom_degradations)
+            backend = "model_oom_shrunk" if oom_degradations else "model"
+        except Exception as exc:  # noqa: BLE001 - degrade to a heuristic rather than losing the run
+            _release_device_cache()
+            prob = brightness_sulfide_pseudo_mask(np.asarray(image, dtype=np.uint8)).mask.astype(np.float32)
+            processed = 0
+            effective_batch = 0
+            backend = "heuristic_fallback"
+            degradations.append(
+                {
+                    "code": "model_fallback_heuristic",
+                    "detail": f"sulfide model inference failed ({type(exc).__name__}: {exc}); used brightness heuristic",
+                    "severity": "error",
+                }
+            )
         confidence = np.clip(prob * 255.0, 0, 255).astype(np.uint8)
         mask = (prob >= self.threshold).astype(np.uint8) * 255
         analyzed_mask = build_analyzed_mask(np.asarray(image, dtype=np.uint8))
@@ -143,6 +157,10 @@ class ResidentSulfidePipeline:
             "stride": self.stride,
             "tiles": len(tiles),
             "tiles_processed": processed,
+            "backend": backend,
+            "batch_size_effective": effective_batch,
+            "result_quality": "degraded" if degradations else "nominal",
+            "degradations": degradations,
             "threshold": self.threshold,
             "device": str(self.device),
             "seconds": round(time.time() - started, 3),
@@ -298,32 +316,45 @@ class ResidentSulfidePipeline:
 
         image = Image.open(image_path).convert("RGB")
         image_arr = np.asarray(image, dtype=np.uint8)
-        self.infer_sulfide(image, inference_dir, image_path=image_path)
+        sulfide_summary = self.infer_sulfide(image, inference_dir, image_path=image_path)
+        run_degradations: list[dict[str, Any]] = list(sulfide_summary.get("degradations", []))
 
         sulfide_arr = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L"))
         talc_mask_path: Path | None = None
         talc_paths: dict[str, str] = {}
         talc_summary: dict[str, Any] = {}
         talc_source = "none"
+        talc_model_failed = False
         if self.talc_model is not None:
-            talc_summary = self.infer_talc(
-                image=image,
-                sulfide_mask=sulfide_arr,
-                out_dir=talc_model_dir,
-                image_path=image_path,
-            )
-            talc_summary_paths = talc_summary.get("paths") if isinstance(talc_summary.get("paths"), dict) else {}
-            talc_mask_path = Path(str(talc_summary_paths.get("talc_mask") or talc_model_dir / "talc_mask.png"))
-            talc_paths = {
-                "talc_model_summary": str(talc_model_dir / "summary.json"),
-                "talc_model_overlay_preview": str(talc_summary_paths.get("overlay_preview") or talc_model_dir / "overlay_preview.jpg"),
-                "talc_model_confidence": str(talc_summary_paths.get("confidence") or talc_model_dir / "confidence.png"),
-                "talc_model_confidence_non_sulfide": str(
-                    talc_summary_paths.get("confidence_non_sulfide") or talc_model_dir / "confidence_non_sulfide.png"
-                ),
-            }
-            talc_source = "ml_model"
-        elif auto_talc_candidate:
+            try:
+                talc_summary = self.infer_talc(
+                    image=image,
+                    sulfide_mask=sulfide_arr,
+                    out_dir=talc_model_dir,
+                    image_path=image_path,
+                )
+                talc_summary_paths = talc_summary.get("paths") if isinstance(talc_summary.get("paths"), dict) else {}
+                talc_mask_path = Path(str(talc_summary_paths.get("talc_mask") or talc_model_dir / "talc_mask.png"))
+                talc_paths = {
+                    "talc_model_summary": str(talc_model_dir / "summary.json"),
+                    "talc_model_overlay_preview": str(talc_summary_paths.get("overlay_preview") or talc_model_dir / "overlay_preview.jpg"),
+                    "talc_model_confidence": str(talc_summary_paths.get("confidence") or talc_model_dir / "confidence.png"),
+                    "talc_model_confidence_non_sulfide": str(
+                        talc_summary_paths.get("confidence_non_sulfide") or talc_model_dir / "confidence_non_sulfide.png"
+                    ),
+                }
+                talc_source = "ml_model"
+            except Exception as exc:  # noqa: BLE001 - degrade to heuristic candidate, don't lose the run
+                _release_device_cache()
+                talc_model_failed = True
+                run_degradations.append(
+                    {
+                        "code": "model_fallback_heuristic",
+                        "detail": f"talc model inference failed ({type(exc).__name__}: {exc}); used heuristic talc candidate",
+                        "severity": "error",
+                    }
+                )
+        if talc_source == "none" and (auto_talc_candidate or talc_model_failed):
             cfg = TalcCandidateConfig(min_area_px=talc_min_area_px)
             talc_arr = estimate_talc_candidate_mask(image_arr, sulfide_mask=sulfide_arr, config=cfg)
             talc_paths = save_talc_candidate_outputs(
@@ -397,6 +428,82 @@ class ResidentSulfidePipeline:
             json.dumps(pipeline_summary, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8"
         )
         return pipeline_summary
+
+
+def _is_oom_error(exc: BaseException) -> bool:
+    """True for GPU/host out-of-memory errors recoverable by shrinking the batch."""
+    if isinstance(exc, MemoryError):
+        return True
+    cuda_oom = getattr(torch.cuda, "OutOfMemoryError", None)
+    if cuda_oom is not None and isinstance(exc, cuda_oom):
+        return True
+    return isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+
+def _release_device_cache() -> None:
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - cache release is best-effort
+        pass
+
+
+def _accumulate_prob_map(
+    *,
+    forward_fn,
+    tiles: list[Tile],
+    weight: np.ndarray,
+    width: int,
+    height: int,
+    batch_size: int,
+    out_dir: Path,
+    oom_max_retries: int = 2,
+) -> tuple[np.ndarray, int, int, list[dict[str, Any]]]:
+    """Weighted tiled probability accumulation on disk-backed memmaps.
+
+    ``forward_fn(batch_tiles)`` returns a ``[B, tile, tile]`` float32 array of
+    positive-class probabilities. On out-of-memory the batch size is halved (after
+    releasing the device cache) and the whole map is recomputed, recording an
+    ``oom_batch_shrunk`` degradation each time. Returns ``(prob_map, tiles_processed,
+    effective_batch_size, degradations)``. Non-OOM errors, and OOM that survives
+    ``batch_size == 1``, propagate to the caller (which decides on a fallback).
+    """
+    degradations: list[dict[str, Any]] = []
+    attempt_batch = max(1, int(batch_size))
+    while True:
+        try:
+            with tempfile.TemporaryDirectory(prefix="resident_infer_", dir=str(out_dir)) as tmp:
+                prob_sum = np.memmap(Path(tmp) / "prob_sum.dat", mode="w+", dtype=np.float32, shape=(height, width))
+                weight_sum = np.memmap(Path(tmp) / "weight_sum.dat", mode="w+", dtype=np.float32, shape=(height, width))
+                processed = 0
+                with torch.no_grad():
+                    for batch_tiles in _batched(tiles, attempt_batch):
+                        probs = forward_fn(batch_tiles)
+                        for tile, prob in zip(batch_tiles, probs, strict=True):
+                            valid_h = min(tile.height, height - tile.y)
+                            valid_w = min(tile.width, width - tile.x)
+                            tile_weight_valid = weight[:valid_h, :valid_w]
+                            y_slice = slice(tile.y, tile.y + valid_h)
+                            x_slice = slice(tile.x, tile.x + valid_w)
+                            prob_sum[y_slice, x_slice] += prob[:valid_h, :valid_w] * tile_weight_valid
+                            weight_sum[y_slice, x_slice] += tile_weight_valid
+                            processed += 1
+                prob = np.asarray(prob_sum / np.maximum(weight_sum, 1e-6), dtype=np.float32)
+            return prob, processed, attempt_batch, degradations
+        except Exception as exc:  # noqa: BLE001 - classify OOM (retry) vs fatal (propagate)
+            if _is_oom_error(exc) and attempt_batch > 1 and len(degradations) < oom_max_retries:
+                _release_device_cache()
+                new_batch = max(1, attempt_batch // 2)
+                degradations.append(
+                    {
+                        "code": "oom_batch_shrunk",
+                        "detail": f"out-of-memory at batch_size={attempt_batch}; retrying at {new_batch}",
+                        "severity": "warning",
+                    }
+                )
+                attempt_batch = new_batch
+                continue
+            raise
 
 
 def _preprocess_tile(image: Image.Image, tile: Tile) -> torch.Tensor:
