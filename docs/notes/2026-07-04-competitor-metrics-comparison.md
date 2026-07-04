@@ -40,17 +40,23 @@ classifier and we ship interpretable segmentation + rules.
 | **Ours (rule pipeline)** | seg masks → deterministic geological rules | 345, deconflicted (sha256 conflict+dup excl.) | **0.185** | row 0.168 / fine 0.387 / talc **0.000** |
 | **Ours (feature CV)** | ExtraTrees 5-fold over pipeline features | 345, deconflicted | **0.747** | row 0.719 / fine 0.722 / talc 0.800 |
 | **Ours (path B grains, bootstrap)** | grain classifier → area-weighted fine-fraction ⊕ talc, leak-free grouped CV | 345, deconflicted | **0.190** | row 0.086 / fine 0.483 / talc **0.000** |
+| **Ours (path B grains + trained-talc, bootstrap)** | as above but talcose from the trained B0 talc model (`--talc-checkpoint`) | 345, deconflicted (3-class) | **0.513** | row 0.143 / fine 0.575 / talc **0.821** |
 | **Ours (path A CNN, ordinary/fine only)** ⭐ | `efficientnet_b3` @384, class-weighted CE, cosine+warmup; eval split held out of training | 230 held-out ord/fine of the 345 | **0.930** (2-class) | ord **0.933** / fine **0.927** / talc — deferred |
+| **Ours (path A CNN, preprocessing-aware)** ⭐ | + UI preprocessing folded into train-time aug (p=0.5); preferred checkpoint | 230 held-out ord/fine of the 345 | **0.939** (2-class) | ord **0.941** / fine **0.937** / talc — deferred |
 | A (nail) | `efficientnet_b3` @384, supervised | 218, grouped-by-аншлиф + dedup | **0.880** | ord 0.91 / refr 0.90 / talc 0.83 |
 | A (nail) 4-class | `efficientnet_b3` (intermediate) | 218 | 0.791 | ord 0.92 / thin 0.87 / talc 0.91 / **refr 0.47** |
 | B (opium) | ResNet18, **1-epoch smoke** | `splits.csv` (707 imgs) | ~0.55 | (not reported) |
 
 Path B's 0.190 is the **bootstrap floor** (grain classifier trained on heuristic
 pre-labels ≈ re-learns the rule; talcose = 0 because the auto-candidate talc
-signal is ≈0 — see `docs/plans/39`). It is not path B's ceiling: real human grain
-labels + feeding the trained talc segmentation model into the talcose branch are
-the levers. Path B's value is interpretability (per-grain, explainable verdict),
-complementary to path A's raw F1.
+signal is ≈0 — see `docs/plans/39`). Feeding the **trained talc model** into the
+talcose branch (the first lever) lifts it to **0.513 3-class**, with talcose F1
+jumping **0.000 → 0.821** — talcose is effectively solved. The remaining loss is
+the ordinary↔fine axis: the bootstrap grain classifier over-calls "fine" (row_ore
+recall 0.09, 88/115 row images → hard_to_process), which is exactly what **human
+grain labels** (the second lever) fix. Path B's value is interpretability
+(per-grain, explainable verdict), complementary to path A's raw F1; path A
+already reaches 0.93 on the ordinary/fine 2-class it targets.
 
 **Path A CNN grade branch (trained 2026-07-04 on gx10, GB10; `docs/plans/37`).**
 An analog of the competitor's approach: a supervised `efficientnet_b3` classifier

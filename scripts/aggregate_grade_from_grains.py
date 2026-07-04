@@ -8,7 +8,9 @@ Leak-free, grouped-by-specimen nested CV over the images of a completed batch:
        annotations if present, else heuristic bootstrap);
     2. predict P(fine) for every grain of every image in the fold;
     3. per image, area-weighted fine_fraction = Σ area·P(fine) / Σ area;
-    4. read talc_fraction from the pipeline's ore_summary.json (the talc branch);
+    4. talc_fraction: the trained talc segmentation model when --talc-checkpoint
+       is given (recommended — the colour auto-candidate is ≈0 for talcose), else
+       the batch's ore_summary.json auto-candidate;
     5. calibrate (τ_fine, τ_talc) on TRAIN images to maximise grade macro-F1;
     6. predict TEST-image grades with:
          talc_fraction ≥ τ_talc → talcose_ore
@@ -65,9 +67,31 @@ def main() -> int:
     parser.add_argument("--require-human", action="store_true")
     parser.add_argument("--grain-model", default="extra_trees")
     parser.add_argument("--folds", type=int, default=5)
+    # Talcose branch (v0.2): score talc with the trained talc segmentation model
+    # instead of the batch's colour auto-candidate (which is ≈0 for talcose images).
+    parser.add_argument("--talc-checkpoint", type=Path, default=None, help="Trained talc segmentation checkpoint; overrides the auto-candidate talc_fraction.")
+    parser.add_argument("--talc-threshold", type=float, default=0.5)
+    parser.add_argument("--talc-device", default="auto")
+    parser.add_argument("--talc-tile-size", type=int, default=1024)
+    parser.add_argument("--talc-stride", type=int, default=768)
+    parser.add_argument("--talc-batch-size", type=int, default=4)
     args = parser.parse_args()
 
-    images = load_images(args.batch_dir)
+    talc_scorer = None
+    if args.talc_checkpoint is not None:
+        if not args.talc_checkpoint.exists():
+            raise SystemExit(f"talc checkpoint not found: {args.talc_checkpoint}")
+        talc_scorer = TalcModelScorer(
+            checkpoint=args.talc_checkpoint,
+            device=args.talc_device,
+            threshold=args.talc_threshold,
+            tile=args.talc_tile_size,
+            stride=args.talc_stride,
+            batch=args.talc_batch_size,
+        )
+        print(f"[talc] scoring talcose with trained model {talc_scorer.meta.get('model')} on {talc_scorer.device}", flush=True)
+
+    images = load_images(args.batch_dir, talc_scorer=talc_scorer)
     if not images:
         raise SystemExit(f"no usable images with grains under {args.batch_dir}")
     train_labels_by_run = build_grain_label_index(args.manifest, args.annotations, require_human=args.require_human)
@@ -103,14 +127,17 @@ def main() -> int:
         count_fine=[img.get("count_fine_fraction", 0.0) for img in images],
     )
     any_human = any(v["source"] == "human" for run in train_labels_by_run.values() for v in run)
+    talc_sources = Counter(img.get("talc_source", "unknown") for img in images)
     summary = {
-        "schema_version": "grain-grade-aggregation-v0.1",
+        "schema_version": "grain-grade-aggregation-v0.2",
         "batch_dir": str(args.batch_dir),
         "images_used": len(images),
         "specimen_groups": int(len(set(groups.tolist()))),
         "folds": n_splits,
         "grain_model": args.grain_model,
         "training_is_bootstrap": not any_human,
+        "talc_checkpoint": str(args.talc_checkpoint) if args.talc_checkpoint else None,
+        "talc_source_counts": dict(talc_sources),
         "fold_thresholds": fold_thresholds,
         "grade_metrics": metrics,
     }
@@ -121,7 +148,7 @@ def main() -> int:
     return 0
 
 
-def load_images(batch_dir: Path) -> list[dict[str, Any]]:
+def load_images(batch_dir: Path, *, talc_scorer: "TalcModelScorer | None" = None) -> list[dict[str, Any]]:
     summary_csv = batch_dir / "summary.csv"
     if not summary_csv.exists():
         raise SystemExit(f"batch summary not found: {summary_csv}")
@@ -136,7 +163,7 @@ def load_images(batch_dir: Path) -> list[dict[str, Any]]:
             continue
         features = build_grain_feature_matrix(grains)
         areas = np.array([float(g.get("area_px", 0) or 0) for g in grains], dtype=np.float64)
-        talc_fraction = read_talc_fraction(run_dir / "ore_analysis" / "ore_summary.json")
+        talc_fraction, talc_source = resolve_talc_fraction(row, run_dir, talc_scorer)
         heuristic_fine = np.array([1.0 if str(g.get("label")) == "fine_intergrowth" else 0.0 for g in grains])
         count_fine_fraction = float(heuristic_fine.mean()) if len(heuristic_fine) else 0.0
         images.append(
@@ -147,10 +174,81 @@ def load_images(batch_dir: Path) -> list[dict[str, Any]]:
                 "features": features,
                 "areas": areas,
                 "talc_fraction": talc_fraction,
+                "talc_source": talc_source,
                 "count_fine_fraction": count_fine_fraction,
             }
         )
     return images
+
+
+def resolve_talc_fraction(row: dict[str, Any], run_dir: Path, talc_scorer: "TalcModelScorer | None") -> tuple[float, str]:
+    """Talcose signal: the trained talc model if provided (and its inputs exist),
+    else the batch's auto-candidate talc_fraction from ore_summary.json."""
+    if talc_scorer is not None:
+        from PIL import Image
+
+        source_path = Path(str(row.get("source_dataset_path", "")))
+        sulfide_path = run_dir / "binary_sulfide" / "sulfide_mask.png"
+        analyzed_path = run_dir / "binary_sulfide" / "analyzed_mask.png"
+        if source_path.exists() and sulfide_path.exists() and analyzed_path.exists():
+            sulfide = np.asarray(Image.open(sulfide_path).convert("L"))
+            analyzed = np.asarray(Image.open(analyzed_path).convert("L"))
+            return talc_scorer.talc_fraction(source_path, sulfide, analyzed), "trained_model"
+        return read_talc_fraction(run_dir / "ore_analysis" / "ore_summary.json"), "ore_summary_fallback"
+    return read_talc_fraction(run_dir / "ore_analysis" / "ore_summary.json"), "ore_summary_auto_candidate"
+
+
+class TalcModelScorer:
+    """Loads the trained talc segmentation model once and computes a per-image
+    talc_fraction = talc∩non-sulfide pixels / analyzed pixels, matching the ore
+    rule's fraction (identical tiling to the resident pipeline). torch is imported
+    lazily so the default (auto-candidate) path needs no torch."""
+
+    def __init__(self, checkpoint: Path, *, device: str, threshold: float, tile: int, stride: int, batch: int) -> None:
+        import torch
+
+        from ore_classifier.model_io import load_binary_segmentation_checkpoint, resolve_device
+        from ore_classifier.resident_pipeline import _tile_weight
+
+        self._torch = torch
+        self.device = resolve_device(device)
+        self.model, self.meta = load_binary_segmentation_checkpoint(Path(checkpoint), self.device)
+        self.model.eval()
+        self.threshold = threshold
+        self.tile = tile
+        self.stride = stride
+        self.batch = batch
+        self.weight = _tile_weight(tile)
+
+    def talc_fraction(self, image_path: Path, sulfide_mask: np.ndarray, analyzed_mask: np.ndarray) -> float:
+        from PIL import Image
+
+        from ore_classifier.model_io import forward_logits
+        from ore_classifier.resident_pipeline import _batched, _preprocess_tile
+        from ore_classifier.tiling import iter_tiles
+
+        torch = self._torch
+        image = Image.open(image_path).convert("RGB")
+        w, h = image.size
+        tiles = iter_tiles(width=w, height=h, tile_size=self.tile, stride=self.stride)
+        prob_sum = np.zeros((h, w), dtype=np.float32)
+        weight_sum = np.zeros((h, w), dtype=np.float32)
+        with torch.no_grad():
+            for batch_tiles in _batched(tiles, self.batch):
+                tensor = torch.stack([_preprocess_tile(image, t) for t in batch_tiles]).to(self.device)
+                logits = forward_logits(self.model, tensor, (self.tile, self.tile))
+                probs = torch.softmax(logits, dim=1)[:, 1].detach().cpu().numpy().astype(np.float32)
+                for tile, prob in zip(batch_tiles, probs, strict=True):
+                    vh = min(tile.height, h - tile.y)
+                    vw = min(tile.width, w - tile.x)
+                    tw = self.weight[:vh, :vw]
+                    prob_sum[tile.y:tile.y + vh, tile.x:tile.x + vw] += prob[:vh, :vw] * tw
+                    weight_sum[tile.y:tile.y + vh, tile.x:tile.x + vw] += tw
+        prob = prob_sum / np.maximum(weight_sum, 1e-6)
+        analyzed = analyzed_mask > 0
+        non_sulfide = analyzed & ~(sulfide_mask > 0)
+        talc = (prob >= self.threshold) & non_sulfide
+        return int(talc.sum()) / max(int(analyzed.sum()), 1)
 
 
 def build_grain_label_index(
@@ -334,6 +432,7 @@ def render_md(summary: dict[str, Any]) -> str:
         "",
         f"- Images scored: {m['images_scored']} | specimen groups: {summary['specimen_groups']} | folds: {summary['folds']}",
         f"- Grain model: `{summary['grain_model']}` | training is bootstrap (heuristic labels): {summary['training_is_bootstrap']}",
+        f"- Talc signal: {summary.get('talc_source_counts')}" + (f" | checkpoint `{Path(summary['talc_checkpoint']).name}`" if summary.get("talc_checkpoint") else ""),
         f"- **Grade macro-F1: {m['macro_f1']:.4f}** | weighted-F1: {m['weighted_f1']:.4f} | accuracy: {m['accuracy']:.4f}",
         "",
         "| Class | Precision | Recall | F1 | Support |",

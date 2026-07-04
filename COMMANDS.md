@@ -516,11 +516,26 @@ python3 scripts/aggregate_grade_from_grains.py \
   --out-dir outputs/evaluations/grade_from_grains_v0
 ```
 
-Steps 3–4 run in seconds (tabular). Omit `--annotations` (or before any labeling)
-for the heuristic-bootstrap baseline. v0.1 bootstrap grade macro-F1 ≈ 0.19
-(≈ deterministic rule; talcose F1 = 0 because the auto-candidate talc signal is
-near-zero — feed the trained talc model for the talcose branch, and add human
-grain labels, for the real gain).
+**Talcose branch (v0.2)** — score talc with the trained talc segmentation model
+instead of the batch's colour auto-candidate (which is ≈0 for talcose images, so
+talcose F1 = 0 without this). Add `--talc-checkpoint` (any resunet/segformer talc
+checkpoint; loaded once, run over each image; `τ_talc` is still calibrated per
+fold):
+
+```bash
+python3 scripts/aggregate_grade_from_grains.py \
+  --batch-dir outputs/evaluations/harness_baseline_20260704 \
+  --manifest outputs/grain_dataset_v0/grains_manifest.csv \
+  --out-dir outputs/evaluations/grade_from_grains_talcmodel_v0 \
+  --talc-checkpoint outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt \
+  --talc-threshold 0.5
+```
+
+Steps 3–4 (tabular) run in seconds; adding `--talc-checkpoint` runs talc
+inference over every image (~30–45 min on this Mac). Omit `--annotations` (or
+before any labeling) for the heuristic-bootstrap baseline. v0.1 bootstrap grade
+macro-F1 ≈ 0.19 (≈ deterministic rule); the two levers for the real gain are the
+trained-talc branch above and real human grain labels.
 
 ## Sulfide QA UI
 

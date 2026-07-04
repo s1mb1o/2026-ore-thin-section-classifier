@@ -72,6 +72,32 @@ talcose F1 = 0. The talcose branch must consume the **trained talc segmentation
 model** (ResUNet/SegFormer, talc IoU 0.53–0.64), not the colour auto-candidate.
 This is the highest-value v0.2 fix, alongside real human grain labels.
 
+## v0.2 — trained-talc talcose branch (2026-07-04)
+
+Wired the trained talc segmentation model into `aggregate_grade_from_grains.py`
+via `--talc-checkpoint` (+ `--talc-threshold`), addressing the v0.1 talcose F1 = 0
+(auto-candidate talc ≈ 0). A lazily-torch-imported `TalcModelScorer` loads the
+talc checkpoint once and computes `talc_fraction = talc∩non-sulfide / analyzed`
+per image with the same tiling as the resident pipeline; `τ_talc` is still
+calibrated per fold. Without `--talc-checkpoint` the auto-candidate path is
+unchanged. The talc source per image is recorded in the output
+(`talc_source_counts`, schema bumped to v0.2). Reuses the trained SegFormer-B0
+talc fold checkpoint (`outputs/talc_segformer_folds/segformer_b0_full_20260703/…`)
+that loads cleanly via `load_binary_segmentation_checkpoint`. Tests +2
+(`resolve_talc_fraction` no-scorer source, talc-first grade rule); grain suite 19.
+Note: signal quality depends on the talc checkpoint — the local 3-epoch ResUNet
+is not discriminative; the B0 full-run model is.
+
+**Result** (`outputs/evaluations/grade_from_grains_talcmodel_v0/`, B0 talc fold_00,
+threshold 0.5, bootstrap grain labels, leak-free grouped CV over 345):
+grade **macro-F1 0.513** (up from v0.1 0.19), accuracy 0.577. Per class:
+**talcose F1 0.821** (P 0.76 / R 0.90 — up from 0.000), hard_to_process F1 0.575
+(P 0.47 / R 0.75), row_ore F1 0.143 (P 0.40 / **R 0.09**). Read: the trained-talc
+branch solves talcose; the remaining loss is the ordinary↔fine axis — the
+bootstrap grain classifier over-calls "fine", so 88/115 row images land in
+hard_to_process. That axis is exactly what **human grain labels** (the second
+lever) fix; talcose is now done.
+
 ## Adversarial review & fixes (2026-07-04)
 
 A find→verify review workflow (10 agents) confirmed 5 defects, all fixed +

@@ -173,6 +173,24 @@ class CropSandboxTest(unittest.TestCase):
             store.crop_file("../crops_backup/leak.png")
 
 
+class TalcSourceTest(unittest.TestCase):
+    def test_no_scorer_uses_auto_candidate_source(self):
+        # Without a talc checkpoint the aggregator must read the batch's
+        # ore_summary auto-candidate and label the source accordingly (no torch).
+        import tempfile
+
+        run_dir = Path(tempfile.mkdtemp())
+        (run_dir / "ore_analysis").mkdir(parents=True)
+        (run_dir / "ore_analysis" / "ore_summary.json").write_text('{"talc_fraction": 0.07}', encoding="utf-8")
+        frac, source = agg.resolve_talc_fraction({}, run_dir, None)
+        self.assertAlmostEqual(frac, 0.07)
+        self.assertEqual(source, "ore_summary_auto_candidate")
+
+    def test_predict_grade_uses_talc_first(self):
+        # A high trained-talc fraction must win the talcose class over fine.
+        self.assertEqual(agg.predict_grade(0.9, 0.30, 0.4, 0.10), "talcose_ore")
+
+
 class GrainPayloadTest(unittest.TestCase):
     """The labeling app must surface the full feature report + heuristic reasons
     so the annotator can decide ordinary vs fine (matches the v2 pipeline report)."""
