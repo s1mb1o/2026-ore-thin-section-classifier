@@ -248,8 +248,13 @@ class TalcReviewStore:
                 source_copy = resolve_path(summary["paths"]["source_image"])
                 sample_dir = source_copy.parent
                 image_name = annotated_path.name
-                original = self.original_dir / image_name if self.original_dir else None
-                original_path = original.resolve() if original and original.exists() else None
+                original_override = summary.get("original_path")
+                if original_override:
+                    candidate = resolve_path(original_override)
+                    original_path = candidate if candidate.exists() else None
+                else:
+                    original = self.original_dir / image_name if self.original_dir else None
+                    original_path = original.resolve() if original and original.exists() else None
                 reviewed = (sample_dir / "reviewed/reviewed_talc_mask.png").exists()
                 current = (sample_dir / "current_talc_mask.png").exists()
                 if original_path is None:
