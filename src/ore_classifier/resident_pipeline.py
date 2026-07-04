@@ -67,6 +67,7 @@ class ResidentSulfidePipeline:
         talc_threshold: float = 0.5,
         preview_max_side: int = 1800,
         component_model: str | Path | None = None,
+        magnetite_prep: bool = False,
     ) -> None:
         if stride > tile_size:
             raise ValueError("stride must be <= tile_size")
@@ -87,6 +88,7 @@ class ResidentSulfidePipeline:
         self.threshold = threshold
         self.talc_threshold = talc_threshold
         self.preview_max_side = preview_max_side
+        self.magnetite_prep = bool(magnetite_prep)
         self.component_model_path: str | None = None
         self.component_model = None
         if component_model is not None:
@@ -330,6 +332,35 @@ class ResidentSulfidePipeline:
         run_degradations: list[dict[str, Any]] = list(sulfide_summary.get("degradations", []))
 
         sulfide_arr = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L"))
+
+        magnetite_prep_info: dict[str, Any] | None = None
+        if self.magnetite_prep:
+            # Two-pass magnetite darkening (see ore_classifier.magnetite_prep).
+            from ore_classifier.magnetite_prep import (
+                MagnetitePrepConfig, decide, darken, giant_only_postfilter, luma_of, slabs_region,
+            )
+
+            prep_cfg = MagnetitePrepConfig()
+            decision = decide(image_arr, sulfide_arr, prep_cfg)
+            magnetite_prep_info = decision.to_dict()
+            if decision.applied:
+                (inference_dir / "sulfide_mask_pass1.png").write_bytes(
+                    (inference_dir / "sulfide_mask.png").read_bytes()
+                )
+                region = slabs_region(sulfide_arr, prep_cfg)
+                darkened = darken(image_arr, decision.threshold, region, prep_cfg, t1=decision.t1)
+                dark_image = Image.fromarray(darkened)
+                dark_path = inference_dir / "magnetite_prep_input.jpg"
+                dark_image.save(dark_path, quality=97)
+                sulfide_summary = self.infer_sulfide(dark_image, inference_dir, image_path=str(dark_path))
+                run_degradations = list(sulfide_summary.get("degradations", []))
+                mask2 = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L")) > 0
+                # scrub at T (giant-only): re-claimed magnetite merges back into slabs and
+                # gets scrubbed; rescued dim ore splits into small grains and is protected
+                # by the size gate, not by the threshold.
+                filtered = giant_only_postfilter(mask2, luma_of(image_arr), decision.threshold, prep_cfg)
+                save_gray(inference_dir / "sulfide_mask.png", filtered.astype(np.uint8) * 255)
+                sulfide_arr = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L"))
         talc_mask_path: Path | None = None
         talc_paths: dict[str, str] = {}
         talc_summary: dict[str, Any] = {}
@@ -420,6 +451,7 @@ class ResidentSulfidePipeline:
             "talc_threshold": self.talc_threshold if self.talc_checkpoint is not None else None,
             "talc_checkpoint_meta": talc_summary.get("checkpoint_meta") if talc_summary else None,
             "component_model": self.component_model_path,
+            "magnetite_prep": magnetite_prep_info,
             "rule_config": rule_config,
             "paths": {
                 "binary_sulfide_summary": str(inference_dir / "summary.json"),

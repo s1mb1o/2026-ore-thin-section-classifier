@@ -79,6 +79,11 @@ def main() -> int:
         default=None,
         help="Learned per-component grade classifier (model.joblib) used instead of the shape rule.",
     )
+    parser.add_argument(
+        "--magnetite-prep",
+        action="store_true",
+        help="Two-pass adaptive magnetite darkening before sulfide segmentation (ore_classifier.magnetite_prep).",
+    )
     parser.add_argument("--preview-max-side", type=int, default=1800)
     parser.add_argument("--no-auto-talc-candidate", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -121,11 +126,13 @@ def main() -> int:
         talc_threshold=args.talc_threshold,
         preview_max_side=args.preview_max_side,
         component_model=args.component_model,
+        magnetite_prep=args.magnetite_prep,
     )
     print(
         f"[resident] model loaded once on {pipeline.device}: sulfide={pipeline.checkpoint_meta.get('model')} "
         f"talc={pipeline.talc_checkpoint_meta.get('model') if pipeline.talc_checkpoint_meta else 'none'} "
-        f"component_grade={'model' if pipeline.component_model is not None else 'rule'}",
+        f"component_grade={'model' if pipeline.component_model is not None else 'rule'} "
+        f"magnetite_prep={'on' if pipeline.magnetite_prep else 'off'}",
         flush=True,
     )
 
