@@ -28,8 +28,8 @@ from ore_classifier.tiling import crop_array_with_pad, iter_tiles, save_gray, sa
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 DEFAULT_LUMENSTONE_ROOTS = (
-    ROOT.parent / "2026_Nornikel_Hackaton/data/external/lumenstone/full/S1_v1/S1_v1",
-    ROOT.parent / "2026_Nornikel_Hackaton/data/external/lumenstone/full/S2_v2/S2_v2",
+    ROOT / "data/external/lumenstone/full/S1_v1/S1_v1",
+    ROOT / "data/external/lumenstone/full/S2_v2/S2_v2",
 )
 
 

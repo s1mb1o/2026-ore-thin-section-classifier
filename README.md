@@ -13,7 +13,7 @@ panorama image
 -> official ore-class rule and report artifacts
 ```
 
-This v2 directory intentionally avoids the old broad QC assistant surface. The old repository remains the source for archived plans, prior experiments, and reusable snippets, but new P0 implementation should live here.
+This v2 directory intentionally avoids the legacy broad QC assistant surface. New P0 implementation should live here.
 
 ## Layout
 
@@ -34,18 +34,12 @@ src/ore_classifier/
 heuristic_segmentation/  # separate non-neural segmentation baseline
 outputs/      # generated artifacts, ignored by git
 models/       # local pointers/config only; HF cache stays outside repo
-dataset -> ../2026_Nornikel_Hackaton/dataset
+dataset       # local copy of the verified official data
 ```
 
 ## Current Data Source
 
-`dataset` is a relative symlink to the verified dataset in the original project:
-
-```text
-../2026_Nornikel_Hackaton/dataset
-```
-
-The source manifest in the old repository verified `1236/1236` files and about `3.0 GB` of official data. Keep the symlink unless there is a concrete reason to copy the dataset.
+`dataset` is a local copy of the verified official data. The source manifest verifies `1236/1236` files and about `3.0 GB` of official data.
 
 ## Core Docs
 

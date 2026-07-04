@@ -9,10 +9,10 @@ This file lists the external data needed to reproduce the current v2 pipeline. R
 Minimum for running inference, talc review, and official-image evaluation:
 
 1. Download or copy the official Nornickel hackathon package into `dataset/`.
-2. Keep `dataset/` as either a local directory or a symlink. The current local setup uses:
+2. Keep `dataset/` as either a local directory or a symlink. The current local setup uses a local copy:
 
 ```bash
-ln -s ../2026_Nornikel_Hackaton/dataset dataset
+test -d dataset
 ```
 
 Extra for rebuilding the binary sulfide training dataset or retraining checkpoints:
@@ -132,8 +132,8 @@ S2_v2/S2_v2/
 Current local reference paths:
 
 ```text
-../2026_Nornikel_Hackaton/data/external/lumenstone/full/S1_v1/S1_v1
-../2026_Nornikel_Hackaton/data/external/lumenstone/full/S2_v2/S2_v2
+data/external/lumenstone/full/S1_v1/S1_v1
+data/external/lumenstone/full/S2_v2/S2_v2
 ```
 
 Current local counts:
@@ -148,8 +148,8 @@ Build command with explicit roots:
 ```bash
 python3 scripts/build_binary_sulfide_dataset.py \
   --official-root dataset \
-  --lumenstone-root /path/to/S1_v1/S1_v1 \
-  --lumenstone-root /path/to/S2_v2/S2_v2 \
+  --lumenstone-root data/external/lumenstone/full/S1_v1/S1_v1 \
+  --lumenstone-root data/external/lumenstone/full/S2_v2/S2_v2 \
   --out-dir outputs/binary_sulfide_dataset_v0 \
   --tile-size 512 \
   --stride 384 \
@@ -158,7 +158,8 @@ python3 scripts/build_binary_sulfide_dataset.py \
 
 Notes:
 
-- The script has defaults that point to the sibling original checkout. Passing `--lumenstone-root` is clearer for fresh clones.
+- The script defaults to the v2-local `data/external/lumenstone/full/...` paths. Passing `--lumenstone-root` remains clearer for fresh clones or alternative storage.
+- The helper downloader is available as `scripts/download_lumenstone_all.sh`; it can fetch the full public LumenStone mirror, but current training defaults use only `S1_v1` and `S2_v2`.
 - LumenStone labels are mineral classes, not official `ordinary_intergrowth`, `fine_intergrowth`, or `talc` labels.
 - The current sulfide mapping uses class ids for sulfide minerals and excludes background, magnetite, hematite, and native gold. See `src/ore_classifier/pseudo_labels.py`.
 - Do not commit or bundle raw LumenStone data without checking its data-use and citation requirements.
