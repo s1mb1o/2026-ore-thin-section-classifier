@@ -249,21 +249,27 @@ mask. The reviewer can tune:
 The cluster overlay uses the current working masks, updates after edits, and is
 stored only as review/view metadata in working state and reviewed patch JSON.
 
-Segmentation controls are a compact overlay widget on the image viewer. Editable
-class rows have a visibility checkbox, live percentage, and edit-target radio
-button:
+Segmentation controls are a compact top-left overlay widget on the image
+viewer. Editable class rows have a visibility checkbox, live percentage, and
+edit-target radio button:
 
 - Positive bag.
 - Talc.
 - Not Talc.
 
-The same widget also has a separated display-only `Talc cluster areas` row with
-a visibility checkbox and percentage. It mirrors the right-panel cluster overlay
-toggle and reports highlighted non-sulfide cluster pixels as a percentage of
-image pixels. Cluster areas must never be painted over sulfide-mask pixels and
-must not use sulfide pixels as local-density source evidence. It has no
-edit-target radio because cluster areas are derived display evidence, not a
-saved segmentation class.
+A separate top-right `Display layers` overlay widget contains the display-only
+`Background` and `Talc cluster areas` controls. `Background` is checked by
+default to preserve the current base-image view; unchecking it hides only the
+base background image while keeping the editable masks, derived overlays, and
+tool previews visible. It must not warn about a missing selected background
+while the background checkbox is off.
+
+The top-right `Talc cluster areas` row has a visibility checkbox and percentage.
+It mirrors the right-panel cluster overlay toggle and reports highlighted
+non-sulfide cluster pixels as a percentage of image pixels. Cluster areas must
+never be painted over sulfide-mask pixels and must not use sulfide pixels as
+local-density source evidence. It has no edit-target radio because cluster areas
+are derived display evidence, not a saved segmentation class.
 
 The edit-target radio controls Brush, Fill, Rectangle, and Polygon. Selecting
 `Positive bag` writes those tools into `current_positive_bag_mask`; selecting
@@ -280,40 +286,54 @@ explicitly changed later.
 Because the source folder `Оталькованные руды/Области оталькования` is treated
 as a talcose source where confirmed talc should be at least `10%` of visible
 image pixels, the widget also shows live visible-pixel percentages for
-`Positive bag`, `Talc`, and `Talc cluster areas`, plus a compact target status.
-The target status is based on confirmed `Talc` pixels, not the rough
-`Positive bag`: below `10%` it shows how many percentage points are missing; at
-or above `10%` it reports the target as met.
+`Positive bag` and `Talc`, plus a compact target status. The top-right display
+layers widget shows the `Talc cluster areas` percentage. The target status is
+based on confirmed `Talc` pixels, not the rough `Positive bag`: below `10%` it
+shows how many percentage points are missing; at or above `10%` it reports the
+target as met.
 
-### Model-vs-Human Review
+### Comparison Modes
 
-The right panel includes a `Model/Human QA` display block. It is read-only and
-must not change masks. The app may load an optional trained talc-model
-prediction mask from `--talc-model-mask-dir`, from well-known files in the
-sample directory such as `model_talc_mask.png` / `predicted_talc_mask.png`, or
-from manifest paths when present. When enabled, the canvas highlights the model
-prediction against the current human `Talc` class:
+The right panel includes a `Comparison mode` selector with five modes:
 
-- `agreement`: model and current human both mark talc;
-- `model only`: model marks talc, current human does not;
-- `human only`: current human marks talc, model does not;
-- `sulfide conflict`: either model or human talc overlaps sulfide pixels.
+- `Current`: shows only the normal editable classes (`Positive bag`, `Talc`,
+  `Not Talc`) plus display-only controls in the separate top-right
+  `Display layers` widget.
+- `Heuristic`: overlays only the non-neural talc-zone mask.
+- `Neural Model`: overlays only the trained neural talc-model prediction.
+- `Current vs Heuristic`: overlays the current `Talc` class mask against the
+  non-neural talc-zone mask.
+- `Current vs Neural Model`: overlays the current `Talc` class mask against the
+  trained neural talc-model prediction.
 
-The same block supports multiple human annotations. Optional
-`--human-review-dir` arguments point to additional talc-review workspaces or
-folders; the app matches masks by sample id or image filename and loads
-`reviewed_talc_node_mask.png` first, falling back to `reviewed_talc_mask.png`.
-The multi-human overlay compares the current human mask plus all loaded
-additional human masks:
+The heuristic mode can generate its own comparison source. Pressing
+`Run non-neural classifier` calls
+`POST /api/samples/{sample_id}/talcose-heuristic`, runs the standalone
+talc-zone heuristic from `src/ore_classifier/talc_zone_heuristic.py`, and
+writes the following per-sample artifacts under `qa/non_neural_talcose/`:
 
-- `human agreement`: at least two human masks mark the same pixel;
-- `human disagreement`: at least one but not all loaded human masks mark the
-  pixel.
+- `talc_zone_mask.png`;
+- `talc_flake_mask.png`;
+- `overlay.jpg`;
+- `talcose_result.json`.
 
-The UI reports counts/percentages for model-only, human-only, agreement,
-sulfide conflict, human agreement, and human disagreement. If no model or
-additional human mask is available, the corresponding toggles stay harmless and
-show an unavailable status.
+When the converter produced a sulfide mask, the app passes that mask as the
+heuristic ore-exclusion mask. If no sulfide mask is available, the heuristic
+uses its brightness fallback and records that fallback in `talcose_result.json`.
+The plain `Heuristic` mode shows the heuristic layer alone. `Current vs
+Heuristic` highlights `agreement`, `heuristic only`, `current only`, and
+`sulfide conflict`; the stats row reports the ore class, talc-zone fraction,
+ore-mask source, comparison percentages when applicable, and a link to the
+overlay artifact.
+
+The neural mode is read-only and must not change masks. The app may load an
+optional trained talc-model prediction mask from `--talc-model-mask-dir`, from
+well-known files in the sample directory such as `model_talc_mask.png` /
+`predicted_talc_mask.png`, or from manifest paths when present. The plain
+`Neural Model` mode shows the neural layer alone. `Current vs Neural Model`
+highlights `agreement`, `neural only`, `current only`, and `sulfide conflict`.
+If no model mask is available, either neural mode shows an unavailable status
+instead of silently dropping the overlay.
 
 Additional display-only layer toggles:
 
@@ -340,7 +360,14 @@ Required controls:
   SAM2, Undo, Zoom In, Zoom Out, Fit, followed by active-tool parameters.
 - Top-right Save, Save & Next, and transparent Next actions.
 - Zoom by mouse wheel/trackpad over the canvas, plus toolbar Zoom In, Zoom Out,
-  and Fit controls.
+  and Fit controls, plus a bottom-left vertical viewer widget with Fit,
+  Actual size, Zoom In, current zoom percentage, and Zoom Out.
+- Pan by pressing and dragging the mouse wheel / middle button over the canvas,
+  without entering edit-tool drawing or native browser middle-click scrolling.
+  Pan is not clamped to the image top-left: the canvas can move past the viewer
+  edges so image coordinates can be negative inside the visible viewport.
+- A below-viewer hint row states `Mouse wheel - zoom in / out` and
+  `Mouse wheel press - pan`.
 - Brush add with left mouse into the selected edit class.
 - Brush erase with right mouse from the selected edit class.
 - Fill bounded area.
@@ -525,6 +552,7 @@ Optional fields:
 - `reviewed_not_talc_mask`
 - `model_talc_mask`
 - `human_review_masks`
+- `non_neural_talcose_qa`
 - `review_patch`
 
 ### Mask Semantics
@@ -549,6 +577,8 @@ Optional fields:
 - `model_talc_mask`: optional read-only trained model prediction for QA.
 - `human_review_masks`: optional read-only masks from teammate review
   workspaces for agreement/disagreement QA.
+- `non_neural_talcose_qa`: optional read-only talcose/not-talcose classifier
+  QA result produced by the standalone non-neural talc-zone heuristic.
 - `sulfide_overlap_mask`, `silicate_support_mask`, and related masks:
   display-only evidence layers for review; they are not edited by this app.
 - Unlabeled background outside the reviewed talc/not-talc masks remains unknown
@@ -739,10 +769,16 @@ and update it if a new persistent default is reserved.
 - Brush, Fill, Polygon, and Rectangle can write `not_talc`, and saved review
   outputs include `reviewed_not_talc_mask` without adding it to
   `reviewed_talc_mask`.
-- Model-vs-human QA overlays report agreement, model-only, human-only, and
+- Comparison mode defaults to `Current` and adds no extra QA layer.
+- Plain `Heuristic` and `Neural Model` modes show only their corresponding
+  prediction layer.
+- The separate top-right `Display layers` widget has `Background` checked by
+  default; unchecking it hides only the base image and still renders selected
+  mask/QA/cluster overlays.
+- Heuristic comparison reports agreement, heuristic-only, current-only, and
+  sulfide-conflict counts when a heuristic talc-zone mask is available.
+- Neural comparison reports agreement, neural-only, current-only, and
   sulfide-conflict counts when a model mask is available.
-- Multi-human QA overlays report agreement/disagreement counts when teammate
-  masks are available.
 - Similar positive/negative seeds and `not_talc` masks constrain preview
   candidates and are recorded in edit metadata.
 - Save-review rejects wrong-size masks.
@@ -764,7 +800,9 @@ Required checks:
   changing mask pixels: `255` shows the original image, `90` keeps dark
   talc-candidate pixels visible while whitening brighter matrix/sulfides, and
   `0` paints the background white.
-- Toolbar zoom and mouse-wheel zoom work and do not change mask geometry.
+- Toolbar zoom, the bottom-left zoom widget, and mouse-wheel zoom work and do
+  not change mask geometry.
+- The below-viewer mouse hint row is visible without opening a help panel.
 - Polygon points can be added, closed by clicking the first point, edited, and
   flattened on save.
 - Rectangles can be drawn by drag or two corner clicks; corners/edges can be
@@ -779,10 +817,10 @@ Required checks:
   positive talc seeds, can be constrained with negative seeds / `Not Talc`
   hard negatives, can be tightened with Strictness, and is non-destructive until
   `Apply Similar`, `Save`, or `Save & Next` is pressed.
-- Model/Human QA overlay highlights model-only, human-only, agreement, and
-  sulfide conflict without mutating masks.
-- Multi-human QA overlay highlights where current and teammate masks agree or
-  disagree without mutating masks.
+- Heuristic comparison overlay highlights heuristic-only, current-only,
+  agreement, and sulfide conflict without mutating masks.
+- Neural comparison overlay highlights neural-only, current-only, agreement,
+  and sulfide conflict without mutating masks.
 - Undo restores prior mask state.
 - Completing or editing a shape updates/autosaves `current_talc_mask`.
 - With sulfide protection enabled, brush/polygon/rectangle/SAM2 additions over
@@ -845,7 +883,15 @@ Required checks:
   `talc_node`.
 - Toolbar controls are ordered Brush, Fill, Similar, Rectangle, Polygon,
   SAM2, Undo, Zoom In, Zoom Out, Fit, with active-tool parameters at the end.
-- Mouse wheel zooms over the canvas without changing mask geometry.
+- Mouse wheel zooms over the canvas without changing mask geometry, and the
+  bottom-left zoom widget exposes one vertical stack: Fit, Actual size,
+  Zoom In, the live percent, and Zoom Out controls.
+- Pressing and dragging the mouse wheel / middle button over the canvas pans
+  the view before any edit-tool handling and suppresses native browser
+  middle-click scrolling. The pan range includes gutter space around the canvas,
+  so the image can move partly outside the visible viewport like the v2 ore UI.
+- The viewer shows the same mouse hints as the v2 ore UI below the main view:
+  `Mouse wheel - zoom in / out` and `Mouse wheel press - pan`.
 - Brightness threshold preview is available, reports the visible-pixel
   percentage/count for the active photo background, and does not change mask
   geometry or saved mask pixels.
@@ -866,10 +912,10 @@ Required checks:
 - Similar can preview and apply luma/color/texture-similar non-sulfide talc-node
   candidates from positive seeds, while excluding negative seeds and `Not Talc`,
   without changing the mask before Apply.
-- Optional model-vs-human QA mode highlights `model only`, `human only`,
+- Optional heuristic comparison mode highlights `heuristic only`,
+  `current only`, `agreement`, and `sulfide conflict`.
+- Optional neural comparison mode highlights `neural only`, `current only`,
   `agreement`, and `sulfide conflict`.
-- Optional multi-human QA mode highlights where current and teammate masks agree
-  or disagree.
 - Selected completed polygon and rectangle regions can be deleted with
   Delete/Backspace.
 - Sulfide protection is enabled by default; additive tools cannot add new talc

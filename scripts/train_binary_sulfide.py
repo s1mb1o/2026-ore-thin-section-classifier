@@ -27,7 +27,7 @@ def main() -> int:
     parser.add_argument("--dataset-manifest", type=Path, required=True)
     parser.add_argument(
         "--model",
-        choices=("resunet", "segformer_b0", "segformer_b1", "segformer_b2", "mask2former"),
+        choices=("resunet", "segformer_b0", "segformer_b1", "segformer_b2", "segformer_b3", "mask2former"),
         default="resunet",
     )
     parser.add_argument("--out-dir", type=Path, default=Path("outputs/train_binary_sulfide"))
@@ -157,6 +157,7 @@ def create_model(args):
             "segformer_b0": "nvidia/mit-b0",
             "segformer_b1": "nvidia/mit-b1",
             "segformer_b2": "nvidia/mit-b2",
+            "segformer_b3": "nvidia/mit-b3",
         }[args.model]
     try:
         return SegformerForSemanticSegmentation.from_pretrained(
@@ -190,6 +191,15 @@ def segformer_config(model_name: str):
         return SegformerConfig(
             num_labels=2,
             depths=[3, 4, 6, 3],
+            hidden_sizes=[64, 128, 320, 512],
+            decoder_hidden_size=768,
+            id2label={0: "not_sulfide", 1: "sulfide"},
+            label2id={"not_sulfide": 0, "sulfide": 1},
+        )
+    if model_name == "segformer_b3":
+        return SegformerConfig(
+            num_labels=2,
+            depths=[3, 4, 18, 3],
             hidden_sizes=[64, 128, 320, 512],
             decoder_hidden_size=768,
             id2label={0: "not_sulfide", 1: "sulfide"},

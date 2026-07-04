@@ -74,6 +74,12 @@ Scale metadata is conservative. Physical area appears in the result table and CS
 
 Saved metadata is included in the next run request and written into the immutable run under `metadata/curated_metadata.json`. Derived edit runs inherit parent metadata.
 
+## Run Configuration
+
+`Configuration...` opens per-run parameters that affect generated artifacts and result interpretation, including talc clusterization radius, minimum local talc, and opacity.
+
+Saving changed configuration values invalidates all generated artifacts and result state in the current Workspace: augmented/preprocessed preview layers, sulfide/final layers, metrics, exports, grain outlines, and file previews are cleared. The original upload, curated metadata, current checkbox/settings values, and any upload-level artefact mask annotation are preserved. Press `Start` to create a fresh immutable run from the original input and the new configuration.
+
 ## Augmentation
 
 Augmentation is controlled by:
@@ -94,7 +100,7 @@ Preprocessing is controlled by:
 [x] Preprocessing [Edit] [Apply]
 ```
 
-`Edit` opens illumination normalization, denoising, contrast correction, and panorama scaling settings. Panorama scaling is explicit: either a longest-side bound or scale factor.
+`Edit` opens illumination normalization, denoising, contrast correction, and panorama scaling settings. Panorama scaling is explicit: either a longest-side bound or scale factor. The settings popup wraps panorama fields and footer text inside the dialog instead of requiring horizontal scrolling.
 
 If preprocessing is unchecked, `Start` skips preprocessing and the preprocessed view/side-by-side option stays disabled. If preprocessing is checked, the run records the exact preset used. For large images, the UI keeps original source artifacts and uses analysis/display-scale images for browser work.
 
@@ -120,13 +126,13 @@ The side-by-side selector is:
 Side-by-side: none | augmented | preprocessed | sulfide | final
 ```
 
-Unavailable layers are greyed out. Side-by-side shows the selected comparison layer on the right with a draggable vertical splitter. The viewer supports pan and zoom.
+Unavailable layers are greyed out. Side-by-side shows the selected comparison layer on the right with a draggable vertical splitter that can be moved fully from the left edge to the right edge. The viewer supports pan and zoom, and the bottom-left zoom widget is ordered vertically as Fit view, Actual size / 1:1, Zoom in, current zoom, and Zoom out.
 
 Segmentation class legends appear over the image, not in the toolbar:
 
 - image-only layers hide class controls;
 - sulfide layer shows sulfides, non-sulfides, and artefacts;
-- final layer shows ordinary, fine, talc, artefacts, and background;
+- final layer shows ordinary, fine, talc, talc clusters, artefacts, and background, grouped by separator lines as classes, derived/excluded regions, then background; talc clusters use a cyan/light-blue swatch and are available but unchecked by default;
 - each legend row shows the current run percentage for that class;
 - when side-by-side is active, left and right legends are shown independently at the top-left and top-right.
 
@@ -134,6 +140,7 @@ Viewer-level options below the image are:
 
 - show tiling;
 - contours only;
+- contour width;
 - opacity.
 
 ## Results
@@ -167,6 +174,8 @@ The sulfide-grain table appears as a separate card after metrics. Each row repre
 - locked/composite proxy flag. `Да/yes` means the grain touches talc or another sulfide grain, or has low matrix contact by the OM-mask proxy.
 
 The last row summarizes all listed grains. It sums area, perimeter, and contacts, calculates equivalent diameter from total grain area, shows total sulfide share, reports area-weighted liberation, and counts locked/composite proxy grains.
+
+Clicking a grain-table header sorts the grain rows by that column; clicking the same header again reverses direction. The total row remains fixed at the bottom.
 
 Checking one or more grains draws one combined cyan outline over the current image view. This is visual-only and does not modify masks, metrics, or run artifacts.
 
@@ -203,7 +212,7 @@ After a run completes, the editor supports:
 - sulfide/non-sulfide;
 - final segmentation.
 
-The editor has Brush/Pan, Undo/Redo, Zoom in/out, Fit view, brush size, comment, and live statistics. Brush left-draws and right-erases. Artefacts use the same violet/magenta color as the main viewer.
+The editor has Brush/Pan, Undo/Redo, a bottom-left Fit / Actual size / Zoom in / live percent / Zoom out widget, a Talc Annotation-style 2-240 px brush-size slider with live value, comment, live statistics, and the same mouse-wheel zoom / wheel-press pan hint row shown in the main viewer. Brush left-draws and right-erases. Artefacts use the same violet/magenta color as the main viewer.
 
 `Fix and Restart` always creates a new immutable run:
 
@@ -220,7 +229,7 @@ The History page has three modes:
 - standalone runs only;
 - Series.
 
-Run history is table-based. Progress is text-only percent with optional muted details for status, stage, tiles, ETA, and elapsed time. `Load` restores a run into the Workspace for review/tuning. `Remove` deletes a selected completed/failed run artifact from history while keeping uploads.
+Run history is table-based. The Status column shows only a percent while a run is active, `Error`/`Ошибка` with a hover detail marker when a run failed, and `Done`/`Готово` when it completed. `Load` restores a run into the Workspace for review/tuning. `Remove` deletes a selected completed/failed run artifact from history while keeping uploads.
 
 Clicking a thumbnail opens a preview popup.
 

@@ -43,6 +43,11 @@ from ore_classifier.talc_blue_line_converter import (  # noqa: E402
     write_image_rgb,
     write_mask,
 )
+from ore_classifier.talc_zone_heuristic import (  # noqa: E402
+    TalcZoneConfig,
+    detect_talc_zones,
+    save_talc_zone_outputs,
+)
 
 
 DEFAULT_ANNOTATED_DIR = ROOT / "dataset/Фото руд по сортам. ч1/Оталькованные руды/Области оталькования"
@@ -104,6 +109,8 @@ def sanitize_view_settings(payload: dict[str, Any]) -> dict[str, Any]:
             sanitized["brightness_visible_fraction"] = max(0.0, min(1.0, float(fraction)))
         except (TypeError, ValueError):
             pass
+    if "background_visible" in settings:
+        sanitized["background_visible"] = bool(settings.get("background_visible"))
     for key in ("brightness_threshold_formula", "background_mode"):
         value = settings.get(key)
         if isinstance(value, str) and value:
@@ -474,6 +481,25 @@ class TalcReviewStore:
                 )
         return [item for item in masks if item.get("url")]
 
+    def _talcose_heuristic_payload(self, sample: ReviewSample) -> dict[str, Any] | None:
+        result_path = sample.sample_dir / "qa/non_neural_talcose/talcose_result.json"
+        if not result_path.exists():
+            return None
+        try:
+            record = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        paths = record.get("paths")
+        if not isinstance(paths, dict):
+            paths = {}
+        record["urls"] = {
+            "zone_mask": self.artifact_url(paths.get("zone_mask")),
+            "flake_mask": self.artifact_url(paths.get("flake_mask")),
+            "overlay": self.artifact_url(paths.get("overlay")),
+            "result_json": self.artifact_url(paths.get("result_json")),
+        }
+        return record
+
     def write_current_class_masks(
         self,
         sample: ReviewSample,
@@ -731,6 +757,7 @@ class TalcReviewStore:
         ignore_mask = read_mask(ignore_path, current_mask.shape[:2]) if ignore_path and ignore_path.exists() else np.zeros_like(current_mask)
         model_mask_path = self._model_mask_path(sample)
         human_review_masks = self._human_review_masks(sample)
+        talcose_heuristic_qa = self._talcose_heuristic_payload(sample)
         urls = {
             "original": self.artifact_url(sample.original_path),
             "annotated": self.artifact_url(sample.annotated_path),
@@ -755,6 +782,10 @@ class TalcReviewStore:
             "reviewed_overlay": self.artifact_url(sample.sample_dir / "reviewed/reviewed_overlay.png"),
             "model_talc_mask": self.artifact_url(model_mask_path),
             "human_review_masks": human_review_masks,
+            "talcose_heuristic_zone_mask": talcose_heuristic_qa["urls"]["zone_mask"] if talcose_heuristic_qa else None,
+            "talcose_heuristic_flake_mask": talcose_heuristic_qa["urls"]["flake_mask"] if talcose_heuristic_qa else None,
+            "talcose_heuristic_overlay": talcose_heuristic_qa["urls"]["overlay"] if talcose_heuristic_qa else None,
+            "talcose_heuristic_result": talcose_heuristic_qa["urls"]["result_json"] if talcose_heuristic_qa else None,
         }
         return {
             "schema_version": "talc-review-web-sample-v0.1",
@@ -780,6 +811,7 @@ class TalcReviewStore:
                 "has_model_talc_mask": model_mask_path is not None,
             },
             "urls": urls,
+            "non_neural_talcose_qa": talcose_heuristic_qa,
             "editable": sample.original_path is not None,
             "summary": summary,
         }
@@ -1001,6 +1033,76 @@ class TalcReviewStore:
             "mask_url": self.artifact_url(mask_path),
         }
 
+    def run_talcose_heuristic(self, sample_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        sample = self.get_sample(sample_id)
+        paths = sample.summary.get("paths", {})
+        image_path = sample.original_path or resolve_path(paths.get("source_image") or sample.annotated_path)
+        if image_path is None or not image_path.exists():
+            raise ApiError(HTTPStatus.BAD_REQUEST, "sample has no image for talcose heuristic QA")
+        rgb = read_image_rgb(image_path)
+        cfg = TalcZoneConfig()
+        cfg.k_threshold = self._payload_float(payload, "k_threshold", cfg.k_threshold, 0.10, 1.50)
+        cfg.classify_threshold = self._payload_float(payload, "classify_threshold", cfg.classify_threshold, 0.0, 1.0)
+        cfg.proc_width = self._payload_int(payload, "proc_width", cfg.proc_width, 200, 2400)
+        max_side = self._payload_int(payload, "max_side", 1600, 256, 4096)
+
+        sulfide_path = resolve_path(paths["sulfide_mask"]) if paths.get("sulfide_mask") else None
+        ore_mask = None
+        ore_mask_source = "brightness_fallback"
+        if sulfide_path and sulfide_path.exists():
+            ore_mask = read_mask(sulfide_path, rgb.shape[:2]) > 0
+            ore_mask_source = str(sulfide_path)
+
+        result = detect_talc_zones(rgb, ore_mask=ore_mask, config=cfg)
+        out_dir = sample.sample_dir / "qa/non_neural_talcose"
+        saved = save_talc_zone_outputs(
+            out_dir,
+            rgb,
+            result,
+            cfg,
+            image_path=image_path,
+            ore_mask_source=ore_mask_source,
+            write_overlay=True,
+            max_side=max_side,
+        )
+        artifact_urls = {
+            "zone_mask": self.artifact_url(saved["paths"].get("zone_mask")),
+            "flake_mask": self.artifact_url(saved["paths"].get("flake_mask")),
+            "overlay": self.artifact_url(saved["paths"].get("overlay")),
+            "result_json": self.artifact_url(saved["paths"].get("result_json")),
+        }
+        return {
+            "schema_version": "talc-review-web-talcose-heuristic-v0.1",
+            "sample_id": sample.sample_id,
+            "image_name": sample.image_name,
+            "generated_at": utc_now_iso(),
+            "result": saved["record"],
+            "paths": saved["paths"],
+            "urls": artifact_urls,
+        }
+
+    @staticmethod
+    def _payload_float(payload: dict[str, Any], key: str, default: float, lower: float, upper: float) -> float:
+        value = payload.get(key, default)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{key} must be a number") from exc
+        if not lower <= parsed <= upper:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{key} must be between {lower} and {upper}")
+        return parsed
+
+    @staticmethod
+    def _payload_int(payload: dict[str, Any], key: str, default: int, lower: int, upper: int) -> int:
+        value = payload.get(key, default)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{key} must be an integer") from exc
+        if not lower <= parsed <= upper:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{key} must be between {lower} and {upper}")
+        return parsed
+
 
 class TalcReviewHandler(BaseHTTPRequestHandler):
     server: "TalcReviewHTTPServer"
@@ -1071,6 +1173,9 @@ class TalcReviewHandler(BaseHTTPRequestHandler):
                 return
             if action == "sam2":
                 self.send_json(self.server.store.run_sam2(sample_id, payload))
+                return
+            if action == "talcose-heuristic":
+                self.send_json(self.server.store.run_talcose_heuristic(sample_id, payload))
                 return
         raise ApiError(HTTPStatus.NOT_FOUND, "not found")
 
@@ -1207,37 +1312,76 @@ def render_html_page() -> str:
       </div>
     </div>
     <div class="viewer-wrap" id="viewerWrap">
-      <div class="segmentation-class-widget" aria-label="Visible segmentation classes">
-        <div class="segmentation-class-title">Segmentation classes</div>
-        <div class="segmentation-class-header"><span>Show</span><span>Class</span><span>%</span><span>Edit</span></div>
-        <div class="segmentation-class-row">
-          <input type="checkbox" id="layerCurrent" checked aria-label="Show Positive bag">
-          <span class="class-name"><span class="class-swatch positive-bag"></span>Positive bag</span>
-          <span id="positiveBagPct" class="class-percent">0.00%</span>
-          <input type="radio" name="editTargetClass" id="editTargetPositiveBag" value="positive_bag" checked aria-label="Edit Positive bag">
+      <div class="viewer-top-widgets">
+        <div class="segmentation-class-widget" aria-label="Visible segmentation classes">
+          <div class="segmentation-class-title">Segmentation classes</div>
+          <div class="segmentation-class-header"><span>Show</span><span>Class</span><span>%</span><span>Edit</span></div>
+          <div class="segmentation-class-row">
+            <input type="checkbox" id="layerCurrent" checked aria-label="Show Positive bag">
+            <span class="class-name"><span class="class-swatch positive-bag"></span>Positive bag</span>
+            <span id="positiveBagPct" class="class-percent">0.00%</span>
+            <input type="radio" name="editTargetClass" id="editTargetPositiveBag" value="positive_bag" checked aria-label="Edit Positive bag">
+          </div>
+          <div class="segmentation-class-row">
+            <input type="checkbox" id="layerTalcNode" checked aria-label="Show Talc">
+            <span class="class-name"><span class="class-swatch talc"></span>Talc</span>
+            <span id="talcNodePct" class="class-percent">0.00%</span>
+            <input type="radio" name="editTargetClass" id="editTargetTalcNode" value="talc_node" aria-label="Edit Talc">
+          </div>
+          <div class="segmentation-class-row">
+            <input type="checkbox" id="layerNotTalc" checked aria-label="Show Not Talc">
+            <span class="class-name"><span class="class-swatch not-talc"></span>Not Talc</span>
+            <span id="notTalcPct" class="class-percent">0.00%</span>
+            <input type="radio" name="editTargetClass" id="editTargetNotTalc" value="not_talc" aria-label="Edit Not Talc">
+          </div>
+          <div id="talcThresholdStatus" class="segmentation-threshold under-target">Target talc >= 10% visible px</div>
         </div>
-        <div class="segmentation-class-row">
-          <input type="checkbox" id="layerTalcNode" checked aria-label="Show Talc">
-          <span class="class-name"><span class="class-swatch talc"></span>Talc</span>
-          <span id="talcNodePct" class="class-percent">0.00%</span>
-          <input type="radio" name="editTargetClass" id="editTargetTalcNode" value="talc_node" aria-label="Edit Talc">
+        <div class="viewer-layer-widget" aria-label="Display layers">
+          <div class="viewer-layer-title">Display layers</div>
+          <label class="viewer-layer-row">
+            <input type="checkbox" id="layerBackground" checked aria-label="Show background image">
+            <span>Background</span>
+          </label>
+          <label class="viewer-layer-row">
+            <input type="checkbox" id="layerClusterAreas" aria-label="Show Talc cluster areas">
+            <span class="class-name"><span class="class-swatch cluster"></span>Talc cluster areas</span>
+            <span id="clusterAreaPct" class="class-percent">0.00%</span>
+          </label>
         </div>
-        <div class="segmentation-class-row">
-          <input type="checkbox" id="layerNotTalc" checked aria-label="Show Not Talc">
-          <span class="class-name"><span class="class-swatch not-talc"></span>Not Talc</span>
-          <span id="notTalcPct" class="class-percent">0.00%</span>
-          <input type="radio" name="editTargetClass" id="editTargetNotTalc" value="not_talc" aria-label="Edit Not Talc">
-        </div>
-        <div class="segmentation-class-row cluster-row">
-          <input type="checkbox" id="layerClusterAreas" aria-label="Show Talc cluster areas">
-          <span class="class-name"><span class="class-swatch cluster"></span>Talc cluster areas</span>
-          <span id="clusterAreaPct" class="class-percent">0.00%</span>
-          <span class="class-edit-placeholder" aria-hidden="true"></span>
-        </div>
-        <div id="talcThresholdStatus" class="segmentation-threshold under-target">Target talc >= 10% visible px</div>
       </div>
       <canvas id="viewerCanvas"></canvas>
+      <div id="zoomWidget" class="zoom-widget" role="group" aria-label="Viewer zoom controls">
+        <div class="zoom-widget-row">
+          <button id="zoomFitWidgetBtn" type="button" title="Fit image to viewer" aria-label="Fit image to viewer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4"></path><path d="M16 3h4a1 1 0 0 1 1 1v4"></path><path d="M8 21H4a1 1 0 0 1-1-1v-4"></path><path d="M16 21h4a1 1 0 0 0 1-1v-4"></path><path d="M8 8h8v8H8z"></path></svg>
+          </button>
+          <button id="zoomActualWidgetBtn" type="button" title="Actual size" aria-label="Actual size">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"></path><path d="M8 9h2v6"></path><path d="M9 15h2"></path><path d="M14 10h.01"></path><path d="M14 15h.01"></path><path d="M17 9h-2v6h2"></path></svg>
+          </button>
+        </div>
+        <div class="zoom-widget-main">
+          <button id="zoomInWidgetBtn" type="button" title="Zoom in" aria-label="Zoom in">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M10.5 8v5"></path><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
+          </button>
+          <output id="zoomWidgetValue" class="zoom-level" aria-live="polite">100%</output>
+          <button id="zoomOutWidgetBtn" type="button" title="Zoom out" aria-label="Zoom out">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
+          </button>
+        </div>
+      </div>
       <div id="emptyState" class="empty-state">Loading sample...</div>
+    </div>
+    <div class="viewer-options-row" aria-label="Viewer mouse controls">
+      <span class="viewer-options-hints">
+        <span class="viewer-options-hint">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="5"></rect><path d="M12 6v5"></path><path d="M9 14h6"></path></svg>
+          <span>Mouse wheel - zoom in / out</span>
+        </span>
+        <span class="viewer-options-hint">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="5"></rect><path d="M12 6v5"></path><path d="M4 12H2"></path><path d="M22 12h-2"></path><path d="M12 22v-2"></path></svg>
+          <span>Mouse wheel press - pan</span>
+        </span>
+      </span>
     </div>
     <div id="statusLine" class="status-line">Ready.</div>
   </main>
@@ -1297,18 +1441,53 @@ def render_html_page() -> str:
       <input id="clusterOpacity" type="range" min="10" max="90" step="5" value="45" aria-label="Talc cluster overlay opacity">
       <div id="clusterStats" class="filter-hint">Cluster overlay is off.</div>
     </div>
-    <div class="model-human-controls">
-      <div class="control-title">Model/Human QA</div>
-      <label><input type="checkbox" id="modelHumanToggle"> Model vs current human</label>
-      <label><input type="checkbox" id="humanAgreementToggle"> Human agreement</label>
-      <div class="qa-legend">
-        <span><span class="qa-swatch qa-agreement"></span>agreement</span>
-        <span><span class="qa-swatch qa-model-only"></span>model only</span>
-        <span><span class="qa-swatch qa-human-only"></span>human only</span>
-        <span><span class="qa-swatch qa-conflict"></span>sulfide conflict</span>
-        <span><span class="qa-swatch qa-human-disagree"></span>human disagreement</span>
+    <div class="comparison-controls">
+      <div class="control-title">Comparison mode</div>
+      <select id="comparisonModeSelect" aria-label="Comparison mode">
+        <option value="current">Current</option>
+        <option value="heuristic">Heuristic</option>
+        <option value="neural_model">Neural Model</option>
+        <option value="current_vs_heuristic">Current vs Heuristic</option>
+        <option value="current_vs_neural">Current vs Neural Model</option>
+      </select>
+      <div id="currentComparisonControls" class="comparison-subpanel">
+        <div class="filter-hint">Showing current annotation classes only.</div>
       </div>
-      <div id="modelQaStats" class="filter-hint">QA layers are off.</div>
+      <div id="heuristicComparisonControls" class="comparison-subpanel hidden">
+        <div id="heuristicLayerLegend" class="qa-legend">
+          <span><span class="qa-swatch qa-heuristic-only"></span>heuristic</span>
+        </div>
+        <div id="heuristicComparisonLegend" class="qa-legend hidden">
+          <span><span class="qa-swatch qa-agreement"></span>agreement</span>
+          <span><span class="qa-swatch qa-heuristic-only"></span>heuristic only</span>
+          <span><span class="qa-swatch qa-human-only"></span>current only</span>
+          <span><span class="qa-swatch qa-conflict"></span>sulfide conflict</span>
+        </div>
+        <div class="qa-param-grid">
+          <label>
+            <span class="field-label inline">K threshold</span>
+            <input id="heuristicKThreshold" type="number" min="0.10" max="1.50" step="0.01" value="0.85">
+          </label>
+          <label>
+            <span class="field-label inline">Classify threshold</span>
+            <input id="heuristicClassifyThreshold" type="number" min="0" max="1" step="0.01" value="0.37">
+          </label>
+        </div>
+        <button type="button" id="runTalcoseHeuristicBtn" class="small-button full-width">Run non-neural classifier</button>
+        <div id="heuristicQaStats" class="filter-hint">No heuristic result yet.</div>
+      </div>
+      <div id="neuralComparisonControls" class="comparison-subpanel hidden">
+        <div id="neuralLayerLegend" class="qa-legend">
+          <span><span class="qa-swatch qa-model-only"></span>neural model</span>
+        </div>
+        <div id="neuralComparisonLegend" class="qa-legend hidden">
+          <span><span class="qa-swatch qa-agreement"></span>agreement</span>
+          <span><span class="qa-swatch qa-model-only"></span>neural only</span>
+          <span><span class="qa-swatch qa-human-only"></span>current only</span>
+          <span><span class="qa-swatch qa-conflict"></span>sulfide conflict</span>
+        </div>
+        <div id="modelQaStats" class="filter-hint">Neural comparison is off.</div>
+      </div>
     </div>
     <div id="assetWarnings" class="asset-warnings hidden" role="status" aria-live="polite"></div>
     <div class="layers">
@@ -1493,16 +1672,76 @@ button, input, select, textarea { font: inherit; }
 .tool-param-group label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .tool-param-group input[type="range"] { max-width: 130px; }
 .zoom-value { min-width: 48px; color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; align-self: center; }
-.viewer-wrap { position: relative; flex: 1; overflow: auto; padding: 14px; background: var(--viewer-bg); }
-#viewerCanvas { display: block; background: var(--canvas-bg); image-rendering: auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.22); }
-.segmentation-class-widget {
+.viewer-wrap { --pan-gutter-x: 0px; --pan-gutter-y: 0px; position: relative; flex: 1; overflow: auto; padding: 14px; padding-right: calc(14px + var(--pan-gutter-x)); padding-bottom: calc(14px + var(--pan-gutter-y)); background: var(--viewer-bg); }
+#viewerCanvas { display: block; margin-top: var(--pan-gutter-y); margin-left: var(--pan-gutter-x); background: var(--canvas-bg); image-rendering: auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.22); user-select: none; touch-action: none; -webkit-user-drag: none; }
+.viewer-options-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
+.viewer-options-hints { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+.viewer-options-hint { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.viewer-options-hint svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.zoom-widget {
+  position: fixed;
+  left: var(--zoom-widget-left, 12px);
+  bottom: var(--zoom-widget-bottom, 12px);
+  z-index: 8;
+  min-width: 56px;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--floating-panel-border);
+  border-radius: 8px;
+  background: var(--floating-panel-bg);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+}
+.zoom-widget-row, .zoom-widget-main { display: grid; grid-template-columns: 32px; gap: 6px; justify-content: center; }
+.zoom-widget button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--control-bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.zoom-widget button:hover, .zoom-widget button:focus-visible { border-color: var(--hover-line); }
+.zoom-widget svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.zoom-widget .zoom-level {
+  min-width: 32px;
+  padding: 3px 0;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.viewer-top-widgets {
   position: sticky;
   top: 10px;
-  left: 10px;
   z-index: 4;
+  margin-bottom: -88px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  pointer-events: none;
+}
+.segmentation-class-widget, .viewer-layer-widget {
   width: max-content;
   max-width: min(286px, calc(100vw - 36px));
-  margin-bottom: -88px;
   display: grid;
   gap: 7px;
   padding: 9px 10px;
@@ -1512,12 +1751,16 @@ button, input, select, textarea { font: inherit; }
   color: var(--text);
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
   backdrop-filter: blur(8px);
+  pointer-events: auto;
 }
-.segmentation-class-title { font-size: 11px; font-weight: 750; color: var(--muted); text-transform: uppercase; }
+.viewer-layer-widget { margin-left: auto; }
+.segmentation-class-title, .viewer-layer-title { font-size: 11px; font-weight: 750; color: var(--muted); text-transform: uppercase; }
 .segmentation-class-header, .segmentation-class-row { display: grid; grid-template-columns: 38px minmax(92px, 1fr) 52px 32px; align-items: center; gap: 7px; }
 .segmentation-class-header { color: var(--muted); font-size: 10px; font-weight: 750; text-transform: uppercase; }
-.segmentation-class-row { font-size: 13px; font-weight: 650; white-space: nowrap; }
-.segmentation-class-row.cluster-row { border-top: 1px solid var(--line); padding-top: 7px; }
+.segmentation-class-row, .viewer-layer-row { font-size: 13px; font-weight: 650; white-space: nowrap; }
+.viewer-layer-row { display: grid; grid-template-columns: 28px minmax(122px, 1fr) 52px; align-items: center; gap: 7px; }
+.viewer-layer-row input { justify-self: center; }
+.viewer-layer-row:first-of-type { grid-template-columns: 28px minmax(122px, 1fr); }
 .segmentation-class-row input { justify-self: center; }
 .class-name { display: inline-flex; align-items: center; gap: 7px; }
 .class-percent { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
@@ -1541,14 +1784,18 @@ button, input, select, textarea { font: inherit; }
 .cluster-controls input[type="range"] { width: 100%; }
 .cluster-controls-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .cluster-toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
-.model-human-controls { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; font-size: 13px; }
-.model-human-controls label { display: flex; align-items: center; gap: 7px; }
+.comparison-controls { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; font-size: 13px; }
+.comparison-subpanel { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
+.qa-param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.qa-param-grid label { display: grid; gap: 4px; align-items: start; }
+.qa-param-grid input { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--text); padding: 6px 7px; }
 .control-title { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; }
 .qa-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; color: var(--muted); font-size: 11px; line-height: 1.25; }
 .qa-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .qa-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(15, 23, 42, 0.25); }
 .qa-swatch.qa-agreement { background: #22c55e; }
 .qa-swatch.qa-model-only { background: #8b5cf6; }
+.qa-swatch.qa-heuristic-only { background: #f97316; }
 .qa-swatch.qa-human-only { background: #06b6d4; }
 .qa-swatch.qa-conflict { background: #ef4444; }
 .qa-swatch.qa-human-disagree { background: #f97316; }
@@ -1556,6 +1803,7 @@ button, input, select, textarea { font: inherit; }
 .range-actions { justify-content: flex-start; }
 .range-value { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .filter-hint { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.hidden { display: none !important; }
 .layers { display: grid; gap: 7px; margin-top: 10px; font-size: 13px; }
 .guard-controls { border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 8px; margin-top: 12px; padding: 10px; font-size: 13px; }
 .guard-controls label { display: flex; align-items: center; gap: 7px; }
@@ -1597,6 +1845,7 @@ const MAX_SAM2_REGION_FRACTION = 0.50;
 const MIN_ZOOM = 0.10;
 const MAX_ZOOM = 4.00;
 const ZOOM_STEP = 1.15;
+const PAN_GUTTER_MIN_PX = 240;
 const SAM2_POINT_HOVER_PREVIEW_DELAY_MS = 2000;
 const BRIGHTNESS_THRESHOLD_STORAGE_KEY = 'talcBrightnessThreshold';
 const BRIGHTNESS_THRESHOLD_FORMULA = 'luma = 0.299*R + 0.587*G + 0.114*B; luma <= threshold keeps the pixel, luma > threshold paints it white';
@@ -1631,6 +1880,10 @@ const state = {
     startClientY: 0,
     scrollLeft: 0,
     scrollTop: 0
+  },
+  panGutter: {
+    x: 0,
+    y: 0
   },
   dirty: false,
   saveState: 'saved',
@@ -1694,6 +1947,25 @@ const state = {
     key: null,
     canvas: null,
     stats: null
+  },
+  modelStandalone: {
+    key: null,
+    canvas: null,
+    stats: null
+  },
+  heuristicComparison: {
+    key: null,
+    canvas: null,
+    stats: null
+  },
+  heuristicStandalone: {
+    key: null,
+    canvas: null,
+    stats: null
+  },
+  talcoseHeuristicQa: {
+    running: false,
+    result: null
   }
 };
 
@@ -1721,6 +1993,8 @@ const notTalcTintCanvas = document.createElement('canvas');
 const notTalcTintCtx = notTalcTintCanvas.getContext('2d', { willReadFrequently: true });
 const modelTalcCanvas = document.createElement('canvas');
 const modelTalcCtx = modelTalcCanvas.getContext('2d', { willReadFrequently: true });
+const heuristicTalcCanvas = document.createElement('canvas');
+const heuristicTalcCtx = heuristicTalcCanvas.getContext('2d', { willReadFrequently: true });
 const brightnessSourceCanvas = document.createElement('canvas');
 const brightnessSourceCtx = brightnessSourceCanvas.getContext('2d', { willReadFrequently: true });
 const brightnessPreviewCanvas = document.createElement('canvas');
@@ -1760,6 +2034,12 @@ const els = {
   zoomOutBtn: document.getElementById('zoomOutBtn'),
   fitBtn: document.getElementById('fitBtn'),
   zoomValue: document.getElementById('zoomValue'),
+  zoomFitWidgetBtn: document.getElementById('zoomFitWidgetBtn'),
+  zoomActualWidgetBtn: document.getElementById('zoomActualWidgetBtn'),
+  zoomInWidgetBtn: document.getElementById('zoomInWidgetBtn'),
+  zoomOutWidgetBtn: document.getElementById('zoomOutWidgetBtn'),
+  zoomWidgetValue: document.getElementById('zoomWidgetValue'),
+  zoomWidget: document.getElementById('zoomWidget'),
   themeSelect: document.getElementById('themeSelect'),
   baseMode: document.getElementById('baseMode'),
   brightnessThreshold: document.getElementById('brightnessThreshold'),
@@ -1777,9 +2057,19 @@ const els = {
   clusterOpacity: document.getElementById('clusterOpacity'),
   clusterOpacityValue: document.getElementById('clusterOpacityValue'),
   clusterStats: document.getElementById('clusterStats'),
-  modelHumanToggle: document.getElementById('modelHumanToggle'),
-  humanAgreementToggle: document.getElementById('humanAgreementToggle'),
+  comparisonModeSelect: document.getElementById('comparisonModeSelect'),
+  currentComparisonControls: document.getElementById('currentComparisonControls'),
+  heuristicComparisonControls: document.getElementById('heuristicComparisonControls'),
+  neuralComparisonControls: document.getElementById('neuralComparisonControls'),
+  heuristicLayerLegend: document.getElementById('heuristicLayerLegend'),
+  heuristicComparisonLegend: document.getElementById('heuristicComparisonLegend'),
+  neuralLayerLegend: document.getElementById('neuralLayerLegend'),
+  neuralComparisonLegend: document.getElementById('neuralComparisonLegend'),
   modelQaStats: document.getElementById('modelQaStats'),
+  heuristicKThreshold: document.getElementById('heuristicKThreshold'),
+  heuristicClassifyThreshold: document.getElementById('heuristicClassifyThreshold'),
+  runTalcoseHeuristicBtn: document.getElementById('runTalcoseHeuristicBtn'),
+  heuristicQaStats: document.getElementById('heuristicQaStats'),
   assetWarnings: document.getElementById('assetWarnings'),
   metricsBox: document.getElementById('metricsBox'),
   reviewerInput: document.getElementById('reviewerInput'),
@@ -1795,6 +2085,7 @@ const els = {
   sam2ApplyBtn: document.getElementById('sam2ApplyBtn'),
   sam2StatusBtn: document.getElementById('sam2StatusBtn'),
   layers: {
+    background: document.getElementById('layerBackground'),
     current: document.getElementById('layerCurrent'),
     talcNode: document.getElementById('layerTalcNode'),
     notTalc: document.getElementById('layerNotTalc'),
@@ -1930,7 +2221,43 @@ function imagePointFromEvent(event) {
 function applyZoom() {
   viewer.style.width = `${Math.max(120, Math.round(state.imageW * state.zoom))}px`;
   viewer.style.height = `${Math.max(120, Math.round(state.imageH * state.zoom))}px`;
-  if (els.zoomValue) els.zoomValue.textContent = `${Math.round(state.zoom * 100)}%`;
+  const zoomText = `${Math.round(state.zoom * 100)}%`;
+  if (els.zoomValue) els.zoomValue.textContent = zoomText;
+  if (els.zoomWidgetValue) els.zoomWidgetValue.textContent = zoomText;
+}
+
+function updateZoomWidgetPosition() {
+  const wrap = document.getElementById('viewerWrap');
+  if (!wrap || !els.zoomWidget) return;
+  const rect = wrap.getBoundingClientRect();
+  els.zoomWidget.style.setProperty('--zoom-widget-left', `${Math.max(8, Math.round(rect.left + 12))}px`);
+  els.zoomWidget.style.setProperty('--zoom-widget-bottom', `${Math.max(8, Math.round(window.innerHeight - rect.bottom + 12))}px`);
+}
+
+function updatePanGutter(options = {}) {
+  const wrap = document.getElementById('viewerWrap');
+  if (!wrap) return state.panGutter;
+  updateZoomWidgetPosition();
+  const previous = { ...state.panGutter };
+  const next = {
+    x: Math.max(PAN_GUTTER_MIN_PX, Math.round(wrap.clientWidth || 0)),
+    y: Math.max(PAN_GUTTER_MIN_PX, Math.round(wrap.clientHeight || 0))
+  };
+  state.panGutter = next;
+  wrap.style.setProperty('--pan-gutter-x', `${next.x}px`);
+  wrap.style.setProperty('--pan-gutter-y', `${next.y}px`);
+  if (options.preserveCanvasPosition && (previous.x !== next.x || previous.y !== next.y)) {
+    wrap.scrollLeft += next.x - previous.x;
+    wrap.scrollTop += next.y - previous.y;
+  }
+  return next;
+}
+
+function resetViewPanOrigin() {
+  const wrap = document.getElementById('viewerWrap');
+  updatePanGutter();
+  wrap.scrollLeft = state.panGutter.x;
+  wrap.scrollTop = state.panGutter.y;
 }
 
 function clampZoom(value) {
@@ -1941,6 +2268,7 @@ function clampZoom(value) {
 
 function setZoom(value, anchor = null) {
   const wrap = document.getElementById('viewerWrap');
+  updatePanGutter({ preserveCanvasPosition: true });
   let anchorImagePoint = null;
   let anchorOffset = null;
   if (anchor && viewer.clientWidth > 0 && viewer.clientHeight > 0) {
@@ -1958,8 +2286,8 @@ function setZoom(value, anchor = null) {
   state.zoom = clampZoom(value);
   applyZoom();
   if (anchorImagePoint && anchorOffset) {
-    wrap.scrollLeft = Math.max(0, anchorImagePoint.x * state.zoom - anchorOffset.x);
-    wrap.scrollTop = Math.max(0, anchorImagePoint.y * state.zoom - anchorOffset.y);
+    wrap.scrollLeft = Math.max(0, state.panGutter.x + anchorImagePoint.x * state.zoom - anchorOffset.x);
+    wrap.scrollTop = Math.max(0, state.panGutter.y + anchorImagePoint.y * state.zoom - anchorOffset.y);
   }
   draw();
 }
@@ -1968,25 +2296,36 @@ function zoomBy(factor, anchor = null) {
   setZoom(state.zoom * factor, anchor);
 }
 
+function isMiddleButtonEvent(event) {
+  return event.button === 1 || (typeof event.buttons === 'number' && (event.buttons & 4) === 4);
+}
+
+function isMiddleButtonHeld(event) {
+  return typeof event.buttons !== 'number' || (event.buttons & 4) === 4;
+}
+
 function startViewPan(event) {
   const wrap = document.getElementById('viewerWrap');
   event.preventDefault();
+  event.stopPropagation();
   clearSam2Preview({ redraw: false });
+  const pointerId = typeof event.pointerId === 'number' ? event.pointerId : null;
   state.viewPan = {
     active: true,
-    pointerId: event.pointerId,
+    pointerId,
     startClientX: event.clientX,
     startClientY: event.clientY,
     scrollLeft: wrap.scrollLeft,
     scrollTop: wrap.scrollTop
   };
-  viewer.setPointerCapture(event.pointerId);
+  if (pointerId !== null) viewer.setPointerCapture(pointerId);
   viewer.style.cursor = 'grabbing';
   setStatus('Pan view: drag while holding the mouse wheel.');
 }
 
 function updateViewPan(event) {
-  if (!state.viewPan.active || state.viewPan.pointerId !== event.pointerId) return false;
+  if (!state.viewPan.active) return false;
+  if (state.viewPan.pointerId !== null && state.viewPan.pointerId !== event.pointerId) return false;
   event.preventDefault();
   const wrap = document.getElementById('viewerWrap');
   const dx = event.clientX - state.viewPan.startClientX;
@@ -1998,9 +2337,9 @@ function updateViewPan(event) {
 
 function finishViewPan(event = null) {
   if (!state.viewPan.active) return false;
-  if (event && state.viewPan.pointerId !== event.pointerId) return false;
+  if (event && state.viewPan.pointerId !== null && event.pointerId !== undefined && state.viewPan.pointerId !== event.pointerId) return false;
   try {
-    if (event && viewer.hasPointerCapture(event.pointerId)) viewer.releasePointerCapture(event.pointerId);
+    if (event && state.viewPan.pointerId !== null && viewer.hasPointerCapture(state.viewPan.pointerId)) viewer.releasePointerCapture(state.viewPan.pointerId);
   } catch (err) {
     // Pointer capture can already be released by the browser on cancel.
   }
@@ -2018,9 +2357,16 @@ function finishViewPan(event = null) {
 
 function fitToViewer() {
   const wrap = document.getElementById('viewerWrap');
+  updatePanGutter();
   const maxW = Math.max(240, wrap.clientWidth - 36);
   const maxH = Math.max(180, wrap.clientHeight - 36);
   setZoom(Math.min(maxW / state.imageW, maxH / state.imageH, 1));
+  resetViewPanOrigin();
+}
+
+function actualSizeView() {
+  setZoom(1);
+  resetViewPanOrigin();
 }
 
 function updateToolParams() {
@@ -2313,6 +2659,7 @@ function refreshCurrentTint() {
   state.maskVersion += 1;
   invalidateClusterOverlay();
   invalidateModelHumanQa();
+  invalidateHeuristicComparison();
   currentTintCanvas.width = state.imageW;
   currentTintCanvas.height = state.imageH;
   talcNodeTintCanvas.width = state.imageW;
@@ -2880,7 +3227,9 @@ function viewSettingsPayload() {
   const clusterSettings = readClusterSettingsFromControls();
   const clusterStats = clusterSettings.enabled ? clusterOverlayStatsPayload() : null;
   const qaStats = state.modelHumanQa.stats;
+  const heuristicStats = state.heuristicComparison.stats;
   return {
+    comparison_mode: selectedComparisonMode(),
     brightness_threshold_luma: currentBrightnessThreshold(),
     brightness_threshold_formula: BRIGHTNESS_THRESHOLD_FORMULA,
     ...brightnessVisibleStatsPayload(),
@@ -2900,7 +3249,15 @@ function viewSettingsPayload() {
       human_agreement_enabled: humanAgreementQaEnabled(),
       stats: qaStats
     },
-    background_mode: els.baseMode ? els.baseMode.value : null
+    heuristic_qa: {
+      enabled: heuristicStandaloneEnabled() || heuristicComparisonEnabled(),
+      standalone_enabled: heuristicStandaloneEnabled(),
+      comparison_enabled: heuristicComparisonEnabled(),
+      stats: heuristicStats,
+      result: currentTalcoseHeuristicRecord()
+    },
+    background_mode: els.baseMode ? els.baseMode.value : null,
+    background_visible: !els.layers.background || els.layers.background.checked
   };
 }
 
@@ -3117,18 +3474,65 @@ function invalidateModelHumanQa() {
   state.modelHumanQa.key = null;
   state.modelHumanQa.canvas = null;
   state.modelHumanQa.stats = null;
+  state.modelStandalone.key = null;
+  state.modelStandalone.canvas = null;
+  state.modelStandalone.stats = null;
+}
+
+function invalidateHeuristicComparison() {
+  state.heuristicComparison.key = null;
+  state.heuristicComparison.canvas = null;
+  state.heuristicComparison.stats = null;
+  state.heuristicStandalone.key = null;
+  state.heuristicStandalone.canvas = null;
+  state.heuristicStandalone.stats = null;
+}
+
+function selectedComparisonMode() {
+  return els.comparisonModeSelect ? els.comparisonModeSelect.value : 'current';
+}
+
+function updateComparisonModeVisibility() {
+  const mode = selectedComparisonMode();
+  const heuristicMode = mode === 'heuristic' || mode === 'current_vs_heuristic';
+  const neuralMode = mode === 'neural_model' || mode === 'current_vs_neural';
+  if (els.currentComparisonControls) els.currentComparisonControls.classList.toggle('hidden', mode !== 'current');
+  if (els.heuristicComparisonControls) els.heuristicComparisonControls.classList.toggle('hidden', !heuristicMode);
+  if (els.neuralComparisonControls) els.neuralComparisonControls.classList.toggle('hidden', !neuralMode);
+  if (els.heuristicLayerLegend) els.heuristicLayerLegend.classList.toggle('hidden', mode !== 'heuristic');
+  if (els.heuristicComparisonLegend) els.heuristicComparisonLegend.classList.toggle('hidden', mode !== 'current_vs_heuristic');
+  if (els.neuralLayerLegend) els.neuralLayerLegend.classList.toggle('hidden', mode !== 'neural_model');
+  if (els.neuralComparisonLegend) els.neuralComparisonLegend.classList.toggle('hidden', mode !== 'current_vs_neural');
+  updateModelHumanQaStats();
+  updateHeuristicQaStats();
 }
 
 function modelMaskAvailable() {
   return Boolean(state.images.modelMask) && modelTalcCanvas.width === state.imageW && modelTalcCanvas.height === state.imageH;
 }
 
+function heuristicMaskAvailable() {
+  return Boolean(state.images.heuristicZoneMask) && heuristicTalcCanvas.width === state.imageW && heuristicTalcCanvas.height === state.imageH;
+}
+
 function modelHumanQaEnabled() {
-  return Boolean(els.modelHumanToggle && els.modelHumanToggle.checked);
+  return selectedComparisonMode() === 'current_vs_neural';
+}
+
+function modelStandaloneEnabled() {
+  return selectedComparisonMode() === 'neural_model';
+}
+
+function heuristicComparisonEnabled() {
+  return selectedComparisonMode() === 'current_vs_heuristic';
+}
+
+function heuristicStandaloneEnabled() {
+  return selectedComparisonMode() === 'heuristic';
 }
 
 function humanAgreementQaEnabled() {
-  return Boolean(els.humanAgreementToggle && els.humanAgreementToggle.checked);
+  return false;
 }
 
 function modelHumanQaCanvasForCurrentState() {
@@ -3157,7 +3561,7 @@ function modelHumanQaCanvasForCurrentState() {
   const canvasCtx = canvas.getContext('2d', { willReadFrequently: true });
   const imageData = canvasCtx.createImageData(width, height);
   const out = imageData.data;
-  const humanData = talcNodeCtx.getImageData(0, 0, width, height).data;
+  const humanData = captureTalcNodeData().data;
   const modelData = modelMaskAvailable() ? modelTalcCtx.getImageData(0, 0, width, height).data : null;
   const sulfideData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
   const teammateMasks = state.images.humanReviewMasks || [];
@@ -3233,15 +3637,36 @@ function modelHumanQaCanvasForCurrentState() {
   return canvas;
 }
 
+function modelStandaloneCanvasForCurrentState() {
+  if (!state.sample || !modelStandaloneEnabled()) {
+    state.modelStandalone.stats = null;
+    return null;
+  }
+  if (!modelMaskAvailable()) {
+    state.modelStandalone.stats = null;
+    return null;
+  }
+  const key = [state.sampleId, state.imageW, state.imageH, 'neural-model-layer'].join(':');
+  if (state.modelStandalone.key === key && state.modelStandalone.canvas) return state.modelStandalone.canvas;
+  const canvas = buildTintFromCanvas(modelTalcCanvas, [139, 92, 246, 150]);
+  state.modelStandalone.key = key;
+  state.modelStandalone.canvas = canvas;
+  state.modelStandalone.stats = {
+    predicted_pixels: countMaskPixelsFromCtx(modelTalcCtx),
+    image_pixels: state.imageW * state.imageH
+  };
+  return canvas;
+}
+
 function updateModelHumanQaStats() {
   if (!els.modelQaStats) return;
-  const enabled = modelHumanQaEnabled() || humanAgreementQaEnabled();
+  const enabled = modelHumanQaEnabled() || modelStandaloneEnabled() || humanAgreementQaEnabled();
   if (!state.sample || !enabled) {
-    els.modelQaStats.textContent = 'QA layers are off.';
+    els.modelQaStats.textContent = 'Neural model layer is off.';
     return;
   }
-  if (modelHumanQaEnabled() && !modelMaskAvailable()) {
-    els.modelQaStats.textContent = 'Model mask is not available for this sample.';
+  if ((modelHumanQaEnabled() || modelStandaloneEnabled()) && !modelMaskAvailable()) {
+    els.modelQaStats.textContent = 'Neural model mask is not available for this sample.';
     return;
   }
   if (humanAgreementQaEnabled() && (!state.images.humanReviewMasks || state.images.humanReviewMasks.length === 0)) {
@@ -3249,6 +3674,15 @@ function updateModelHumanQaStats() {
     return;
   }
   const stats = state.modelHumanQa.stats;
+  if (modelStandaloneEnabled()) {
+    const layerStats = state.modelStandalone.stats;
+    if (!layerStats) {
+      els.modelQaStats.textContent = 'Neural model layer will update after redraw.';
+      return;
+    }
+    els.modelQaStats.textContent = `neural model ${formatPct(layerStats.predicted_pixels, layerStats.image_pixels)}`;
+    return;
+  }
   if (!stats) {
     els.modelQaStats.textContent = 'QA overlay will update after redraw.';
     return;
@@ -3256,8 +3690,8 @@ function updateModelHumanQaStats() {
   const parts = [];
   if (modelHumanQaEnabled() && stats.model_available) {
     parts.push(`agreement ${formatPct(stats.agreement, stats.image_pixels)}`);
-    parts.push(`model only ${formatPct(stats.model_only, stats.image_pixels)}`);
-    parts.push(`human only ${formatPct(stats.human_only, stats.image_pixels)}`);
+    parts.push(`neural only ${formatPct(stats.model_only, stats.image_pixels)}`);
+    parts.push(`current only ${formatPct(stats.human_only, stats.image_pixels)}`);
     parts.push(`sulfide conflict ${formatPct(stats.sulfide_conflict, stats.image_pixels)}`);
   }
   if (humanAgreementQaEnabled() && stats.human_mask_count > 1) {
@@ -3277,14 +3711,257 @@ function drawModelHumanQaOverlay() {
   updateModelHumanQaStats();
 }
 
+function drawModelStandaloneOverlay() {
+  const overlay = modelStandaloneCanvasForCurrentState();
+  if (!overlay) {
+    updateModelHumanQaStats();
+    return;
+  }
+  ctx.drawImage(overlay, 0, 0);
+  updateModelHumanQaStats();
+}
+
+function currentTalcoseHeuristicQaPayload() {
+  return state.talcoseHeuristicQa.result || (state.sample ? state.sample.non_neural_talcose_qa : null);
+}
+
+function currentTalcoseHeuristicRecord() {
+  const payload = currentTalcoseHeuristicQaPayload();
+  if (!payload) return null;
+  return payload.result || payload;
+}
+
+function currentTalcoseHeuristicUrls() {
+  const payload = currentTalcoseHeuristicQaPayload();
+  if (!payload) return {};
+  return payload.urls || (payload.result && payload.result.urls) || {};
+}
+
+function heuristicStandaloneCanvasForCurrentState() {
+  if (!state.sample || !heuristicStandaloneEnabled()) {
+    state.heuristicStandalone.stats = null;
+    return null;
+  }
+  if (!heuristicMaskAvailable()) {
+    state.heuristicStandalone.stats = null;
+    return null;
+  }
+  const key = [state.sampleId, state.imageW, state.imageH, 'heuristic-layer'].join(':');
+  if (state.heuristicStandalone.key === key && state.heuristicStandalone.canvas) return state.heuristicStandalone.canvas;
+  const canvas = buildTintFromCanvas(heuristicTalcCanvas, [249, 115, 22, 150]);
+  state.heuristicStandalone.key = key;
+  state.heuristicStandalone.canvas = canvas;
+  state.heuristicStandalone.stats = {
+    predicted_pixels: countMaskPixelsFromCtx(heuristicTalcCtx),
+    image_pixels: state.imageW * state.imageH
+  };
+  return canvas;
+}
+
+function heuristicComparisonCanvasForCurrentState() {
+  if (!state.sample || !heuristicComparisonEnabled()) {
+    state.heuristicComparison.stats = null;
+    return null;
+  }
+  if (!heuristicMaskAvailable()) {
+    state.heuristicComparison.stats = null;
+    return null;
+  }
+  const key = [
+    state.maskVersion,
+    state.imageW,
+    state.imageH,
+    'heuristic',
+    heuristicMaskAvailable() ? 'heuristic-yes' : 'heuristic-no'
+  ].join(':');
+  if (state.heuristicComparison.key === key && state.heuristicComparison.canvas) return state.heuristicComparison.canvas;
+
+  const width = state.imageW;
+  const height = state.imageH;
+  const total = width * height;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const canvasCtx = canvas.getContext('2d', { willReadFrequently: true });
+  const imageData = canvasCtx.createImageData(width, height);
+  const out = imageData.data;
+  const currentData = captureTalcNodeData().data;
+  const heuristicData = heuristicTalcCtx.getImageData(0, 0, width, height).data;
+  const sulfideData = hasSulfideGuard() ? sulfideGuardCtx.getImageData(0, 0, width, height).data : null;
+  const stats = {
+    agreement: 0,
+    heuristic_only: 0,
+    current_only: 0,
+    sulfide_conflict: 0,
+    image_pixels: total
+  };
+
+  for (let pixel = 0; pixel < total; pixel += 1) {
+    const i = pixel * 4;
+    const currentActive = isMaskDataActive(currentData, pixel, 0);
+    const heuristicActive = isMaskDataActive(heuristicData, pixel, 0);
+    const sulfideActive = sulfideData ? isMaskDataActive(sulfideData, pixel, 0) : false;
+    let alpha = 0;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+
+    if ((currentActive || heuristicActive) && sulfideActive) {
+      stats.sulfide_conflict += 1;
+      r = 239; g = 68; b = 68; alpha = 178;
+    } else if (currentActive && heuristicActive) {
+      stats.agreement += 1;
+      r = 34; g = 197; b = 94; alpha = 138;
+    } else if (heuristicActive) {
+      stats.heuristic_only += 1;
+      r = 249; g = 115; b = 22; alpha = 150;
+    } else if (currentActive) {
+      stats.current_only += 1;
+      r = 6; g = 182; b = 212; alpha = 150;
+    }
+
+    if (alpha > 0) {
+      out[i] = r;
+      out[i + 1] = g;
+      out[i + 2] = b;
+      out[i + 3] = alpha;
+    }
+  }
+
+  canvasCtx.putImageData(imageData, 0, 0);
+  state.heuristicComparison.key = key;
+  state.heuristicComparison.canvas = canvas;
+  state.heuristicComparison.stats = stats;
+  return canvas;
+}
+
+function updateHeuristicQaStats() {
+  if (!els.heuristicQaStats) return;
+  if (els.runTalcoseHeuristicBtn) {
+    els.runTalcoseHeuristicBtn.disabled = Boolean(state.talcoseHeuristicQa.running || !state.sampleId);
+  }
+  els.heuristicQaStats.textContent = '';
+  if (state.talcoseHeuristicQa.running) {
+    els.heuristicQaStats.textContent = 'Running non-neural classifier...';
+    return;
+  }
+  const record = currentTalcoseHeuristicRecord();
+  if (!record) {
+    els.heuristicQaStats.textContent = 'No heuristic result yet.';
+    return;
+  }
+  const talcPct = Number.isFinite(Number(record.talc_fraction)) ? `${(Number(record.talc_fraction) * 100).toFixed(2)}%` : 'n/a';
+  const source = record.ore_mask_source && record.ore_mask_source !== 'brightness_fallback' ? 'sulfide mask' : 'brightness fallback';
+  let comparisonText = '';
+  if (heuristicComparisonEnabled()) {
+    const stats = state.heuristicComparison.stats;
+    comparisonText = stats
+      ? ` · agreement ${formatPct(stats.agreement, stats.image_pixels)} · heuristic only ${formatPct(stats.heuristic_only, stats.image_pixels)} · current only ${formatPct(stats.current_only, stats.image_pixels)}`
+      : heuristicMaskAvailable() ? ' · comparison updates after redraw' : ' · run or reload to load zone mask';
+  } else if (heuristicStandaloneEnabled()) {
+    const layerStats = state.heuristicStandalone.stats;
+    comparisonText = layerStats
+      ? ` · heuristic layer ${formatPct(layerStats.predicted_pixels, layerStats.image_pixels)}`
+      : heuristicMaskAvailable() ? ' · layer updates after redraw' : ' · run or reload to load zone mask';
+  }
+  els.heuristicQaStats.append(`${record.ore_class || 'unknown'} · talc ${talcPct} · ore mask: ${source}${comparisonText}`);
+  const urls = currentTalcoseHeuristicUrls();
+  if (urls.overlay) {
+    els.heuristicQaStats.append(' · ');
+    const overlayLink = document.createElement('a');
+    overlayLink.href = urls.overlay;
+    overlayLink.target = '_blank';
+    overlayLink.rel = 'noopener';
+    overlayLink.textContent = 'overlay';
+    els.heuristicQaStats.append(overlayLink);
+  }
+}
+
+async function runTalcoseHeuristicQa() {
+  if (!state.sampleId) return;
+  state.talcoseHeuristicQa.running = true;
+  updateHeuristicQaStats();
+  setStatus('Running non-neural talcose classifier...');
+  try {
+    const result = await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/talcose-heuristic`, {
+      k_threshold: Number(els.heuristicKThreshold ? els.heuristicKThreshold.value : 0.85),
+      classify_threshold: Number(els.heuristicClassifyThreshold ? els.heuristicClassifyThreshold.value : 0.37)
+    });
+    state.talcoseHeuristicQa.result = result;
+    if (state.sample) {
+      state.sample.non_neural_talcose_qa = result;
+      state.sample.urls.talcose_heuristic_zone_mask = result.urls ? result.urls.zone_mask : null;
+      state.sample.urls.talcose_heuristic_overlay = result.urls ? result.urls.overlay : null;
+    }
+    const zoneImg = await loadImage(result.urls ? result.urls.zone_mask : null, result.urls && result.urls.zone_mask ? 'Heuristic talc-zone mask' : null);
+    heuristicTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
+    state.images.heuristicZoneMask = zoneImg;
+    if (zoneImg) heuristicTalcCtx.drawImage(zoneImg, 0, 0, state.imageW, state.imageH);
+    invalidateHeuristicComparison();
+    const record = currentTalcoseHeuristicRecord();
+    const talcPct = record && Number.isFinite(Number(record.talc_fraction)) ? `${(Number(record.talc_fraction) * 100).toFixed(2)}%` : 'n/a';
+    setStatus(`Non-neural talcose classifier: ${(record && record.ore_class) || 'unknown'} (${talcPct}).`);
+  } catch (err) {
+    setStatus(`Non-neural classifier failed: ${err.message}`, true);
+  } finally {
+    state.talcoseHeuristicQa.running = false;
+    updateHeuristicQaStats();
+    drawWithAvailabilityStatus();
+  }
+}
+
+function drawHeuristicComparisonOverlay() {
+  const overlay = heuristicComparisonCanvasForCurrentState();
+  if (!overlay) {
+    updateHeuristicQaStats();
+    return;
+  }
+  ctx.drawImage(overlay, 0, 0);
+  updateHeuristicQaStats();
+}
+
+function drawHeuristicStandaloneOverlay() {
+  const overlay = heuristicStandaloneCanvasForCurrentState();
+  if (!overlay) {
+    updateHeuristicQaStats();
+    return;
+  }
+  ctx.drawImage(overlay, 0, 0);
+  updateHeuristicQaStats();
+}
+
+function drawComparisonOverlay() {
+  if (selectedComparisonMode() === 'neural_model') {
+    drawModelStandaloneOverlay();
+    return;
+  }
+  if (selectedComparisonMode() === 'current_vs_neural') {
+    drawModelHumanQaOverlay();
+    return;
+  }
+  if (selectedComparisonMode() === 'heuristic') {
+    drawHeuristicStandaloneOverlay();
+    return;
+  }
+  if (selectedComparisonMode() === 'current_vs_heuristic') {
+    drawHeuristicComparisonOverlay();
+    return;
+  }
+  updateModelHumanQaStats();
+  updateHeuristicQaStats();
+}
+
 function draw() {
   ctx.clearRect(0, 0, viewer.width, viewer.height);
   if (!state.sample) return;
   const baseMode = els.baseMode.value;
+  const showBackground = !els.layers.background || els.layers.background.checked;
   let base = state.images.original || state.images.annotated;
   if (baseMode === 'annotated') base = state.images.annotated || base;
   if (baseMode === 'qa') base = state.images.qa || base;
-  if (baseMode === 'mask') {
+  if (!showBackground) {
+    setBrightnessVisibleStats(null);
+  } else if (baseMode === 'mask') {
     setBrightnessVisibleStats(null);
     ctx.fillStyle = cssVar('--mask-only-bg', '#0f172a');
     ctx.fillRect(0, 0, state.imageW, state.imageH);
@@ -3305,7 +3982,7 @@ function draw() {
   if (els.layers.current.checked) ctx.drawImage(currentTintCanvas, 0, 0);
   if (els.layers.talcNode.checked) ctx.drawImage(talcNodeTintCanvas, 0, 0);
   if (els.layers.notTalc.checked) ctx.drawImage(notTalcTintCanvas, 0, 0);
-  drawModelHumanQaOverlay();
+  drawComparisonOverlay();
   drawClusterOverlay();
   drawSimilarTalcPreview();
   drawSam2ResultPreview();
@@ -3319,6 +3996,7 @@ function draw() {
 
 function describeUnavailableBackground() {
   if (!state.sample) return null;
+  if (els.layers.background && !els.layers.background.checked) return null;
   const baseMode = els.baseMode.value;
   if (baseMode === 'original' && !state.images.original) return 'Original photo is not available for this sample.';
   if (baseMode === 'annotated' && !state.images.annotated) return 'MS Paint annotation image is not available for this sample.';
@@ -4974,7 +5652,7 @@ viewer.addEventListener('contextmenu', (event) => {
 });
 
 viewer.addEventListener('auxclick', (event) => {
-  if (event.button === 1) event.preventDefault();
+  if (isMiddleButtonEvent(event)) event.preventDefault();
 });
 
 viewer.addEventListener('wheel', (event) => {
@@ -4983,9 +5661,16 @@ viewer.addEventListener('wheel', (event) => {
   zoomBy(event.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, event);
 }, { passive: false });
 
+viewer.addEventListener('mousedown', (event) => {
+  if (!isMiddleButtonEvent(event)) return;
+  event.preventDefault();
+  if (!state.sample || state.viewPan.active) return;
+  startViewPan(event);
+}, { capture: true });
+
 viewer.addEventListener('pointerdown', async (event) => {
   if (!state.sample) return;
-  if (event.button === 1) {
+  if (isMiddleButtonEvent(event)) {
     startViewPan(event);
     return;
   }
@@ -5158,6 +5843,10 @@ viewer.addEventListener('pointerdown', async (event) => {
 
 viewer.addEventListener('pointermove', (event) => {
   if (state.viewPan.active) {
+    if (state.viewPan.pointerId !== null && !isMiddleButtonHeld(event)) {
+      finishViewPan(event);
+      return;
+    }
     updateViewPan(event);
     return;
   }
@@ -5283,6 +5972,24 @@ viewer.addEventListener('pointercancel', (event) => {
   finishViewPan(event);
 });
 
+document.addEventListener('mousemove', (event) => {
+  if (!state.viewPan.active || state.viewPan.pointerId !== null) return;
+  if (!isMiddleButtonHeld(event)) {
+    finishViewPan();
+    return;
+  }
+  updateViewPan(event);
+});
+
+document.addEventListener('mouseup', (event) => {
+  if (state.viewPan.active && state.viewPan.pointerId === null && event.button === 1) finishViewPan();
+});
+
+window.addEventListener('resize', () => {
+  updatePanGutter({ preserveCanvasPosition: true });
+  updateZoomWidgetPosition();
+});
+
 document.querySelectorAll('.tool-button').forEach((button) => {
   button.addEventListener('click', () => {
     selectTool(button.dataset.tool);
@@ -5347,16 +6054,19 @@ if (els.clusterResetBtn) {
     drawWithAvailabilityStatus();
   });
 });
-[
-  els.modelHumanToggle,
-  els.humanAgreementToggle
-].forEach((control) => {
-  if (!control) return;
-  control.addEventListener('change', () => {
+if (els.comparisonModeSelect) {
+  els.comparisonModeSelect.addEventListener('change', () => {
     invalidateModelHumanQa();
+    invalidateHeuristicComparison();
+    updateComparisonModeVisibility();
     drawWithAvailabilityStatus();
   });
-});
+}
+if (els.runTalcoseHeuristicBtn) {
+  els.runTalcoseHeuristicBtn.addEventListener('click', () => {
+    runTalcoseHeuristicQa().catch((err) => setStatus(`Non-neural classifier failed: ${err.message}`, true));
+  });
+}
 els.sam2PromptMode.addEventListener('change', () => {
   clearSam2Preview({ redraw: false });
   updateSam2ApplyButton();
@@ -5364,6 +6074,10 @@ els.sam2PromptMode.addEventListener('change', () => {
 });
 els.zoomInBtn.addEventListener('click', () => zoomBy(ZOOM_STEP));
 els.zoomOutBtn.addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
+els.zoomInWidgetBtn.addEventListener('click', () => zoomBy(ZOOM_STEP));
+els.zoomOutWidgetBtn.addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
+els.zoomFitWidgetBtn.addEventListener('click', fitToViewer);
+els.zoomActualWidgetBtn.addEventListener('click', actualSizeView);
 els.themeSelect.addEventListener('change', () => applyTheme(els.themeSelect.value));
 els.subtractSulfidesBtn.addEventListener('click', () => {
   subtractSulfidesFromMask().catch((err) => setStatus(`Sulfide subtraction failed: ${err.message}`, true));
@@ -5464,10 +6178,12 @@ async function loadSample(sampleId, options = {}) {
   notTalcTintCanvas.height = state.imageH;
   modelTalcCanvas.width = state.imageW;
   modelTalcCanvas.height = state.imageH;
+  heuristicTalcCanvas.width = state.imageW;
+  heuristicTalcCanvas.height = state.imageH;
 
   const urls = state.sample.urls;
   const [
-    original, annotated, qa, currentMask, positiveBagMask, talcNodeMask, notTalcMask, autoMask, rawLines, closedLines, overlapMask, ignoreMask, sulfideMask, modelMask
+    original, annotated, qa, currentMask, positiveBagMask, talcNodeMask, notTalcMask, autoMask, rawLines, closedLines, overlapMask, ignoreMask, sulfideMask, modelMask, heuristicZoneMask
   ] = await Promise.all([
     loadImage(urls.original, urls.original ? 'Original photo' : null),
     loadImage(urls.annotated || urls.source_copy, (urls.annotated || urls.source_copy) ? 'MS Paint annotation' : null),
@@ -5482,7 +6198,8 @@ async function loadSample(sampleId, options = {}) {
     loadImage(urls.sulfide_overlap, urls.sulfide_overlap ? 'Sulfide overlap mask' : null),
     loadImage(urls.ignore_mask, urls.ignore_mask ? 'Ignore/uncertain mask' : null),
     loadImage(urls.sulfide_mask, urls.sulfide_mask ? 'Sulfide mask' : null),
-    loadImage(urls.model_talc_mask, urls.model_talc_mask ? 'Model talc mask' : null)
+    loadImage(urls.model_talc_mask, urls.model_talc_mask ? 'Model talc mask' : null),
+    loadImage(urls.talcose_heuristic_zone_mask, urls.talcose_heuristic_zone_mask ? 'Heuristic talc-zone mask' : null)
   ]);
   const humanReviewEntries = Array.isArray(urls.human_review_masks) ? urls.human_review_masks : [];
   const humanReviewLoaded = await Promise.all(
@@ -5530,13 +6247,15 @@ async function loadSample(sampleId, options = {}) {
   if (sulfideMask) sulfideGuardCtx.drawImage(sulfideMask, 0, 0, state.imageW, state.imageH);
   modelTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
   if (modelMask) modelTalcCtx.drawImage(modelMask, 0, 0, state.imageW, state.imageH);
+  heuristicTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
+  if (heuristicZoneMask) heuristicTalcCtx.drawImage(heuristicZoneMask, 0, 0, state.imageW, state.imageH);
   state.staticTints = {
     auto: buildTintFromImage(autoMask, [47, 120, 255, 90]),
     lines: buildTintFromImage(rawLines, [20, 40, 255, 170]),
     overlap: buildTintFromImage(overlapMask, [255, 85, 30, 140]),
     ignore: buildTintFromImage(ignoreMask, [255, 214, 10, 110])
   };
-  state.images = { original, annotated, qa, sulfideMask, modelMask, humanReviewMasks: humanReviewLoaded.filter(Boolean).map((item) => item.canvas), humanReviewLabels: humanReviewLoaded.filter(Boolean).map((item) => item.label) };
+  state.images = { original, annotated, qa, sulfideMask, modelMask, heuristicZoneMask, humanReviewMasks: humanReviewLoaded.filter(Boolean).map((item) => item.canvas), humanReviewLabels: humanReviewLoaded.filter(Boolean).map((item) => item.label) };
   state.shapes = [];
   syncTalcNodeLayer({ reason: 'load_sample' });
   enforceNotTalcExclusion(false, 'load_sample');
@@ -5565,8 +6284,12 @@ async function loadSample(sampleId, options = {}) {
   state.activeEditBaseline = null;
   state.activeBaseEditBaseline = null;
   state.samBox = null;
+  state.talcoseHeuristicQa.result = state.sample.non_neural_talcose_qa || null;
+  state.talcoseHeuristicQa.running = false;
   clearSam2Preview({ redraw: false });
   clearSimilarTalcPreview({ redraw: false });
+  invalidateHeuristicComparison();
+  updateComparisonModeVisibility();
 
   els.sampleTitle.textContent = state.sample.image.name;
   els.sampleSubtitle.textContent = `${statusLabel(state.sample.sample.status)} · ${reviewStateLabel(state.sample.sample.review_state)} · ${state.imageW} x ${state.imageH}`;
@@ -5585,6 +6308,7 @@ loadClusterOverlaySettings();
 updateSimilarStrictnessUi();
 setSimilarSeedMode('positive');
 updateToolParams();
+updateComparisonModeVisibility();
 
 loadManifest(true).catch((err) => {
   emptyState.textContent = `Failed to start: ${err.message}`;

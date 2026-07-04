@@ -9,8 +9,8 @@
   delta is MPS inference run-to-run non-determinism in the sulfide fractions that
   feed the features, not a methodology change.
 - Competitors: two public hackathon repos the user shared.
-  - A = `github.com/nail-rinatovich/hackathon` (branch `dev`)
-  - B = `github.com/OpiumProger/Nornikel` (branch `main`)
+  - **nail** = `github.com/nail-rinatovich/hackathon` (branch `dev`)
+  - **opium** = `github.com/OpiumProger/Nornikel` (branch `main`)
 
 ## TL;DR
 
@@ -19,19 +19,24 @@ folder** of each аншлиф, propagated to its photos. So the metrics are comp
 in *kind*, but not in *split* (val sizes and class definitions differ). The
 honest read:
 
-- Competitor A's headline **F1-macro 0.880** is a **directly-trained supervised
+**Naming:** our nail-inspired supervised classifier is called **Grade-CNN (path A)**
+throughout; the competitors are referred to by name (**nail** = nail-rinatovich,
+**opium** = OpiumProger) to avoid colliding with our path A / path B tracks.
+
+- nail's headline **F1-macro 0.880** is a **directly-trained supervised
   CNN** (`efficientnet_b3`) for the grade task — the right tool for grade
-  classification.
+  classification; our **Grade-CNN (path A)** is the analog of it.
 - Our comparable **learned** number is **F1-macro 0.744** (feature-classifier CV
   over pipeline features); our **deterministic shipping** number is **F1-macro
   0.185** (rules over segmentation stats, talcose F1 = 0.0).
-- Competitor B's 0.55 is a **1-epoch smoke** (not converged) — not a real
+- opium's 0.55 is a **1-epoch smoke** (not converged) — not a real
   comparison point.
 - On **segmentation** the picture flips: our sulfide model is far stronger
-  (IoU 0.97) and our talc IoU (0.53–0.64) beats A's talc (IoU 0.12 / Dice 0.19).
+  (IoU 0.97) and our talc IoU (0.53–0.64) beats nail's talc (IoU 0.12 / Dice 0.19).
 
-We win on segmentation; A wins on grade classification because they trained a
-classifier and we ship interpretable segmentation + rules.
+We win on segmentation; nail wins on grade classification because they trained a
+classifier and we ship interpretable segmentation + rules (and our Grade-CNN
+matches the approach).
 
 ## Grade classification (рядовая / труднообогатимая / оталькованная)
 
@@ -41,25 +46,27 @@ classifier and we ship interpretable segmentation + rules.
 | **Ours (feature CV)** | ExtraTrees 5-fold over pipeline features | 345, deconflicted | **0.747** | row 0.719 / fine 0.722 / talc 0.800 |
 | **Ours (path B grains, bootstrap)** | grain classifier → area-weighted fine-fraction ⊕ talc, leak-free grouped CV | 345, deconflicted | **0.190** | row 0.086 / fine 0.483 / talc **0.000** |
 | **Ours (path B grains + trained-talc, bootstrap)** | as above but talcose from the trained B0 talc model (`--talc-checkpoint`) | 345, deconflicted (3-class) | **0.513** | row 0.143 / fine 0.575 / talc **0.821** |
-| **Ours (path A CNN, ordinary/fine only)** ⭐ | `efficientnet_b3` @384, class-weighted CE, cosine+warmup; eval split held out of training | 230 held-out ord/fine of the 345 | **0.930** (2-class) | ord **0.933** / fine **0.927** / talc — deferred |
-| **Ours (path A CNN, preprocessing-aware)** ⭐ | + UI preprocessing folded into train-time aug (p=0.5); preferred checkpoint | 230 held-out ord/fine of the 345 | **0.939** (2-class) | ord **0.941** / fine **0.937** / talc — deferred |
-| A (nail) | `efficientnet_b3` @384, supervised | 218, grouped-by-аншлиф + dedup | **0.880** | ord 0.91 / refr 0.90 / talc 0.83 |
-| A (nail) 4-class | `efficientnet_b3` (intermediate) | 218 | 0.791 | ord 0.92 / thin 0.87 / talc 0.91 / **refr 0.47** |
-| B (opium) | ResNet18, **1-epoch smoke** | `splits.csv` (707 imgs) | ~0.55 | (not reported) |
+| **Ours (path B + trained-talc + variant A, bootstrap)** ⭐ | + replacement-gate heuristic (`--fine-dark-inside-floor 0.08`) — the two levers additive | 345, deconflicted (3-class) | **0.612** | row **0.386** / fine 0.609 / talc **0.841** |
+| **Ours — Grade-CNN (path A), ordinary/fine only** ⭐ | `efficientnet_b3` @384, class-weighted CE, cosine+warmup; eval split held out of training | 230 held-out ord/fine of the 345 | **0.930** (2-class) | ord **0.933** / fine **0.927** / talc — deferred |
+| **Ours — Grade-CNN (path A), preprocessing-aware** ⭐ | + UI preprocessing folded into train-time aug (p=0.5); preferred checkpoint | 230 held-out ord/fine of the 345 | **0.939** (2-class) | ord **0.941** / fine **0.937** / talc — deferred |
+| nail-rinatovich | `efficientnet_b3` @384, supervised | 218, grouped-by-аншлиф + dedup | **0.880** | ord 0.91 / refr 0.90 / talc 0.83 |
+| nail-rinatovich (4-class) | `efficientnet_b3` (intermediate) | 218 | 0.791 | ord 0.92 / thin 0.87 / talc 0.91 / **refr 0.47** |
+| opium (OpiumProger) | ResNet18, **1-epoch smoke** | `splits.csv` (707 imgs) | ~0.55 | (not reported) |
 
 Path B's 0.190 is the **bootstrap floor** (grain classifier trained on heuristic
 pre-labels ≈ re-learns the rule; talcose = 0 because the auto-candidate talc
 signal is ≈0 — see `docs/plans/39`). Feeding the **trained talc model** into the
 talcose branch (the first lever) lifts it to **0.513 3-class**, with talcose F1
-jumping **0.000 → 0.821** — talcose is effectively solved. The remaining loss is
-the ordinary↔fine axis: the bootstrap grain classifier over-calls "fine" (row_ore
-recall 0.09, 88/115 row images → hard_to_process), which is exactly what **human
-grain labels** (the second lever) fix. Path B's value is interpretability
-(per-grain, explainable verdict), complementary to path A's raw F1; path A
-already reaches 0.93 on the ordinary/fine 2-class it targets.
+jumping **0.000 → 0.821** — talcose is effectively solved. Adding the variant-A
+replacement-gate heuristic (`--fine-dark-inside-floor 0.08`) on top is **additive**
+→ **0.612 3-class** (row_ore F1 0.143 → 0.386, talcose held at 0.841). The
+remaining loss is still the ordinary↔fine axis (row recall 0.28), which **human
+grain labels** address. Path B's value is interpretability
+(per-grain, explainable verdict), complementary to **Grade-CNN (path A)**'s raw F1;
+Grade-CNN already reaches 0.93 on the ordinary/fine 2-class it targets.
 
-**Path A CNN grade branch (trained 2026-07-04 on gx10, GB10; `docs/plans/37`).**
-An analog of the competitor's approach: a supervised `efficientnet_b3` classifier
+**Grade-CNN (path A) — grade branch (trained 2026-07-04 on gx10, GB10; `docs/plans/37`).**
+An analog of nail-rinatovich's approach: a supervised `efficientnet_b3` classifier
 trained end-to-end on the grade-folder labels, added as a parallel branch. Because
 the fixed 345 eval split consumes all deconflicted talcose (0 left to train on)
 and the talc segmentation does not yet identify the оталькованная grade, this
@@ -98,12 +105,12 @@ the talcose branch lands. Artifacts: `models/grade_classifier/effb3_ordfine_2026
 | --- | --- | --- | --- |
 | **Ours** (local ResUNet, non-sulfide) | ResUNet | val talc IoU | **0.527** |
 | **Ours** (SegFormer-B0, 5-fold) | SegFormer-B0 | mean talc IoU / F1 | **0.644 / 0.782** |
-| A (nail) | U-Net (efficientnet-b0) | IoU / Dice | 0.12 / 0.19 |
-| B (opium) | U-Net | val Dice | 0.492 |
+| nail-rinatovich | U-Net (efficientnet-b0) | IoU / Dice | 0.12 / 0.19 |
+| opium (OpiumProger) | U-Net | val Dice | 0.492 |
 
 All talc GT is the **same 42 blue-contour expert images**, auto-converted to
-masks — noisy, non-pixel-perfect GT for everyone. Our talc IoU leads; B's Dice
-0.49 is close to our ResUNet; A's talc segmentation is the weakest.
+masks — noisy, non-pixel-perfect GT for everyone. Our talc IoU leads; opium's Dice
+0.49 is close to our ResUNet; nail's talc segmentation is the weakest.
 
 ## Binary sulfide segmentation (our core strength, no competitor equivalent)
 

@@ -19,6 +19,10 @@ Each bundle keeps the generation and review materials beside the video:
 and `stt_verification_report.md`.
 
 `manifest.sha256` records checksums for all MP4 files in this directory tree.
+`stt_refresh_verification_20260704.md` summarizes the fresh Whisper transcripts
+saved under each bundle's `stt_refresh_20260704/` folder.
+`METADATA.md` contains upload-ready titles, descriptions with timecodes,
+categories, and access settings for the final videos.
 
 ## Regeneration
 

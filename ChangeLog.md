@@ -2,11 +2,74 @@
 
 ## 2026-07-04
 
-- Deprecated the legacy Streamlit QA tools: moved `apps/talc_review_streamlit.py`, `apps/sulfide_qa_streamlit.py`, and the `apps/components/mask_shape_editor` custom component into `apps/deprecated/streamlit/`. Fixed the moved talc app's `PROJECT_ROOT`/component paths for the new depth, and updated all run-command references in `README.md`, `apps/README.md`, `COMMANDS.md`, `SMOKE_TESTS.md`, `scripts/prepare_manual_review_pack.py`, and the talc UI docs. The active tools remain the plain web apps (`apps/talc_review_web.py`, `apps/ore_pipeline_web.py`, `apps/grain_review_web.py`).
+- Ran a live UX smoke test of the v2 ore pipeline UI on `127.0.0.1:63589` and documented results in `docs/ui/v2/notes/2026-07-04-ore-pipeline-ui-ux-smoke.md`. Confirmed no browser console errors on the checked pages, verified the final legend percentages/separators, talc-cluster default/color, Russian mouse hints, preprocessing popup fit, Status model spacing, side-by-side splitter practical `0..1` range, and Edit & Recalculate brush/zoom controls. Remaining UX findings are layout issues: Status page fixed-width overflow, Workspace viewer-option row wrapping, Edit & Recalculate statistics label wrapping, and Workspace mobile overflow.
+
+- Path B combined headline: ran the grain-grade aggregation with **both** levers — trained B0 talc model (`--talc-checkpoint`) **and** the variant-A replacement gate (`--fine-dark-inside-floor 0.08`) — on the 345 split (bootstrap grain labels, leak-free grouped CV). **Grade macro-F1 0.612** (row_ore 0.386 / fine 0.609 / talcose 0.841), accuracy 0.638; the two levers are additive (progression 0.190 → 0.513 talc → 0.612 talc+A). Remaining gap is the ordinary↔fine axis (row recall 0.28) → human grain labels. Artifact `outputs/evaluations/grade_from_grains_talc_floor008_v0/`; recorded in `docs/plans/39` + comparison note. Also fixed one canonical name — our nail-inspired grade classifier is **"Grade-CNN (path A)"** across jury-facing docs (presentation + comparison note), competitors referred to by name (nail / opium) to drop the path-A/A collision.
+- Ran a **4-class grade benchmark** (ordinary/thin/talc/refractory — competitor A's schema) via a new `train_grade_classifier.py --four-class` mode: 4-class labels from folders (fine → thin/refractory by `/тонкие/`), 4-class-aware sha256 dedup + conflict drop (70 conflict + 21 dup paths), grouped-by-аншлиф train/val (train 926 / val 163), class-weighted CE, plain augs. Result (efficientnet_b3 @384, gx10): **val F1-macro 0.771** (ordinary 0.906 / thin 0.792 / talc 0.865 / refractory 0.522) — on par with nail's 0.791, and better on the weak refractory class (0.52 vs 0.47; only 56 refractory images total → noisy). Artifacts `models/grade_classifier/effb3_4class_20260704/`; note `docs/notes/2026-07-04-grade-4class-benchmark.md`. The deployed grade branch stays 2-class (ordinary↔fine 0.93); this is a schema-match benchmark, not the production head.
+
+- Added a blank line between the binary sulfide and talc details in the Status page `Models` card, so long checkpoint paths no longer read as one dense paragraph.
+
+- Changed the Workspace `Configuration...` save behavior so changed run configuration values immediately invalidate derived state. The UI now clears any current completed/prepared run, generated augmented/preprocessed display layers, sulfide/final layers, metrics, exports, grain outlines, run-file previews, and tiling while preserving the original upload, metadata, checkbox/settings values, and upload-level artefact masks; pressing Start creates a fresh immutable run with the new configuration.
+
+- Added `presentation/videos/METADATA.md` with upload-ready Russian titles, descriptions with timecodes, `Наука и технологии` category, and `Для всех` access metadata for each final presentation video, including the gx10 Silero Talc UI variant.
+
+- Restyled the Talc Review bottom-left zoom control to match the compact v2 vertical widget: Fit, Actual size, Zoom in, live percentage, and Zoom out are stacked in one column with `32 px` icon buttons, `18 px` icons, and an `11 px` percentage label.
+
+- Moved Workspace Edit & Recalculate zoom controls out of the top toolbar into the same bottom-left Fit / Actual size / Zoom in / live percent / Zoom out widget used by the main viewer, and added the same mouse-wheel zoom / wheel-press pan hint row below the editor canvas.
+
+- Added Talc Review pan gutters around the canvas. Fit/Actual now start at a neutral gutter origin, and mouse-wheel / middle-button panning can move the canvas past the viewer edges so the image top-left can become negative inside the visible viewport, matching the v2 ore UI free-pan behavior.
+
+- Changed the Workspace Edit & Recalculate Brush size control from a small numeric field to the Talc Annotation-style `2-240 px` range slider with a live `px` value and matching `28 px` default.
+
+- Changed the Workspace `кластеры талька` / `talc cluster areas` color from pink to cyan/light blue in both the final segmentation legend swatch and the generated talc-cluster overlay. Completed runs with old display overlays are refreshed on load when their display manifest has a stale talc-cluster RGB marker.
+
+- Added and benchmarked Mask2Former-Swin-Tiny support for binary sulfide segmentation. The training/eval path now accepts `--model mask2former`, projects Mask2Former query outputs into dense binary logits for shared inference/evaluation, and has focused `model_io` coverage. Zelda `root@111.88.124.23` completed a 30-epoch run on `binary_sulfide_dataset_v0`: best sulfide IoU `0.968313`, F1 `0.983901`, AUC `0.998492`, HD95 mean `29.55 px`, average `226.39 s/epoch`. SegFormer-B2 remains the default because it is better on IoU/F1/AUC/HD95 and faster. Artifacts are mirrored under `models/binary_sulfide/mask2former_swin_tiny_dataset_v0_zelda_20260704_1553/`; extended metrics are in `outputs/evaluations/mask2former_best_eval_metrics.json`; benchmark docs updated.
+
+- Changed the Workspace final segmentation legend so `кластеры талька` / `talc cluster areas` is unchecked by default. The layer remains available in both left and side-by-side right legends, and resets return it to off.
+
+- Removed horizontal overflow from the Workspace `Настройки предобработки` popup. The dialog now uses border-box sizing, wraps its footer hint, and stacks panorama scaling fields at narrow widths instead of showing a horizontal scrollbar.
+
+- Added separator lines to the Workspace final segmentation legend overlays. Both left and side-by-side right legends now group `ordinary/fine/talc`, then `talc clusters/artefacts`, then `background`, while keeping per-class percentage rows.
+
+- Enabled Talc Review wheel-press panning from the actual mouse-wheel / middle-button press. The canvas now starts pan before edit-tool handling, suppresses native middle-click browser behavior, and keeps a mouse-event fallback for platforms that do not deliver middle-button pointer events.
+
+- Localized the Workspace mouse-navigation hints in Russian mode: `Колесо мыши - масштаб` and `Нажатие колеса - панорама`, while keeping the English strings for English UI mode.
+
+- Moved Talc Review `Background` and `Talc cluster areas` out of the Segmentation classes widget into a separate top-right `Display layers` widget. The left widget now contains only editable classes and target status, while the right widget owns display-only layer controls and the cluster-area percentage.
+
+- Added a `Contour width` / `толщина контура` slider next to the Workspace `contours only` viewer option. The slider controls contour thickness for sulfide/final overlays and shared comparison exports while preserving the previous `1 px` default.
+
+- Added the v2 ore UI mouse-navigation hint row below the Talc Review main viewer: `Mouse wheel - zoom in / out` and `Mouse wheel press - pan`.
+
+- Updated the Workspace bottom-left zoom widget layout so `Fit view` is stacked directly above `Actual size / 1:1`, followed by zoom in, live percentage, and zoom out.
+
+- Added a bottom-left zoom widget to the Talc Review viewer, matching the v2 ore UI control pattern: Fit, Actual size, Zoom in, live zoom percentage, and Zoom out. The widget shares the same zoom state as the toolbar buttons and mouse-wheel zoom.
+
+- Fixed the Workspace side-by-side splitter drag range. The comparison divider now clamps to the full `0..1` view range, so it can be moved to the exact left or right edge instead of stopping around 12%-88%.
+
+- Added client-side sorting to the Workspace `Сульфидные зерна` / sulfide-grain table. Data headers now sort rows by ID, type, area, equivalent diameter, perimeter, sulfide share, liberation, contacts, or locked/composite proxy, with a second click reversing direction and the total row fixed at the bottom.
+
+- Updated the Talc Review `Comparison mode` selector to the requested five labels: `Current`, `Heuristic`, `Neural Model`, `Current vs Heuristic`, and `Current vs Neural Model`. Plain heuristic/neural modes show only their prediction layer, while the `Current vs ...` modes keep the agreement/current-only/prediction-only comparison overlays.
+
+- Added a separated `Background` visibility checkbox to the Talc Review segmentation-class widget. It is checked by default, hides only the base image when unchecked, keeps selected mask/comparison/cluster overlays visible, suppresses missing-background warnings while off, and records `background_visible` in review view settings.
 
 - Added optional Settings-managed password protection to the v2 ore pipeline UI. Settings now has a Security panel with a write-only password field and explicit remove-password checkbox; saved passwords are stored only as salted PBKDF2-SHA256 hashes, `/api/settings` exposes only `auth.password_enabled`, `/login` issues an HttpOnly session cookie, and protected UI/API/artifact requests redirect or return `401` once enabled. Added spec/plan docs and focused HTTP/static regression tests.
 
-- Moved the generated demo-video bundles from ignored `outputs/demo_video_*` directories into the presentation package under `presentation/videos/`, regenerated all three 5-minute MP4s in place, and kept `outputs/demo_video_*` symlinks only for compatibility. Added a local video index and checksum manifest in `presentation/videos/`.
+- Added Workspace viewer navigation affordances: the viewer-options row now shows mouse icons with `Mouse wheel - zoom in / out` and `Mouse wheel press - pan` hints, and the canvas has a bottom-left zoom widget with fit-view, actual-size, zoom-in, current zoom, and zoom-out controls. Focused ore-pipeline web tests pass, and the local service was verified on `127.0.0.1:63589/workspace`.
+
+- Cherry-picked the standalone non-neural talcose/not-talcose classifier CLI into v2 and wired it into the Talc Review browser comparison modes. The CLI now lives in `scripts/classify_talcose_heuristic.py` with reusable core logic in `src/ore_classifier/talc_zone_heuristic.py`; the web app calls `/api/samples/{sample_id}/talcose-heuristic`, uses the sample sulfide mask as the ore-exclusion mask when available, writes `qa/non_neural_talcose/{talc_zone_mask.png,talc_flake_mask.png,overlay.jpg,talcose_result.json}`, exposes those artifacts in `sample_payload()`, and paints heuristic/neural standalone or current-comparison overlays on the canvas. Focused non-neural CLI, Talc Review web, and neural talc segmentation smoke tests pass.
+
+- Deprecated the legacy Streamlit QA tools: moved `apps/talc_review_streamlit.py`, `apps/sulfide_qa_streamlit.py`, and the `apps/components/mask_shape_editor` custom component into `apps/deprecated/streamlit/`. Fixed the moved talc app's `PROJECT_ROOT`/component paths for the new depth, and updated all run-command references in `README.md`, `apps/README.md`, `COMMANDS.md`, `SMOKE_TESTS.md`, `scripts/prepare_manual_review_pack.py`, and the talc UI docs. The active tools remain the plain web apps (`apps/talc_review_web.py`, `apps/ore_pipeline_web.py`, `apps/grain_review_web.py`).
+
+- Added QA#3 as an official-source artifact: downloaded `https://disk.360.yandex.ru/i/lSyyoiK7LfeahQ`, generated Russian Whisper `small` CPU STT at `docs/official/2026-07-04-qna-session-3-transcript.md`, and updated `docs/official/QnA_sessions.md` with exact QA#3 source video/timestamps. Key clarified deltas: `тонкие = труднообогатимые`, talc is preferably semantic but pixel counting is acceptable, phase inventory is not task-critical unless justified, and the ideal prototype colors/analyzes whole panoramas while fragment classification is the minimum realistic path.
+
+- Extended ore-pipeline file serving to support bounded-memory byte-range streaming. `send_file()` now advertises `Accept-Ranges: bytes`, returns `206 Partial Content` with range-sized `Content-Length` / `Content-Range` for valid single ranges, and returns `416` with `Content-Range: bytes */<size>` for unsatisfiable ranges. The existing full artifact/report/ZIP downloads still stream in chunks without `Path.read_bytes()`. Focused and full `tests/test_ore_pipeline_web.py` pass.
+
+- Renamed the `/history` run table Progress column to Status. Active rows now show only a text percent, failed/error rows show `Error` / `Ошибка` with a hoverable `(i)` detail marker backed by the stored run error, and completed rows show `Done` / `Готово`. Focused static UI coverage and the served `/history` page were verified.
+
+- Excluded heavy audio/video artifacts from git: added `*.wav` / `*.mp3` / `*.mp4` to `.gitignore` and untracked all 121 such files under `presentation/videos/` (amended into the unpushed batch commit, so ~330 MB of media never enters remote history). The files stay on disk; regenerate via `scripts/generate_talc_ui_video*.sh` or per-bundle `build_video.py`, checksums remain in `presentation/videos/manifest.sha256`.
+
+- Moved the generated demo-video bundles from ignored `outputs/demo_video_*` directories into the presentation package under `presentation/videos/`, regenerated all three 5-minute MP4s in place, refreshed Whisper STT text under `stt_refresh_20260704/`, and kept `outputs/demo_video_*` symlinks only for compatibility. Added a local video index, STT refresh summary, and checksum manifest in `presentation/videos/`.
 
 - Deployed a dedicated gx10-local TTS/video-generation toolchain for the Talc UI demo under `ashmelev@192.168.86.14:/home/ashmelev/Projects/nornikel_tts_video`, separate from the live ore-pipeline web UI on `:8210`. `presentation/videos/demo_video_talc_ui_20260704/build_video.py` now supports `TTS_BACKEND=silero` with the Russian male Silero `aidar` speaker, Linux font fallback, and user-space ffmpeg via `imageio-ffmpeg`; `scripts/generate_talc_ui_video_gx10.sh` pushes the generator/scenes to gx10, runs local TTS/video generation, validates the 300 s MP4/subtitles, and can pull the result back. Verified gx10 output: `nornikel_talc_ui_demo_1080p_ru.mp4`, 300.0 s, 1920x1080 H.264, AAC 48 kHz stereo, Russian-only subtitles. Cached higher-end TTS assets in gx10 shared model caches: `coqui/XTTS-v2` (2.1 GB) and `hotstone228/F5-TTS-Russian` (4.7 GB). Deployment notes are in `docs/ui/v2/notes/2026-07-04-gx10-tts-video-deployment.md`.
 

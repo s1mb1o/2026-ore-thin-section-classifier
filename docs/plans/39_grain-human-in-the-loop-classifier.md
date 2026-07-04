@@ -98,6 +98,55 @@ bootstrap grain classifier over-calls "fine", so 88/115 row images land in
 hard_to_process. That axis is exactly what **human grain labels** (the second
 lever) fix; talcose is now done.
 
+## v0.2.1 — heuristic fix for jagged-contour false-positive (2026-07-04)
+
+The bootstrap heuristic pre-label calls a massive homogeneous grain with a
+strongly ragged contour "fine" (труднообогатимое) purely from low
+solidity/compactness, at zero internal replacement (see
+`docs/notes/2026-07-04-ore-vs-gangue-feature-extraction.md §4c`). Two additions:
+
+- **UI:** `apps/grain_review_web.py` flags `boundary_only_fine` grains ("⚠ край"
+  badge + warning in the report) so the annotator catches the ambiguous case.
+- **Heuristic (opt-in, no core change):** `recompute_fine_label`
+  (`grain_features.py`) gates the boundary signal on a replacement floor;
+  `aggregate_grade_from_grains.py --fine-dark-inside-floor` (default 0.0 =
+  unchanged). A/B on the baseline batch (no talc, ordinary/fine axis only):
+  floor 0.0 → 0.08 lifts **row_ore F1 0.104 → 0.289 (recall 0.087 → 0.304)** and
+  hard_to_process F1 0.475 → 0.515; recovers 25/115 ordinary аншлифы. Partial fix
+  (needs human labels for the rest); floor un-tuned. Tests +3 (22 total).
+  Artifacts: `outputs/evaluations/exp_ordfine_floor{0,008}/`.
+- **Combined headline (talc-model + variant A, bootstrap, leak-free CV):**
+  grade **macro-F1 0.612** (row_ore F1 0.386 / fine 0.609 / **talcose 0.841**),
+  accuracy 0.638 — the two levers are additive (talc-only 0.513 + variant-A row
+  lift). Still heuristic grain labels; row recall 0.28 is the human-label gap.
+  Artifact: `outputs/evaluations/grade_from_grains_talc_floor008_v0/`. Progression:
+  0.190 (v0.1) → 0.513 (talc) → **0.612 (talc + A)**.
+
+## v0.2.2 — variant B (boundary smoothing) tested, NOT adopted (2026-07-04)
+
+Added `ComponentRuleConfig.boundary_smooth_px` (default 0 = off) +
+`smoothed_grain()` (OPEN before solidity/compactness, leaves area/replacement
+untouched; 273-test suite green at default) and
+`scripts/regenerate_component_features.py` (re-derive features from existing masks,
+cv2-only). Head-to-head on the 345 split (bootstrap, no talc → ordinary/fine axis):
+
+| variant | grade macro-F1 | row_ore F1 (recall) |
+| --- | --- | --- |
+| baseline (floor 0) | 0.193 | 0.104 (0.087) |
+| **A — replacement gate (floor 0.08)** | **0.268** | **0.289 (0.304)** |
+| B — boundary smooth 3px | 0.198 | 0.087 (0.070) |
+| A+B | 0.256 | 0.263 (0.287) |
+
+**Finding:** variant B does not move the grade and slightly drags A — despite the
+grain-level prototype flipping ~40% of boundary-only-fine to ordinary. Reason: at
+the grade level the discriminator is the *relative* fine-fraction between ordinary
+and fine аншлифы; A raises the "fine" bar via replacement **asymmetrically**
+(removes fine-calls from massive-grain ordinary images), B smooths boundaries
+**symmetrically** across all images so calibrated τ_fine adapts it away. Validates
+the "measure at grade level, don't trust grain-level intuition" discipline.
+**Decision: adopt variant A (floor ≈ 0.08); leave B off** (kept behind the default-0
+flag for future use / cleaner pre-labels). Artifacts: `outputs/evaluations/exp_B_smooth3/`, `exp_AB_smooth3_floor008/`, `batch_smooth3/`.
+
 ## Adversarial review & fixes (2026-07-04)
 
 A find→verify review workflow (10 agents) confirmed 5 defects, all fixed +

@@ -99,7 +99,7 @@ CLASS_COLORS = {
     3: (40, 120, 245, 165),
 }
 ARTIFACT_COLOR = (198, 60, 255, 180)
-TALC_CLUSTER_COLOR = (236, 72, 153, 165)
+TALC_CLUSTER_COLOR = (64, 220, 255, 165)
 CLASS_LABELS_RU = {
     "analyzed_fraction": "Доля проанализированной области",
     "sulfide_fraction": "Общая доля сульфидов",
@@ -3516,9 +3516,18 @@ print(json.dumps({
         if str(data.get("status") or "").lower() != "complete":
             return data
         display = data.get("display") if isinstance(data.get("display"), dict) else {}
-        if display.get("non_sulfide_base") and display.get("talc_cluster_overlay"):
-            return data
         run_dir = self._existing_run_dir(run_id)
+        display_manifest_path = run_dir / "display/display.json"
+        display_manifest: dict[str, Any] = {}
+        if display_manifest_path.exists():
+            try:
+                display_manifest = json.loads(display_manifest_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                display_manifest = {}
+        expected_talc_cluster_color = list(TALC_CLUSTER_COLOR[:3])
+        has_current_talc_cluster_color = display_manifest.get("talc_cluster_color_rgb") == expected_talc_cluster_color
+        if display.get("non_sulfide_base") and display.get("talc_cluster_overlay") and has_current_talc_cluster_color:
+            return data
         required = [run_dir / "input/preprocessed.png", run_dir / "masks/sulfide_mask.png", run_dir / "masks/final_mask.png"]
         if not all(path.exists() for path in required):
             return data
@@ -4427,7 +4436,7 @@ print(json.dumps({
                 "preprocessed",
                 self.preview_max_sides,
             )
-        display_manifest = {"schema_version": "ore-pipeline-display-v0.1", "layers": layers}
+        display_manifest = {"schema_version": "ore-pipeline-display-v0.1", "talc_cluster_color_rgb": list(TALC_CLUSTER_COLOR[:3]), "layers": layers}
         self._write_json(display_dir / "display.json", display_manifest)
 
     def _non_sulfide_display_mask(
@@ -6219,12 +6228,52 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
+    def _parse_byte_range(self, header_value: str, size: int) -> tuple[int, int] | None:
+        if not header_value.startswith("bytes="):
+            return None
+        spec = header_value.removeprefix("bytes=").strip()
+        if "," in spec or "-" not in spec:
+            return None
+        start_raw, end_raw = (part.strip() for part in spec.split("-", 1))
+        if not start_raw and not end_raw:
+            return None
+        try:
+            if start_raw:
+                start = int(start_raw)
+                end = int(end_raw) if end_raw else size - 1
+            else:
+                suffix_length = int(end_raw)
+                if suffix_length <= 0:
+                    return None
+                start = max(size - suffix_length, 0)
+                end = size - 1
+        except ValueError:
+            return None
+        if size <= 0 or start < 0 or end < start or start >= size:
+            return None
+        return start, min(end, size - 1)
+
     def send_file(self, path: Path, content_type: str | None = None, download_name: str | None = None) -> None:
         content_type = content_type or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         size = path.stat().st_size
-        self.send_response(HTTPStatus.OK)
+        range_header = self.headers.get("Range")
+        byte_range = self._parse_byte_range(range_header, size) if range_header else None
+        if range_header and byte_range is None:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        start, end = byte_range if byte_range else (0, size - 1)
+        length = max(0, end - start + 1)
+        self.send_response(HTTPStatus.PARTIAL_CONTENT if byte_range else HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        if byte_range:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Cache-Control", "no-store")
         if download_name:
             quoted = urllib.parse.quote(download_name)
@@ -6232,11 +6281,15 @@ class OrePipelineHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             with path.open("rb") as handle:
-                while True:
-                    chunk = handle.read(DOWNLOAD_CHUNK_SIZE)
+                if start > 0:
+                    handle.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = handle.read(min(DOWNLOAD_CHUNK_SIZE, remaining))
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+                    remaining -= len(chunk)
         except (BrokenPipeError, ConnectionResetError):
             return
 

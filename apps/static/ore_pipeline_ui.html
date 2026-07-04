@@ -46,7 +46,7 @@
       --red: #d83f45;
       --blue: #2870d8;
       --artifact: #c63cff;
-      --talc-cluster: #ec4899;
+      --talc-cluster: #40dcff;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     :root[data-theme="dark"] {
@@ -80,7 +80,7 @@
       --red: #f06267;
       --blue: #5c94f5;
       --artifact: #d16bff;
-      --talc-cluster: #f472b6;
+      --talc-cluster: #40dcff;
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); }
@@ -127,6 +127,13 @@
     .viewer-shell { background: var(--viewer-bg); border-radius: 8px; overflow: hidden; border: 1px solid var(--viewer-border); min-height: 420px; position: relative; }
     canvas { display: block; width: 100%; height: 100%; }
     #mainCanvas { height: min(72vh, 760px); min-height: 420px; }
+    .zoom-widget { position: absolute; z-index: 8; left: 12px; bottom: 12px; min-width: 56px; display: grid; justify-items: center; gap: 6px; padding: 8px; border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: 0 8px 24px rgba(0,0,0,.22); backdrop-filter: blur(8px); pointer-events: auto; }
+    .zoom-widget-row { display: grid; grid-template-columns: 32px; gap: 6px; justify-content: center; }
+    .zoom-widget-main { display: grid; grid-template-columns: 32px; gap: 6px; justify-content: center; }
+    .zoom-widget button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border-radius: 7px; }
+    .zoom-widget button:disabled { opacity: .5; }
+    .zoom-widget svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .zoom-widget .zoom-level { min-width: 32px; padding: 3px 0; color: var(--text); font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; text-align: center; }
     .viewer-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px; background: var(--toolbar-bg); border: 1px solid var(--line); border-radius: 8px 8px 0 0; border-bottom: 0; flex-wrap: wrap; }
     .viewer-mode-row { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
     .primary-view-controls { display: grid; gap: 8px; width: auto; min-width: 0; max-width: 100%; }
@@ -158,6 +165,10 @@
     .sulfide-grains-table td.select, .sulfide-grains-table th.select { width: 54px; text-align: center; }
     .sulfide-grains-table td.grain-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .sulfide-grains-table tr.sulfide-grains-total-row td { border-top: 2px solid var(--line); background: var(--panel-alt); font-weight: 750; }
+    .sulfide-grains-sort { width: 100%; display: inline-flex; align-items: center; justify-content: flex-start; gap: 5px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-weight: inherit; text-align: inherit; cursor: pointer; }
+    .sulfide-grains-table th.numeric .sulfide-grains-sort { justify-content: flex-end; }
+    .sulfide-grains-sort:hover, .sulfide-grains-sort.active { color: var(--text); }
+    .sulfide-grains-sort .sort-indicator { min-width: 14px; color: var(--muted); font-size: 11px; line-height: 1; }
     .run-technical-section { display: grid; gap: 8px; }
     .run-tech-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     @media (max-width: 820px) { .run-tech-grid { grid-template-columns: 1fr; } }
@@ -170,6 +181,10 @@
     .run-tech-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
     .run-tech-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
     .layer-toggle-row, .viewer-options-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+    .viewer-options-hints { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+    .viewer-options-hint { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .viewer-options-hint svg { width: 17px; height: 17px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .viewer-options-separator { width: 1px; height: 20px; background: var(--line); }
     .segmentation-legend-overlay { position: absolute; z-index: 4; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; pointer-events: none; }
     .segmentation-legend-panel { max-width: min(48%, 760px); display: grid; gap: 6px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--panel) 88%, transparent); box-shadow: 0 8px 24px rgba(0,0,0,.22); backdrop-filter: blur(8px); pointer-events: auto; }
     .segmentation-legend-panel.right { justify-items: end; margin-left: auto; }
@@ -179,13 +194,14 @@
     .class-toggles[hidden] { display: none; }
     .segmentation-legend-panel label.check { width: 100%; }
     .legend-percent { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .segmentation-legend-divider { width: 100%; height: 1px; margin: 2px 0; background: color-mix(in srgb, var(--line) 82%, transparent); }
     .segmentation-legend-panel.right .class-toggles { align-items: flex-start; justify-content: flex-start; }
     .splitter-overlay { position: absolute; z-index: 6; top: 0; bottom: 0; left: 50%; width: 0; pointer-events: none; transform: translateX(-50%); }
     .splitter-overlay.hidden { display: none; }
     .splitter-line { position: absolute; top: 0; bottom: 0; left: -2px; width: 4px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 70%, #ffffff); box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 0 12px rgba(0,0,0,.45); }
     .splitter-handle { position: absolute; top: 50%; left: -12px; width: 24px; height: 72px; transform: translateY(-50%); border-radius: 999px; background: var(--accent); box-shadow: 0 0 0 2px rgba(0,0,0,.55), 0 8px 20px rgba(0,0,0,.4); }
-    .overlay-opacity-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
-    .overlay-opacity-control input { width: 116px; }
+    .overlay-opacity-control, .contour-width-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
+    .overlay-opacity-control input, .contour-width-control input { width: 116px; }
     .decision-rationale, .metrics-note { margin: 8px 0 0; line-height: 1.35; }
     .swatch { width: 12px; height: 12px; display: inline-block; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
     .history-row { display: grid; grid-template-columns: 68px minmax(0, 1fr); gap: 10px; align-items: start; border: 1px solid var(--line); border-radius: 7px; padding: 10px; margin-bottom: 8px; background: var(--history-bg); }
@@ -203,12 +219,13 @@
     .history-table { min-width: 1160px; }
     .history-table td.numeric, .history-table th.numeric { text-align: right; white-space: nowrap; }
     .history-table th.thumbnail, .history-table td.thumbnail { width: 74px; text-align: center; }
-    .history-table th.progress, .history-table td.progress { min-width: 150px; }
+    .history-table th.status, .history-table td.status { min-width: 90px; }
     .history-table td.filename { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .history-progress-cell { display: grid; gap: 4px; min-width: 140px; }
-    .history-progress-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-    .history-progress-head strong { font-size: 13px; font-weight: 800; white-space: nowrap; }
-    .history-progress-cell small, .history-row-progress { color: var(--muted); font-size: 12px; line-height: 1.25; }
+    .history-status-cell { display: inline-flex; align-items: center; gap: 8px; min-width: 78px; }
+    .history-status-cell strong { font-size: 13px; font-weight: 800; white-space: nowrap; }
+    .history-status-error strong { color: var(--danger); }
+    .history-status-info { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 800; cursor: help; }
+    .history-row-progress { color: var(--muted); font-size: 12px; line-height: 1.25; }
     .history-thumb-button { width: 56px; height: 42px; padding: 0; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; background: var(--viewer-bg); border-color: var(--line); }
     .history-thumb-button img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .history-thumb-placeholder { color: var(--muted); }
@@ -252,7 +269,7 @@
     .status-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--history-bg); display: grid; gap: 6px; min-width: 0; }
     .status-card h3 { margin: 0; font-size: 13px; color: var(--muted); }
     .status-value { font-size: 22px; font-weight: 800; overflow-wrap: anywhere; }
-    .status-subvalue { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .status-subvalue { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; white-space: pre-line; }
     .health-pill { display: inline-flex; align-items: center; width: max-content; border-radius: 999px; padding: 4px 9px; font-weight: 800; font-size: 12px; color: #ffffff; background: var(--muted); }
     .health-pill.ok { background: #1e9f58; }
     .health-pill.warning { background: #b7791f; }
@@ -312,13 +329,21 @@
     .preprocess-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
     .preprocess-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .preprocess-dialog, .augmentation-dialog { width: min(760px, 92vw); }
+    .preprocess-dialog { max-width: calc(100vw - 24px); box-sizing: border-box; overflow-x: hidden; }
+    .preprocess-dialog * { box-sizing: border-box; }
+    .preprocess-dialog .modal-head, .preprocess-dialog .modal-foot { min-width: 0; }
+    .preprocess-dialog .modal-head strong, .preprocess-dialog .modal-foot .muted, .preprocess-settings > .muted { min-width: 0; overflow-wrap: anywhere; }
+    .preprocess-dialog .modal-foot { flex-wrap: wrap; }
+    .preprocess-dialog .modal-foot .muted { flex: 1 1 320px; }
+    .preprocess-dialog .help-dot::after { left: auto; right: 0; transform: translate(0, 4px); }
+    .preprocess-dialog .help-dot:hover::after, .preprocess-dialog .help-dot:focus-visible::after { transform: translate(0, 0); }
     .preprocess-settings, .augmentation-settings { display: grid; gap: 10px; padding: 12px 14px; background: var(--bg); }
     .preprocess-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .preprocess-option.with-extra { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
     .preprocess-option label.check { flex: 1 1 auto; min-width: 0; }
     .panorama-scaling-controls, .settings-panorama-controls { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(170px, 1fr) minmax(150px, 1fr) minmax(140px, 1fr); gap: 8px; }
-    .panorama-scaling-controls { padding-left: 24px; }
-    .panorama-scale-field { display: grid; gap: 5px; }
+    .panorama-scaling-controls { min-width: 0; padding-left: 24px; }
+    .panorama-scale-field { min-width: 0; display: grid; gap: 5px; }
     .panorama-scale-field span { font-size: 12px; color: var(--muted); font-weight: 650; }
     .panorama-scale-field input, .panorama-scale-field select { width: 100%; }
     .settings-group { border: 1px solid var(--line); border-radius: 8px; padding: 10px; display: grid; gap: 10px; }
@@ -349,6 +374,7 @@
     .editor-top-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--panel-alt); flex-wrap: wrap; }
     .editor-top-toolbar strong { font-size: 14px; }
     .modal-body { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 12px; padding: 12px; background: var(--bg); }
+    .editor-main { display: grid; gap: 8px; min-width: 0; }
     .editor-side { display: flex; flex-direction: column; min-height: min(70vh, 720px); }
     #editLayerTabs { width: 100%; }
     #editLayerTabs button { flex: 1 1 0; min-width: 0; white-space: normal; line-height: 1.2; }
@@ -356,8 +382,9 @@
     .editor-tools button.active { border-color: var(--accent); color: var(--accent); background: var(--segmented-active-bg); }
     .editor-tools button:disabled { opacity: 1; }
     .brush-size-control { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
-    .brush-size-control input { width: 74px; }
-    .editor-view { height: min(70vh, 720px); background: #1f232a; border-radius: 8px; overflow: hidden; border: 1px solid #11151b; }
+    .brush-size-control input[type="range"] { width: 150px; }
+    .brush-size-control output { min-width: 42px; color: var(--text); font-variant-numeric: tabular-nums; font-weight: 650; }
+    .editor-view { position: relative; height: min(70vh, 720px); background: #1f232a; border-radius: 8px; overflow: hidden; border: 1px solid #11151b; }
     #editorCanvas { height: 100%; }
     .editor-stats { margin-top: auto; padding-top: 12px; }
     .stats-table td { font-size: 13px; padding: 6px 4px; overflow-wrap: anywhere; }
@@ -387,7 +414,10 @@
       .viewer-mode-row, .primary-view-controls, .side-by-side-control { width: 100%; }
       .viewer-toolbar .segmented { width: 100%; }
       .range-field { grid-template-columns: 1fr; }
-      .overlay-opacity-control { flex-wrap: wrap; }
+      .panorama-scaling-controls { grid-template-columns: 1fr; padding-left: 0; }
+      .overlay-opacity-control, .contour-width-control { flex-wrap: wrap; }
+      .viewer-options-separator { display: none; }
+      .zoom-widget { left: 8px; bottom: 8px; }
     }
   </style>
 </head>
@@ -528,8 +558,10 @@
                 <label class="check"><input type="checkbox" data-legend-toggle="showOrdinary" checked><span class="swatch" style="background:var(--green)"></span><span data-i18n="classOrdinaryShort">обычные</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showFine" checked><span class="swatch" style="background:var(--red)"></span><span data-i18n="classFineShort">тонкие</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showTalc" checked><span class="swatch" style="background:var(--blue)"></span><span data-i18n="classTalc">тальк</span></label>
-                <label class="check"><input type="checkbox" data-legend-toggle="showTalcClusters" checked><span class="swatch" style="background:var(--talc-cluster)"></span><span data-i18n="classTalcClusters">кластеры талька</span></label>
+                <div class="segmentation-legend-divider" aria-hidden="true"></div>
+                <label class="check"><input type="checkbox" data-legend-toggle="showTalcClusters"><span class="swatch" style="background:var(--talc-cluster)"></span><span data-i18n="classTalcClusters">кластеры талька</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showFinalArtifacts" checked><span class="swatch" style="background:var(--artifact)"></span><span data-i18n="classArtefacts">артефакты</span></label>
+                <div class="segmentation-legend-divider" aria-hidden="true"></div>
                 <label class="check"><input type="checkbox" data-legend-toggle="showBackground" checked> <span data-i18n="classBackground">фон</span></label>
               </div>
             </div>
@@ -544,8 +576,10 @@
                 <label class="check"><input type="checkbox" data-legend-toggle="showOrdinary" checked><span class="swatch" style="background:var(--green)"></span><span data-i18n="classOrdinaryShort">обычные</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showFine" checked><span class="swatch" style="background:var(--red)"></span><span data-i18n="classFineShort">тонкие</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showTalc" checked><span class="swatch" style="background:var(--blue)"></span><span data-i18n="classTalc">тальк</span></label>
-                <label class="check"><input type="checkbox" data-legend-toggle="showTalcClusters" checked><span class="swatch" style="background:var(--talc-cluster)"></span><span data-i18n="classTalcClusters">кластеры талька</span></label>
+                <div class="segmentation-legend-divider" aria-hidden="true"></div>
+                <label class="check"><input type="checkbox" data-legend-toggle="showTalcClusters"><span class="swatch" style="background:var(--talc-cluster)"></span><span data-i18n="classTalcClusters">кластеры талька</span></label>
                 <label class="check"><input type="checkbox" data-legend-toggle="showFinalArtifacts" checked><span class="swatch" style="background:var(--artifact)"></span><span data-i18n="classArtefacts">артефакты</span></label>
+                <div class="segmentation-legend-divider" aria-hidden="true"></div>
                 <label class="check"><input type="checkbox" data-legend-toggle="showBackground" checked> <span data-i18n="classBackground">фон</span></label>
               </div>
             </div>
@@ -554,12 +588,43 @@
             <div class="splitter-line"></div>
             <div class="splitter-handle"></div>
           </div>
+          <div id="zoomWidget" class="zoom-widget" role="group" aria-label="Масштаб" data-i18n-aria-label="zoomControls">
+            <div class="zoom-widget-row">
+              <button id="fitViewBtn" type="button" title="Вписать" aria-label="Вписать" data-i18n-title="fitView" data-i18n-aria-label="fitView">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4"></path><path d="M16 3h4a1 1 0 0 1 1 1v4"></path><path d="M8 21H4a1 1 0 0 1-1-1v-4"></path><path d="M16 21h4a1 1 0 0 0 1-1v-4"></path><path d="M8 8h8v8H8z"></path></svg>
+              </button>
+              <button id="actualSizeBtn" type="button" title="Фактический размер" aria-label="Фактический размер" data-i18n-title="actualSize" data-i18n-aria-label="actualSize">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"></path><path d="M8 9h2v6"></path><path d="M9 15h2"></path><path d="M14 10h.01"></path><path d="M14 15h.01"></path><path d="M17 9h-2v6h2"></path></svg>
+              </button>
+            </div>
+            <div class="zoom-widget-main">
+              <button id="zoomInBtn" type="button" title="Увеличить" aria-label="Увеличить" data-i18n-title="zoomIn" data-i18n-aria-label="zoomIn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M10.5 8v5"></path><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
+              </button>
+              <output id="zoomLevel" class="zoom-level" aria-live="polite">100%</output>
+              <button id="zoomOutBtn" type="button" title="Уменьшить" aria-label="Уменьшить" data-i18n-title="zoomOut" data-i18n-aria-label="zoomOut">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
+              </button>
+            </div>
+          </div>
           <canvas id="mainCanvas"></canvas>
         </div>
         <div class="viewer-options-row">
           <label class="check"><input type="checkbox" id="showTiling"> <span data-i18n="showTiling">показать тайлы</span></label>
           <label class="check"><input type="checkbox" id="boundaryOnly"> <span data-i18n="boundaryOnly">только контуры</span></label>
+          <label class="contour-width-control"><span data-i18n="contourWidth">толщина контура</span><input id="contourWidth" type="range" min="1" max="9" step="2" value="1"><output id="contourWidthValue">1 px</output></label>
           <label class="overlay-opacity-control"><span data-i18n="overlayOpacity">прозрачность</span><input id="overlayOpacity" type="range" min="0.2" max="1" step="0.05" value="0.65"><output id="overlayOpacityValue">65%</output></label>
+          <span class="viewer-options-separator" aria-hidden="true"></span>
+          <span class="viewer-options-hints">
+            <span class="viewer-options-hint">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="5"></rect><path d="M12 6v5"></path><path d="M9 14h6"></path></svg>
+              <span data-i18n="mouseWheelZoomHint">Колесо мыши - масштаб</span>
+            </span>
+            <span class="viewer-options-hint">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="5"></rect><path d="M12 6v5"></path><path d="M4 12H2"></path><path d="M22 12h-2"></path><path d="M12 22v-2"></path></svg>
+              <span data-i18n="mouseWheelPanHint">Нажатие колеса - панорама</span>
+            </span>
+          </span>
         </div>
         <div id="resultPanel" class="result-grid hidden" style="margin-top:14px">
           <div class="panel">
@@ -1046,14 +1111,44 @@
         <button id="panToolBtn" data-i18n="pan">Перемещение</button>
         <button id="undoEditBtn" disabled data-i18n="undo">Отменить</button>
         <button id="redoEditBtn" disabled data-i18n="redo">Повторить</button>
-        <button id="zoomOutEditBtn">-</button>
-        <button id="zoomInEditBtn">+</button>
-        <button id="fitEditBtn" data-i18n="fitView">Вписать</button>
       </div>
-      <label class="brush-size-control"><span data-i18n="brushSize">Размер кисти</span><input id="brushSize" type="number" min="2" max="120" value="18"></label>
+      <label class="brush-size-control" for="brushSize"><span data-i18n="brushSize">Размер кисти</span><input id="brushSize" type="range" min="2" max="240" value="28" aria-label="Размер кисти" data-i18n-aria-label="brushSize"><output id="brushSizeValue">28 px</output></label>
     </div>
     <div class="modal-body">
-      <div class="editor-view"><canvas id="editorCanvas"></canvas></div>
+      <div class="editor-main">
+        <div class="editor-view">
+          <div id="editorZoomWidget" class="zoom-widget" role="group" aria-label="Масштаб" data-i18n-aria-label="zoomControls">
+            <div class="zoom-widget-row">
+              <button id="fitEditViewBtn" type="button" title="Вписать" aria-label="Вписать" data-i18n-title="fitView" data-i18n-aria-label="fitView">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4"></path><path d="M16 3h4a1 1 0 0 1 1 1v4"></path><path d="M8 21H4a1 1 0 0 1-1-1v-4"></path><path d="M16 21h4a1 1 0 0 0 1-1v-4"></path><path d="M8 8h8v8H8z"></path></svg>
+              </button>
+              <button id="actualSizeEditBtn" type="button" title="Фактический размер" aria-label="Фактический размер" data-i18n-title="actualSize" data-i18n-aria-label="actualSize">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5z"></path><path d="M8 9h2v6"></path><path d="M9 15h2"></path><path d="M14 10h.01"></path><path d="M14 15h.01"></path><path d="M17 9h-2v6h2"></path></svg>
+              </button>
+            </div>
+            <div class="zoom-widget-main">
+              <button id="zoomInEditViewBtn" type="button" title="Увеличить" aria-label="Увеличить" data-i18n-title="zoomIn" data-i18n-aria-label="zoomIn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M10.5 8v5"></path><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
+              </button>
+              <output id="editorZoomLevel" class="zoom-level" aria-live="polite">100%</output>
+              <button id="zoomOutEditViewBtn" type="button" title="Уменьшить" aria-label="Уменьшить" data-i18n-title="zoomOut" data-i18n-aria-label="zoomOut">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="5.5"></circle><path d="M8 10.5h5"></path><path d="M15 15l5 5"></path></svg>
+              </button>
+            </div>
+          </div>
+          <canvas id="editorCanvas"></canvas>
+        </div>
+        <div class="viewer-options-hints">
+          <span class="viewer-options-hint">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="5"></rect><path d="M12 6v5"></path><path d="M9 14h6"></path></svg>
+            <span data-i18n="mouseWheelZoomHint">Колесо мыши - масштаб</span>
+          </span>
+          <span class="viewer-options-hint">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="5"></rect><path d="M12 6v5"></path><path d="M4 12H2"></path><path d="M22 12h-2"></path><path d="M12 22v-2"></path></svg>
+            <span data-i18n="mouseWheelPanHint">Нажатие колеса - панорама</span>
+          </span>
+        </div>
+      </div>
       <div class="panel editor-side" style="margin:0">
         <h2 data-i18n="layer">Слой</h2>
         <div class="segmented" id="editLayerTabs">
@@ -1117,8 +1212,10 @@
       selectedGrainIds: new Set(),
       grainLabelMap: null,
       grainRunId: null,
+      grainSort: {key: null, direction: 'asc'},
       overlayOpacity: 0.65,
       boundaryOnly: false,
+      contourWidth: 1,
       classVisibility: {
         showSulfide: true,
         showNonSulfide: true,
@@ -1127,7 +1224,7 @@
         showOrdinary: true,
         showFine: true,
         showTalc: true,
-        showTalcClusters: true,
+        showTalcClusters: false,
         showFinalArtifacts: true
       },
       editor: {
@@ -1880,6 +1977,13 @@
         showTiling: 'показать тайлы',
         overlayOpacity: 'прозрачность',
         boundaryOnly: 'только контуры',
+        contourWidth: 'толщина контура',
+        mouseWheelZoomHint: 'Колесо мыши - масштаб',
+        mouseWheelPanHint: 'Нажатие колеса - панорама',
+        zoomControls: 'Масштаб',
+        actualSize: 'Фактический размер',
+        zoomIn: 'Увеличить',
+        zoomOut: 'Уменьшить',
         fixMe: 'Исправить',
         shareComparison: 'Поделиться сравнением',
         shareComparisonNoLayer: 'Выберите слой сравнения справа.',
@@ -1965,6 +2069,7 @@
         statusPreprocessUpdated: 'Предобработанный предпросмотр обновлен.',
         statusAugmentationPreparedRun: 'Создан новый запуск {runId} с обновленной аугментацией. Нажмите Старт, чтобы продолжить расчет.',
         statusPreprocessPreparedRun: 'Создан новый запуск {runId} с обновленной предобработкой. Нажмите Старт, чтобы продолжить расчет.',
+        statusConfigurationCleared: 'Конфигурация изменена. Производные изображения и результаты очищены; нажмите Старт, чтобы пересчитать.',
         statusProgress: '{stage} · {progress}%{eta}{elapsed}',
         statusEta: ' · осталось {duration}',
         statusElapsed: ' · прошло {duration}',
@@ -2010,6 +2115,7 @@
         sulfideGrainsHeaderLiberation: 'Освобожд.',
         sulfideGrainsHeaderContacts: 'Контакты М/Т/П, px',
         sulfideGrainsHeaderLocked: 'Сросток (прокси)',
+        sulfideGrainsSortBy: 'Сортировать: {column}',
         sulfideGrainsContactMatrixShort: 'М',
         sulfideGrainsContactTalcShort: 'Т',
         sulfideGrainsContactOtherShort: 'П',
@@ -2061,7 +2167,9 @@
         historyPreviewOpen: 'Открыть превью {name}',
         historyFilename: 'Файл',
         historyDate: 'Дата',
-        historyProgress: 'Прогресс',
+        historyStatus: 'Статус',
+        historyStatusDone: 'Готово',
+        historyStatusError: 'Ошибка',
         historyTileProgress: 'тайлы {processed}/{total}',
         historyElapsed: 'затрачено {duration}',
         historyOreClassification: 'Классификация руды',
@@ -2414,6 +2522,13 @@
         showTiling: 'show tiling',
         overlayOpacity: 'opacity',
         boundaryOnly: 'contours only',
+        contourWidth: 'contour width',
+        mouseWheelZoomHint: 'Mouse wheel - zoom in / out',
+        mouseWheelPanHint: 'Mouse wheel press - pan',
+        zoomControls: 'Zoom controls',
+        actualSize: 'Actual size',
+        zoomIn: 'Zoom in',
+        zoomOut: 'Zoom out',
         fixMe: 'Fix me',
         shareComparison: 'Share comparison',
         shareComparisonNoLayer: 'Select a right comparison layer first.',
@@ -2499,6 +2614,7 @@
         statusPreprocessUpdated: 'Preprocessing preview updated.',
         statusAugmentationPreparedRun: 'Created new run {runId} with updated augmentation. Press Start to continue evaluation.',
         statusPreprocessPreparedRun: 'Created new run {runId} with updated preprocessing. Press Start to continue evaluation.',
+        statusConfigurationCleared: 'Configuration changed. Derived images and results were cleared; press Start to recalculate.',
         statusProgress: '{stage} · {progress}%{eta}{elapsed}',
         statusEta: ' · ETA {duration}',
         statusElapsed: ' · elapsed {duration}',
@@ -2544,6 +2660,7 @@
         sulfideGrainsHeaderLiberation: 'Liberation',
         sulfideGrainsHeaderContacts: 'Contacts M/T/O, px',
         sulfideGrainsHeaderLocked: 'Locked proxy',
+        sulfideGrainsSortBy: 'Sort by {column}',
         sulfideGrainsContactMatrixShort: 'M',
         sulfideGrainsContactTalcShort: 'T',
         sulfideGrainsContactOtherShort: 'O',
@@ -2595,7 +2712,9 @@
         historyPreviewOpen: 'Open preview for {name}',
         historyFilename: 'Filename',
         historyDate: 'Date',
-        historyProgress: 'Progress',
+        historyStatus: 'Status',
+        historyStatusDone: 'Done',
+        historyStatusError: 'Error',
         historyTileProgress: 'tiles {processed}/{total}',
         historyElapsed: 'elapsed {duration}',
         historyOreClassification: 'Ore classification',
@@ -2819,7 +2938,7 @@
       const modelsSubvalue = [
         statusModelDetails('statusModelBinary', binaryModel),
         statusModelDetails('statusModelTalc', talcModel)
-      ].join(' | ');
+      ].join('\n\n');
       $('statusCards').innerHTML = [
         statusCard('statusOverall', healthPill(health.overall), t('statusActiveJobs') + ': ' + statusActiveJobsText(history)),
         statusCard('statusCpu', escapeHtml(t('statusCpuValue', {load: formatPercentValue(cpu.load_percent_1m), cpus: cpu.logical_cpus || '—'})), `1m ${formatPercentValue(cpu.load_average_1m)} · 5m ${formatPercentValue(cpu.load_average_5m)} · 15m ${formatPercentValue(cpu.load_average_15m)}`),
@@ -3663,14 +3782,62 @@
         }
       }, currentRunConfiguration());
     }
+    function runConfigurationSignature(config = currentRunConfiguration()) {
+      return JSON.stringify(normalizedRunConfiguration(config));
+    }
+    function clearUploadDependentArtifacts(upload) {
+      if (!upload || typeof upload !== 'object') return upload;
+      const display = upload.display && typeof upload.display === 'object' ? upload.display : {};
+      const cleaned = {...upload, display: {}};
+      if (display.original) cleaned.display.original = display.original;
+      delete cleaned.augmentation;
+      delete cleaned.preprocess;
+      delete cleaned.tiling;
+      return cleaned;
+    }
+    function invalidateConfigurationDependentState() {
+      activePollRunId = null;
+      state.run = null;
+      state.preparedSettingsSig = null;
+      state.runFilesPayload = null;
+      state.images.clear();
+      state.boundaryImages.clear();
+      state.grainOutlineImages.clear();
+      state.grainLabelMap = null;
+      if (state.upload) {
+        state.upload = clearUploadDependentArtifacts(state.upload);
+        renderUploadCard(state.upload);
+      } else {
+        renderMetadataStatus();
+      }
+      clearResultsPanel();
+      state.viewMode = 'original';
+      state.sideLayer = 'none';
+      state.pan = {x: 0, y: 0};
+      state.zoom = 1;
+      state.splitter = 0.5;
+      applyShowTilingDefault();
+      setProgress(0);
+      setStatus('statusConfigurationCleared');
+      updateRunControls(null);
+      updateViewControls();
+      drawMain();
+    }
     function openConfigurationDialog() {
       if (!$('configurationDialog') || !(state.upload || state.run)) return;
       applyConfigurationToControls(currentRunConfiguration());
       $('configurationDialog').showModal();
     }
     function saveConfigurationFromDialog() {
-      state.runConfiguration = collectConfigurationForm();
+      const previousSignature = runConfigurationSignature();
+      const nextConfiguration = collectConfigurationForm();
+      const nextSignature = runConfigurationSignature(nextConfiguration);
+      state.runConfiguration = nextConfiguration;
       $('configurationDialog').close();
+      if (nextSignature !== previousSignature) {
+        invalidateConfigurationDependentState();
+        return;
+      }
       updateViewControls();
       drawMain();
     }
@@ -3922,9 +4089,15 @@
       state.images.set(url, image);
       return image;
     }
-    function boundaryCanvasForImage(image, key) {
+    function clampContourWidth(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return 1;
+      return Math.max(1, Math.min(9, Math.round(number)));
+    }
+    function boundaryCanvasForImage(image, key, width = 1) {
       if (!image || !key) return image;
-      const cacheKey = `${key}:${image.width}x${image.height}`;
+      const contourWidth = clampContourWidth(width);
+      const cacheKey = `${key}:${image.width}x${image.height}:contour:${contourWidth}`;
       if (state.boundaryImages.has(cacheKey)) return state.boundaryImages.get(cacheKey);
       const source = document.createElement('canvas');
       source.width = image.width;
@@ -3950,10 +4123,25 @@
           output.data[index + 3] = 235;
         }
       }
-      const boundary = document.createElement('canvas');
-      boundary.width = w;
-      boundary.height = h;
-      boundary.getContext('2d').putImageData(output, 0, 0);
+      const thinBoundary = document.createElement('canvas');
+      thinBoundary.width = w;
+      thinBoundary.height = h;
+      thinBoundary.getContext('2d').putImageData(output, 0, 0);
+      const boundary = thinBoundary;
+      if (contourWidth > 1) {
+        const thickBoundary = document.createElement('canvas');
+        thickBoundary.width = w;
+        thickBoundary.height = h;
+        const thickCtx = thickBoundary.getContext('2d');
+        const radius = Math.floor(contourWidth / 2);
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            thickCtx.drawImage(thinBoundary, dx, dy);
+          }
+        }
+        state.boundaryImages.set(cacheKey, thickBoundary);
+        return thickBoundary;
+      }
       state.boundaryImages.set(cacheKey, boundary);
       return boundary;
     }
@@ -4100,6 +4288,7 @@
     }
     function resetClassVisibility() {
       Object.keys(state.classVisibility).forEach(key => { state.classVisibility[key] = true; });
+      state.classVisibility.showTalcClusters = false;
       syncClassVisibilityControls();
     }
     function setLegendPanel(panelId, sulfideId, finalId, layer) {
@@ -4165,6 +4354,7 @@
     }
     async function drawMain() {
       updateViewControls();
+      updateZoomWidget();
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = cssColor('--viewer-bg') || '#20242b';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -4207,7 +4397,7 @@
       const rect = imageRect(image);
       const tintKey = options.tintColor ? `${preview.url}:tint:${options.tintColor}` : preview.url;
       const tinted = options.tintColor ? tintedOverlayCanvasForImage(image, preview.url, options.tintColor) : image;
-      const source = options.boundaryOnly ? boundaryCanvasForImage(tinted, tintKey) : tinted;
+      const source = options.boundaryOnly ? boundaryCanvasForImage(tinted, tintKey, options.contourWidth) : tinted;
       ctx.save();
       ctx.beginPath();
       ctx.rect(clipX, 0, clipW, canvas.height);
@@ -4217,7 +4407,7 @@
       ctx.restore();
     }
     async function drawFinalOverlays(display, clipX = 0, clipW = canvas.width) {
-      const overlayOptions = {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly};
+      const overlayOptions = {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, contourWidth: state.contourWidth};
       if (classVisible('showOrdinary')) await drawOverlay(display.ordinary_overlay, clipX, clipW, overlayOptions);
       if (classVisible('showFine')) await drawOverlay(display.fine_overlay, clipX, clipW, overlayOptions);
       if (classVisible('showTalc')) await drawOverlay(display.talc_overlay, clipX, clipW, overlayOptions);
@@ -4371,10 +4561,10 @@
           await drawLayer(display, showSulfide ? baseLayerKey(display) : 'non_sulfide_base', clipX, clipW);
         }
         if (showSulfide) {
-          await drawOverlay(display.sulfide_overlay, clipX, clipW, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly});
+          await drawOverlay(display.sulfide_overlay, clipX, clipW, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, contourWidth: state.contourWidth});
         }
         if (classVisible('showSulfideArtifacts')) {
-          await drawOverlay(display.artifact_overlay, clipX, clipW, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, tintColor: cssColor('--artifact') || '#c63cff'});
+          await drawOverlay(display.artifact_overlay, clipX, clipW, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, contourWidth: state.contourWidth, tintColor: cssColor('--artifact') || '#c63cff'});
         }
       } else if (layer === 'final') {
         await drawLayer(display, baseLayerKey(display), clipX, clipW, {showImage: classVisible('showBackground')});
@@ -4426,7 +4616,7 @@
       if (!image) return false;
       const tintKey = options.tintColor ? `${preview.url}:tint:${options.tintColor}` : preview.url;
       const tinted = options.tintColor ? tintedOverlayCanvasForImage(image, preview.url, options.tintColor) : image;
-      const source = options.boundaryOnly ? boundaryCanvasForImage(tinted, tintKey) : tinted;
+      const source = options.boundaryOnly ? boundaryCanvasForImage(tinted, tintKey, options.contourWidth) : tinted;
       targetCtx.save();
       targetCtx.globalAlpha = options.opacity == null ? 1 : Number(options.opacity);
       targetCtx.drawImage(source, 0, 0, width, height);
@@ -4434,7 +4624,7 @@
       return true;
     }
     async function drawComparisonFinalOverlays(targetCtx, display, width, height) {
-      const overlayOptions = {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly};
+      const overlayOptions = {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, contourWidth: state.contourWidth};
       if (classVisible('showOrdinary')) await drawComparisonOverlay(targetCtx, display.ordinary_overlay, width, height, overlayOptions);
       if (classVisible('showFine')) await drawComparisonOverlay(targetCtx, display.fine_overlay, width, height, overlayOptions);
       if (classVisible('showTalc')) await drawComparisonOverlay(targetCtx, display.talc_overlay, width, height, overlayOptions);
@@ -4473,10 +4663,10 @@
           await drawComparisonImageLayer(outputCtx, display, showSulfide ? baseLayerKey(display) : 'non_sulfide_base', output.width, output.height);
         }
         if (showSulfide) {
-          await drawComparisonOverlay(outputCtx, display.sulfide_overlay, output.width, output.height, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly});
+          await drawComparisonOverlay(outputCtx, display.sulfide_overlay, output.width, output.height, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, contourWidth: state.contourWidth});
         }
         if (classVisible('showSulfideArtifacts')) {
-          await drawComparisonOverlay(outputCtx, display.artifact_overlay, output.width, output.height, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, tintColor: cssColor('--artifact') || '#c63cff'});
+          await drawComparisonOverlay(outputCtx, display.artifact_overlay, output.width, output.height, {opacity: state.overlayOpacity, boundaryOnly: state.boundaryOnly, contourWidth: state.contourWidth, tintColor: cssColor('--artifact') || '#c63cff'});
         }
       } else if (layer === 'final') {
         await drawComparisonImageLayer(outputCtx, display, baseLayerKey(display), output.width, output.height, {showImage: classVisible('showBackground')});
@@ -4582,9 +4772,19 @@
       if (!$('overlayOpacityValue')) return;
       $('overlayOpacityValue').textContent = `${Math.round(state.overlayOpacity * 100)}%`;
     }
+    function updateContourWidthLabel() {
+      if (!$('contourWidthValue')) return;
+      $('contourWidthValue').textContent = `${state.contourWidth} px`;
+    }
     $('overlayOpacity').addEventListener('input', () => {
       state.overlayOpacity = Math.max(0.2, Math.min(1, Number($('overlayOpacity').value || 0.65)));
       updateOverlayOpacityLabel();
+      drawMain();
+    });
+    $('contourWidth').addEventListener('input', () => {
+      state.contourWidth = clampContourWidth($('contourWidth').value);
+      $('contourWidth').value = String(state.contourWidth);
+      updateContourWidthLabel();
       drawMain();
     });
     $('boundaryOnly').addEventListener('change', () => {
@@ -4592,18 +4792,75 @@
       drawMain();
     });
     updateOverlayOpacityLabel();
+    updateContourWidthLabel();
     function canvasPoint(event) {
       const rect = canvas.getBoundingClientRect();
       return {x: (event.clientX - rect.left) * devicePixelRatio, y: (event.clientY - rect.top) * devicePixelRatio};
+    }
+    function clampSideBySideSplitter(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return state.splitter;
+      return Math.max(0, Math.min(1, number));
+    }
+    function viewerZoomDimensions() {
+      const preview = previewForCanvasAspect();
+      const width = Number(preview && preview.width);
+      const height = Number(preview && preview.height);
+      if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return null;
+      return {width, height};
+    }
+    function viewerFitScale(dimensions) {
+      if (!dimensions) return 1;
+      return Math.min(canvas.width / dimensions.width, canvas.height / dimensions.height);
+    }
+    function clampViewerZoom(value) {
+      return Math.max(0.25, Math.min(16, Number(value) || 1));
+    }
+    function viewerZoomPercent() {
+      const dimensions = viewerZoomDimensions();
+      if (!dimensions) return 100;
+      const fit = viewerFitScale(dimensions);
+      if (!Number.isFinite(fit) || fit <= 0) return 100;
+      return Math.max(1, Math.round((fit * state.zoom / devicePixelRatio) * 100));
+    }
+    function updateZoomWidget() {
+      const dimensions = viewerZoomDimensions();
+      const disabled = !dimensions;
+      ['fitViewBtn', 'actualSizeBtn', 'zoomInBtn', 'zoomOutBtn'].forEach(id => {
+        const button = $(id);
+        if (button) button.disabled = disabled;
+      });
+      const label = $('zoomLevel');
+      if (label) label.textContent = `${viewerZoomPercent()}%`;
+    }
+    function fitMainView() {
+      state.zoom = 1;
+      state.pan = {x: 0, y: 0};
+      updateZoomWidget();
+      drawMain();
+    }
+    function actualSizeMainView() {
+      const dimensions = viewerZoomDimensions();
+      const fit = viewerFitScale(dimensions);
+      if (!dimensions || !Number.isFinite(fit) || fit <= 0) return;
+      state.zoom = clampViewerZoom(devicePixelRatio / fit);
+      state.pan = {x: 0, y: 0};
+      updateZoomWidget();
+      drawMain();
+    }
+    function zoomMainView(factor) {
+      state.zoom = clampViewerZoom(state.zoom * factor);
+      updateZoomWidget();
+      drawMain();
     }
 
     canvas.addEventListener('wheel', (event) => {
       event.preventDefault();
       const delta = event.deltaY < 0 ? 1.14 : 0.88;
-      state.zoom = Math.max(0.25, Math.min(16, state.zoom * delta));
-      drawMain();
+      zoomMainView(delta);
     }, {passive: false});
     canvas.addEventListener('pointerdown', (event) => {
+      if (event.button === 1) event.preventDefault();
       state.dragging = true;
       state.last = canvasPoint(event);
       state.dragSplitter = state.sideLayer !== 'none' && Math.abs(state.last.x - canvas.width * state.splitter) < 18 * devicePixelRatio;
@@ -4618,7 +4875,7 @@
         return;
       }
       if (state.dragSplitter) {
-        state.splitter = Math.max(0.12, Math.min(0.88, point.x / canvas.width));
+        state.splitter = clampSideBySideSplitter(point.x / canvas.width);
         updateSplitterOverlay();
       } else {
         state.pan.x += point.x - state.last.x;
@@ -4628,6 +4885,12 @@
       drawMain();
     });
     canvas.addEventListener('pointerup', () => { state.dragging = false; state.dragSplitter = false; canvas.style.cursor = 'grab'; });
+    canvas.addEventListener('auxclick', (event) => { if (event.button === 1) event.preventDefault(); });
+    $('fitViewBtn').addEventListener('click', fitMainView);
+    $('actualSizeBtn').addEventListener('click', actualSizeMainView);
+    $('zoomInBtn').addEventListener('click', () => zoomMainView(1.18));
+    $('zoomOutBtn').addEventListener('click', () => zoomMainView(0.84));
+    updateZoomWidget();
 
     const dropZone = $('dropZone');
     dropZone.addEventListener('click', () => $('fileInput').click());
@@ -5880,6 +6143,63 @@
         `${t('sulfideGrainsContactOtherShort')} ${formatGrainInteger(contacts.other_contact_px)}`
       ].join(' / ');
     }
+    function grainSortValue(grain, key) {
+      if (key === 'component_id') return Number(grain.component_id);
+      if (key === 'type') return localizedGrainType(grain).toLocaleLowerCase(localeCode());
+      if (key === 'area_px') return Number(grain.area_px);
+      if (key === 'equivalent_diameter_px') return Number(grain.equivalent_diameter_px);
+      if (key === 'perimeter_px') return Number(grain.perimeter_px);
+      if (key === 'share_percent') return Number(grain.share_percent);
+      if (key === 'liberation_proxy') return Number(grain.liberation_proxy);
+      if (key === 'contacts') {
+        const contacts = grainContacts(grain);
+        return Number(contacts.total_px || contacts.matrix_px + contacts.talc_px + contacts.other_contact_px);
+      }
+      if (key === 'locked_composite_proxy') return grain.locked_composite_proxy ? 1 : 0;
+      return null;
+    }
+    function compareGrainSortValues(left, right, key, direction) {
+      const leftValue = grainSortValue(left, key);
+      const rightValue = grainSortValue(right, key);
+      const sign = direction === 'desc' ? -1 : 1;
+      if (typeof leftValue === 'string' || typeof rightValue === 'string') {
+        const leftMissing = !leftValue;
+        const rightMissing = !rightValue;
+        if (leftMissing && rightMissing) return 0;
+        if (leftMissing) return 1;
+        if (rightMissing) return -1;
+        return String(leftValue).localeCompare(String(rightValue), localeCode()) * sign;
+      }
+      const leftNumber = Number(leftValue);
+      const rightNumber = Number(rightValue);
+      const leftMissing = !Number.isFinite(leftNumber);
+      const rightMissing = !Number.isFinite(rightNumber);
+      if (leftMissing && rightMissing) return 0;
+      if (leftMissing) return 1;
+      if (rightMissing) return -1;
+      return (leftNumber - rightNumber) * sign;
+    }
+    function sortedSulfideGrains(items) {
+      const sort = state.grainSort || {};
+      if (!sort.key) return [...items];
+      return items.map((grain, index) => ({grain, index})).sort((left, right) => {
+        const primary = compareGrainSortValues(left.grain, right.grain, sort.key, sort.direction);
+        if (primary !== 0) return primary;
+        const leftId = Number(left.grain.component_id);
+        const rightId = Number(right.grain.component_id);
+        if (Number.isFinite(leftId) && Number.isFinite(rightId) && leftId !== rightId) return leftId - rightId;
+        return left.index - right.index;
+      }).map(entry => entry.grain);
+    }
+    function renderSulfideGrainHeader(key, labelKey, className = '') {
+      const label = t(labelKey);
+      const active = state.grainSort && state.grainSort.key === key;
+      const direction = active ? state.grainSort.direction : 'asc';
+      const ariaSort = active ? (direction === 'desc' ? 'descending' : 'ascending') : 'none';
+      const indicator = active ? (direction === 'desc' ? '▼' : '▲') : '↕';
+      const classAttr = className ? ` class="${escapeHtml(className)}"` : '';
+      return `<th${classAttr} aria-sort="${ariaSort}"><button type="button" class="sulfide-grains-sort${active ? ' active' : ''}" data-grain-sort="${escapeHtml(key)}" aria-label="${escapeHtml(t('sulfideGrainsSortBy').replace('{column}', label))}"><span>${escapeHtml(label)}</span><span class="sort-indicator" aria-hidden="true">${escapeHtml(indicator)}</span></button></th>`;
+    }
     function sulfideGrainTotals(items, denominatorPx) {
       const totals = {
         area_px: 0,
@@ -5929,11 +6249,13 @@
         return;
       }
       const totals = sulfideGrainTotals(items, grains.share_denominator_px);
+      const sortedItems = sortedSulfideGrains(items);
       const totalShare = `${Number(totals.share_percent || 0).toFixed(2)}%`;
       const totalLiberation = formatGrainPercent(totals.liberation_proxy * 100);
       const totalLocked = formatGrainLockedTotal(totals.locked_count, items.length);
       const totalRow = `<tr class="sulfide-grains-total-row"><td class="select"></td><td class="grain-id">—</td><td>${escapeHtml(t('sulfideGrainsTotal'))}</td><td class="numeric">${escapeHtml(formatGrainInteger(totals.area_px))}</td><td class="numeric">${escapeHtml(formatGrainNumber(totals.equivalent_diameter_px, 1))}</td><td class="numeric">${escapeHtml(formatGrainNumber(totals.perimeter_px, 1))}</td><td class="numeric">${escapeHtml(totalShare)}</td><td class="numeric">${escapeHtml(totalLiberation)}</td><td>${escapeHtml(formatGrainContacts(totals))}</td><td>${escapeHtml(totalLocked)}</td></tr>`;
-      $('sulfideGrainsTable').innerHTML = `<thead><tr><th class="select">${escapeHtml(t('sulfideGrainsHeaderShow'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderId'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderType'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderArea'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderDiameter'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderPerimeter'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderShare'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderLiberation'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderContacts'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderLocked'))}</th></tr></thead><tbody>` + items.map(grain => {
+      const headerRow = `<thead><tr><th class="select">${escapeHtml(t('sulfideGrainsHeaderShow'))}</th>${renderSulfideGrainHeader('component_id', 'sulfideGrainsHeaderId')}${renderSulfideGrainHeader('type', 'sulfideGrainsHeaderType')}${renderSulfideGrainHeader('area_px', 'sulfideGrainsHeaderArea', 'numeric')}${renderSulfideGrainHeader('equivalent_diameter_px', 'sulfideGrainsHeaderDiameter', 'numeric')}${renderSulfideGrainHeader('perimeter_px', 'sulfideGrainsHeaderPerimeter', 'numeric')}${renderSulfideGrainHeader('share_percent', 'sulfideGrainsHeaderShare', 'numeric')}${renderSulfideGrainHeader('liberation_proxy', 'sulfideGrainsHeaderLiberation', 'numeric')}${renderSulfideGrainHeader('contacts', 'sulfideGrainsHeaderContacts')}${renderSulfideGrainHeader('locked_composite_proxy', 'sulfideGrainsHeaderLocked')}</tr></thead>`;
+      $('sulfideGrainsTable').innerHTML = headerRow + '<tbody>' + sortedItems.map(grain => {
         const id = Number(grain.component_id || 0);
         const checked = state.selectedGrainIds.has(id) ? ' checked' : '';
         const area = Number(grain.area_px || 0).toLocaleString(localeCode());
@@ -5945,6 +6267,17 @@
         const locked = grain.locked_composite_proxy ? t('sulfideGrainsLockedYes') : t('sulfideGrainsLockedNo');
         return `<tr data-grain-row="${escapeHtml(id)}"><td class="select"><input type="checkbox" data-grain-id="${escapeHtml(id)}"${checked}></td><td class="grain-id">${escapeHtml(id)}</td><td>${escapeHtml(localizedGrainType(grain))}</td><td class="numeric">${escapeHtml(area)}</td><td class="numeric">${escapeHtml(diameter)}</td><td class="numeric">${escapeHtml(perimeter)}</td><td class="numeric">${escapeHtml(share)}</td><td class="numeric">${escapeHtml(liberation)}</td><td>${escapeHtml(contacts)}</td><td>${escapeHtml(locked)}</td></tr>`;
       }).join('') + totalRow + '</tbody>';
+      document.querySelectorAll('[data-grain-sort]').forEach(button => {
+        button.addEventListener('click', event => {
+          const key = event.currentTarget.dataset.grainSort;
+          const current = state.grainSort || {};
+          state.grainSort = {
+            key,
+            direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc'
+          };
+          renderSulfideGrains(state.run);
+        });
+      });
       document.querySelectorAll('[data-grain-id]').forEach(input => {
         input.addEventListener('change', event => {
           const id = Number(event.target.dataset.grainId || 0);
@@ -6157,13 +6490,27 @@
       }
       return parts.join(' · ');
     }
-    function renderHistoryProgress(run) {
-      const progress = runProgressPercent(run);
-      const details = runProgressDetails(run);
-      return `<div class="history-progress-cell">
-        <div class="history-progress-head"><strong>${escapeHtml(progress + '%')}</strong></div>
-        ${details ? `<small>${escapeHtml(details)}</small>` : ''}
-      </div>`;
+    function runErrorDetails(run) {
+      if (!run) return t('unknownError');
+      const parts = [];
+      if (run.error) parts.push(String(run.error));
+      if (run.stage) parts.push(stageLabel(run.stage));
+      if (run.failed_at) parts.push(formatDate(run.failed_at));
+      return parts.join(' · ') || t('unknownError');
+    }
+    function renderHistoryStatus(run) {
+      const status = String((run && run.status) || '').toLowerCase();
+      if (runIsActive(run)) {
+        return `<div class="history-status-cell"><strong>${escapeHtml(runProgressPercent(run) + '%')}</strong></div>`;
+      }
+      if (status === 'complete') {
+        return `<div class="history-status-cell"><strong>${escapeHtml(t('historyStatusDone'))}</strong></div>`;
+      }
+      if (status === 'failed' || status === 'error') {
+        const details = runErrorDetails(run);
+        return `<div class="history-status-cell history-status-error"><strong>${escapeHtml(t('historyStatusError'))}</strong><span class="history-status-info" title="${escapeHtml(details)}" aria-label="${escapeHtml(details)}">(i)</span></div>`;
+      }
+      return `<div class="history-status-cell"><strong>${escapeHtml(stageLabel(status || 'running'))}</strong></div>`;
     }
     function renderBatchHistoryTable(batches) {
       if (!batches.length) return `<p class="muted">${escapeHtml(t('historyNoBatches'))}</p>`;
@@ -6200,7 +6547,7 @@
           <td class="thumbnail">${renderHistoryThumbnail(run)}</td>
           <td class="filename" title="${escapeHtml(runFilename(run))}">${escapeHtml(runFilename(run))}</td>
           <td>${escapeHtml(formatDate(run.created_at))}</td>
-          <td class="progress">${renderHistoryProgress(run)}</td>
+          <td class="status">${renderHistoryStatus(run)}</td>
           <td>${escapeHtml(oreClassText(summary))}</td>
           <td class="numeric">${escapeHtml(formatFraction(sulfide))}</td>
           <td class="numeric">${escapeHtml(formatFraction(Math.max(0, 1 - sulfide)))}</td>
@@ -6215,7 +6562,7 @@
           <th class="thumbnail">${escapeHtml(t('historyThumbnail'))}</th>
           <th>${escapeHtml(t('historyFilename'))}</th>
           <th>${escapeHtml(t('historyDate'))}</th>
-          <th class="progress">${escapeHtml(t('historyProgress'))}</th>
+          <th class="status">${escapeHtml(t('historyStatus'))}</th>
           <th>${escapeHtml(t('historyOreClassification'))}</th>
           <th class="numeric">${escapeHtml(t('historySulfides'))}</th>
           <th class="numeric">${escapeHtml(t('historyNonSulfides'))}</th>
@@ -6552,10 +6899,24 @@
     $('panToolBtn').addEventListener('click', () => setEditorTool('pan'));
     $('undoEditBtn').addEventListener('click', undoEditor);
     $('redoEditBtn').addEventListener('click', redoEditor);
-    $('zoomOutEditBtn').addEventListener('click', () => zoomEditor(0.82));
-    $('zoomInEditBtn').addEventListener('click', () => zoomEditor(1.22));
-    $('fitEditBtn').addEventListener('click', fitEditorView);
+    $('fitEditViewBtn').addEventListener('click', fitEditorView);
+    $('actualSizeEditBtn').addEventListener('click', actualSizeEditorView);
+    $('zoomInEditViewBtn').addEventListener('click', () => zoomEditor(1.22));
+    $('zoomOutEditViewBtn').addEventListener('click', () => zoomEditor(0.82));
     $('editClass').addEventListener('change', updateEditorStats);
+    $('brushSize').addEventListener('input', () => {
+      updateBrushSizeLabel();
+      if (state.editor.mask) drawEditor();
+    });
+    function updateBrushSizeLabel() {
+      const value = Math.max(2, Math.min(240, Math.round(Number($('brushSize').value || 28))));
+      $('brushSize').value = String(value);
+      $('brushSizeValue').textContent = `${value} px`;
+    }
+    function editorBrushRadius() {
+      return Math.max(1, Math.round(Number($('brushSize').value || 28) / 2));
+    }
+    updateBrushSizeLabel();
     editorCanvas.addEventListener('contextmenu', event => event.preventDefault());
     async function refreshRunForEditor() {
       if (!state.run || !state.run.run_id) return null;
@@ -6706,6 +7067,7 @@
       };
     }
     async function drawEditor() {
+      updateEditorZoomWidget();
       editorCtx.clearRect(0, 0, editorCanvas.width, editorCanvas.height);
       editorCtx.fillStyle = cssColor('--viewer-bg') || '#1f232a'; editorCtx.fillRect(0, 0, editorCanvas.width, editorCanvas.height);
       if (!state.editor.mask) return;
@@ -6753,10 +7115,41 @@
     function fitEditorView(redraw = true) {
       state.editor.zoom = 1;
       state.editor.pan = {x: 0, y: 0};
+      updateEditorZoomWidget();
       if (redraw) drawEditor();
     }
+    function editorFitScale() {
+      if (!state.editor.width || !state.editor.height || !editorCanvas.width || !editorCanvas.height) return 1;
+      return Math.min(editorCanvas.width / state.editor.width, editorCanvas.height / state.editor.height);
+    }
+    function clampEditorZoom(value) {
+      return Math.max(0.2, Math.min(24, Number(value) || 1));
+    }
+    function editorZoomPercent() {
+      const fit = editorFitScale();
+      if (!Number.isFinite(fit) || fit <= 0) return 100;
+      return Math.max(1, Math.round((fit * state.editor.zoom / devicePixelRatio) * 100));
+    }
+    function updateEditorZoomWidget() {
+      const disabled = !state.editor.mask;
+      ['fitEditViewBtn', 'actualSizeEditBtn', 'zoomInEditViewBtn', 'zoomOutEditViewBtn'].forEach(id => {
+        const button = $(id);
+        if (button) button.disabled = disabled;
+      });
+      const label = $('editorZoomLevel');
+      if (label) label.textContent = `${editorZoomPercent()}%`;
+    }
+    function actualSizeEditorView() {
+      const fit = editorFitScale();
+      if (!Number.isFinite(fit) || fit <= 0) return;
+      state.editor.zoom = clampEditorZoom(devicePixelRatio / fit);
+      state.editor.pan = {x: 0, y: 0};
+      updateEditorZoomWidget();
+      drawEditor();
+    }
     function zoomEditor(factor) {
-      state.editor.zoom = Math.max(0.2, Math.min(24, state.editor.zoom * factor));
+      state.editor.zoom = clampEditorZoom(state.editor.zoom * factor);
+      updateEditorZoomWidget();
       drawEditor();
     }
     function cloneEditorMask() {
@@ -6854,7 +7247,7 @@
     function paintEditor(event) {
       if (!state.editor.mask) return;
       const point = editorPoint(event);
-      const radius = Math.max(1, Number($('brushSize').value || 18));
+      const radius = editorBrushRadius();
       const isErase = event.button === 2 || event.buttons === 2;
       const value = isErase ? 0 : (state.editor.layer === 'final' ? Number($('editClass').value || 0) : 1);
       for (let y = point.y - radius; y <= point.y + radius; y++) {

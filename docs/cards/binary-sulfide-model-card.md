@@ -2,6 +2,8 @@
 
 Date: 2026-07-03
 
+Updated: 2026-07-04 with Mask2Former-Swin-Tiny comparison.
+
 ## Intended Use
 
 Binary `sulfide / not_sulfide` segmentation for reflected-light optical microscopy images in the official Nornickel ore-classification task. The mask is an upstream artifact for connected-component ordinary/fine intergrowth rules and visual QA overlays.
@@ -14,6 +16,8 @@ Binary `sulfide / not_sulfide` segmentation for reflected-light optical microsco
 - Local B1 mirror: `models/binary_sulfide/segformer_b1_dataset_v0_zelda_20260703_overnight_safetensors/`
 - Small fallback: SegFormer-B0, zelda run `outputs/train_segformer_b0_zelda_20260702_220225/best.pt`
 - Local B0 mirror: `models/binary_sulfide/segformer_b0_dataset_v0_zelda_20260702_220225/`
+- Non-default comparison: Mask2Former-Swin-Tiny, zelda run `outputs/train_mask2former_zelda_20260704_1553/best.pt`
+- Local Mask2Former mirror: `models/binary_sulfide/mask2former_swin_tiny_dataset_v0_zelda_20260704_1553/`
 - ResUNet sanity check: gx10 run `outputs/train_resunet_gx10_20260703_004425/best.pt`
 
 ## Training Data
@@ -56,6 +60,17 @@ Small fallback SegFormer-B0 best checkpoint:
 - Hausdorff mean on 512 sampled val tiles: `86.23 px`
 - HD95 mean on 512 sampled val tiles: `33.92 px`
 
+Non-default Mask2Former-Swin-Tiny comparison:
+
+- val sulfide IoU: `0.968313`
+- val background IoU: `0.963827`
+- val pixel accuracy: `0.982819`
+- sulfide F1: `0.983901`
+- sulfide AUC: `0.998492`
+- Hausdorff mean on 512 sampled val tiles: `83.24 px`
+- HD95 mean on 512 sampled val tiles: `29.55 px`
+- average training time: `226.39 s/epoch`
+
 ## Limitations
 
 - Weak-label metrics can overestimate real geological performance.
@@ -66,4 +81,4 @@ Small fallback SegFormer-B0 best checkpoint:
 
 ## Recommended Use In Demo
 
-Use the final mirrored SegFormer-B2 checkpoint for sulfide masks and confidence heatmaps. Keep SegFormer-B1 as the faster fallback if B2 loading or memory becomes a blocker during the live demo.
+Use the final mirrored SegFormer-B2 checkpoint for sulfide masks and confidence heatmaps. Keep SegFormer-B1 as the faster fallback if B2 loading or memory becomes a blocker during the live demo. Do not switch to Mask2Former-Swin-Tiny for the demo: it is slower and below B2 on this weak-label benchmark.

@@ -67,6 +67,12 @@ class ComponentRuleConfig:
     fine_solidity_max: float = 0.62
     fine_compactness_max: float = 0.12
     talc_fraction_threshold: float = 0.10
+    # Variant B (default 0 = off): morphological OPEN radius applied to the grain
+    # mask before measuring solidity/compactness/boundary_complexity, so fine-scale
+    # serration (grinding/pluck-out) is ignored and only deep embayments (real
+    # intergrowth) drive the boundary "fine" signal. Does NOT touch area/footprint/
+    # dark_inside_ratio (the replacement signal).
+    boundary_smooth_px: int = 0
 
 
 def analyze_components(
@@ -206,10 +212,15 @@ def component_features(
     dark_inside = ((footprint > 0) & (sulfide == 0)).astype(np.uint8)
     dark_inside_area = int(dark_inside.sum())
     dark_inside_ratio = dark_inside_area / max(footprint_area, 1)
-    solidity = component_solidity(component)
-    perimeter = component_perimeter(component)
-    compactness = 4.0 * math.pi * area / max(perimeter * perimeter, 1e-6)
-    boundary_complexity = perimeter / max(math.sqrt(area), 1e-6)
+    # Boundary metrics measured on an optionally smoothed grain (variant B): the
+    # OPEN removes shallow serration; deep embayments survive. area/footprint/
+    # dark_inside above are left on the raw grain on purpose.
+    shape_component = smoothed_grain(component, cfg.boundary_smooth_px)
+    shape_area = int(shape_component.sum())
+    solidity = component_solidity(shape_component)
+    perimeter = component_perimeter(shape_component)
+    compactness = 4.0 * math.pi * shape_area / max(perimeter * perimeter, 1e-6)
+    boundary_complexity = perimeter / max(math.sqrt(max(shape_area, 1)), 1e-6)
     is_fine = (
         dark_inside_ratio >= cfg.fine_dark_inside_ratio
         or solidity <= cfg.fine_solidity_max
@@ -233,6 +244,23 @@ def component_features(
         centroid_x=float(centroid[0]),
         centroid_y=float(centroid[1]),
     )
+
+
+def smoothed_grain(component: np.ndarray, smooth_px: int) -> np.ndarray:
+    """Morphological OPEN of the grain mask by ``smooth_px`` (variant B), keeping
+    the largest resulting blob so shape metrics stay single-component. Returns the
+    input unchanged when ``smooth_px <= 0`` (preserves the default rule exactly)."""
+    if smooth_px <= 0:
+        return component
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(smooth_px) * 2 + 1,) * 2)
+    opened = cv2.morphologyEx(component.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+    if int(opened.sum()) == 0:
+        return component  # opening erased a thin grain -> fall back to raw
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(opened, connectivity=8)
+    if count > 2:
+        largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        return (labels == largest).astype(np.uint8)
+    return opened
 
 
 def reconstructed_footprint(component: np.ndarray, close_kernel_px: int) -> np.ndarray:

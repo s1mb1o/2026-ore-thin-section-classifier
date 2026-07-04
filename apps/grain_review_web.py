@@ -161,6 +161,13 @@ class GrainReviewStore:
             reasons.append(f"выпуклость {sol:.2f} ≤ {FINE_SOLIDITY_MAX}")
         if fine_signals["compactness"]:
             reasons.append(f"компактность {cmp_:.3f} ≤ {FINE_COMPACTNESS_MAX}")
+        # Ambiguous case: "fine" is driven ONLY by the boundary (low solidity/
+        # compactness) while the interior shows no replacement (dark_inside_ratio
+        # < threshold) — a massive homogeneous grain with a merely ragged contour,
+        # which is likely NOT труднообогатимое. Flag it for the annotator.
+        boundary_only_fine = (not fine_signals["dark_inside_ratio"]) and (
+            fine_signals["solidity"] or fine_signals["compactness"]
+        )
         return {
             "grain_uid": uid,
             "crop_url": "/crops/" + quote(g["crop_path"].split("crops/", 1)[-1]),
@@ -169,6 +176,7 @@ class GrainReviewStore:
             "features": features,
             "fine_signals": fine_signals,
             "fine_reasons": reasons,
+            "boundary_only_fine": boundary_only_fine,
             "label": self.labels.get(uid, {}).get("label"),
         }
 
@@ -322,6 +330,9 @@ main{flex:1;min-width:0}
 .mc.fs{background:rgba(216,63,69,.22);color:#f2969a}
 .badge{font-size:10px;padding:1px 5px;border-radius:6px}
 .b-ord{background:rgba(31,162,90,.2);color:#7fe0a8}.b-fine{background:rgba(216,63,69,.2);color:#f2969a}
+.b-warn{background:rgba(230,160,30,.22);color:#f0c264}
+.warn{background:rgba(230,160,30,.15);border:1px solid rgba(230,160,30,.45);color:#f0c264;padding:6px 8px;border-radius:8px;font-size:12px;margin:8px 0;line-height:1.35}
+.card.warn-edge{outline:1px solid rgba(230,160,30,.5)}
 .row{display:flex;margin-top:auto}.row button{flex:1;border-radius:0;border:0;border-top:1px solid var(--line);font-size:12px;padding:5px 0}
 .row .a-ord.on{background:var(--ord);color:#04170c}.row .a-fine.on{background:var(--fine);color:#1c0405}.row .a-unc.on{background:var(--unc);color:#10131a}
 aside{width:320px;flex:none;position:sticky;top:52px;height:calc(100vh - 52px);overflow:auto;border-left:1px solid var(--line);padding:14px;background:var(--panel)}
@@ -375,11 +386,12 @@ function chip(name,val,isFine,d){return `<span class="mc ${isFine?'fs':''}">${na
 function render(){
   const g=$('#grid');g.innerHTML='';
   state.items.forEach((it,i)=>{
-    const c=document.createElement('div');c.className='card'+(i===state.sel?' sel':'');
+    const c=document.createElement('div');c.className='card'+(i===state.sel?' sel':'')+(it.boundary_only_fine?' warn-edge':'');
     const f=it.features,sg=it.fine_signals;
     const badge=it.heuristic_label==='fine_intergrowth'?'<span class="badge b-fine">эвр: тонкое</span>':'<span class="badge b-ord">эвр: рядовое</span>';
+    const warn=it.boundary_only_fine?'<span class="badge b-warn" title="«тонкое» только из-за рваной границы, замещение низкое">⚠ край</span>':'';
     c.innerHTML=`<img loading="lazy" src="${it.crop_url}">
-    <div class="meta">${badge}<span>a=${fmt(f.area_px,0)}</span></div>
+    <div class="meta"><span>${badge}${warn}</span><span>a=${fmt(f.area_px,0)}</span></div>
     <div class="chips">${chip('d',f.dark_inside_ratio,sg.dark_inside_ratio,2)}${chip('s',f.solidity,sg.solidity,2)}${chip('c',f.compactness,sg.compactness,3)}</div>
     <div class="row">
       <button class="a-ord ${it.label==='ordinary_intergrowth'?'on':''}" data-l="ordinary_intergrowth">рядовое</button>
@@ -402,9 +414,13 @@ function renderDetail(){
     ? `<b style="color:var(--fine)">тонкое</b> — сработало: ${it.fine_reasons.join('; ')}`
     : '<b style="color:var(--ord)">рядовое</b> — ни один порог «тонкого» не сработал';
   const cur=it.label?`ваша метка: <b>${CLASS_RU[it.label]}</b>`:'ещё не размечено';
+  const warnBox=it.boundary_only_fine
+    ? '<div class="warn">⚠ «тонкое» только из-за <b>границы</b> (замещение низкое, dark_inside_ratio &lt; 0.18). Если это массивное однородное зерно с рваным краем — вероятно <b>рядовое</b>, а не труднообогатимое.</div>'
+    : '';
   a.innerHTML=`<h2>Отчёт по зерну · ${it.grade_label}</h2>
   <img src="${it.crop_url}">
   <div class="verdict">Эвристика: ${verdict}<br><span class="dhint">${cur}</span></div>
+  ${warnBox}
   <table class="ftab">
     ${frow('Доля тёмного (замещение)',f.dark_inside_ratio,2,sg.dark_inside_ratio)}
     ${frow('Выпуклость (solidity)',f.solidity,2,sg.solidity)}

@@ -145,3 +145,33 @@ Detailed benchmark note: `docs/benchmarks/01_binary_sulfide_model_benchmark.md`.
 - Local mirror: `models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/`
 - Local checksum `best.pt`: `55c31ef645cfb5c9b0b8fd91f4b9d2070e425b32ed60e23b3c15b292546b910f`
 - Local checksum `last.pt`: `40cc2fa920282964d70588a9815a94915611a22f0182e97327c629220119f00c`
+
+## zelda Mask2Former-Swin-Tiny
+
+- Added code support for `mask2former` as an architecture-diversity comparison after SegFormer-B2.
+- User supplied active zelda host `root@111.88.124.23`; the previously documented `161.104.48.181` host was unreachable from this Mac and from gx10.
+- gx10 fallback was started first and stopped after zelda became available:
+  - session: `tmux nornikel_mask2former_20260704_1527`
+  - epoch 1 val sulfide IoU: `0.943920`
+  - epoch 1 seconds: `847.26`
+- Completed zelda session: `tmux nornikel_mask2former_20260704_1553`
+- Output dir: `/root/2026_Nornikel_Hackaton_v2/outputs/train_mask2former_zelda_20260704_1553`
+- Command: Mask2Former, 30 epochs, batch 8, AMP, `lr=6e-5`, CUDA.
+- Pretrained backbone: `facebook/mask2former-swin-tiny-ade-semantic`; class predictor initialized for binary sulfide segmentation.
+- zelda disk warning: root disk was 40 GB and reached 100% after smoke outputs accumulated; deleted temporary smoke output dirs and completed with about `2.7G` free.
+- Final benchmark summary:
+  - best epoch: `23`
+  - best val sulfide IoU: `0.968313`
+  - val bg IoU at best: `0.963827`
+  - val pixel accuracy at best: `0.982819`
+  - sulfide F1 at best: `0.983901`
+  - sulfide AUC at best: `0.998492`
+  - HD95 mean on 512 sampled val tiles: `29.55 px`
+  - final epoch 30 val sulfide IoU: `0.939554`
+  - total training seconds: `6791.71`
+  - average seconds per epoch: `226.39`
+  - checkpoint size: `1.1G`
+- Local mirror: `models/binary_sulfide/mask2former_swin_tiny_dataset_v0_zelda_20260704_1553/`
+- Local checksum `best.pt`: `e1694cdeb29551f4d5d818aa2dbac91c1601a2da5380181d0087200a693e6a03`
+- Local checksum `last.pt`: `5f837f7a2ea691a8a429d93343b374c245575f225222e5dbf9ae62d4a2cde338`
+- Conclusion: do not replace SegFormer-B2. Mask2Former-Swin-Tiny is slower than SegFormer-B2 and below B2 on IoU, F1, AUC, Hausdorff mean, and HD95 mean on `binary_sulfide_dataset_v0`.

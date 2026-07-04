@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from ore_classifier.model_io import (
     _checkpoint_load_error,
+    create_segformer_for_eval,
     forward_logits,
     load_binary_segmentation_checkpoint,
     remap_segformer_state_dict_for_model,
@@ -139,6 +140,14 @@ class ForwardLogitsTest(unittest.TestCase):
 
 
 class LoadCheckpointTest(unittest.TestCase):
+    def test_segformer_b3_eval_config_matches_mit_b3_shape(self) -> None:
+        model = create_segformer_for_eval("segformer_b3")
+
+        self.assertEqual(model.config.depths, [3, 4, 18, 3])
+        self.assertEqual(model.config.hidden_sizes, [64, 128, 320, 512])
+        self.assertEqual(model.config.decoder_hidden_size, 768)
+        self.assertEqual(model.config.num_labels, 2)
+
     def test_resunet_checkpoint_round_trip(self) -> None:
         model = create_resunet(base_channels=4)
         with tempfile.TemporaryDirectory() as tmp:

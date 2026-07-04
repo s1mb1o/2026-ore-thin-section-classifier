@@ -109,8 +109,16 @@ def main() -> int:
         default=None,
         help="Path to JSON file or inline JSON of augmentation settings for --augment-aug-prob (default: a moderate acquisition profile).",
     )
+    parser.add_argument(
+        "--four-class",
+        action="store_true",
+        help="Benchmark mode: 4-class grade (ordinary/thin/talc/refractory) with grouped train/val over ALL labelled images (no eval-split holdout), mirroring the competitor's schema.",
+    )
     add_mlflow_args(parser, default_experiment="grade-classifier")
     args = parser.parse_args()
+
+    if args.four_class and args.classes == ["ordinary_intergrowth", "fine_intergrowth"]:
+        args.classes = ["ordinary", "thin", "talc", "refractory"]
 
     preprocess_preset = None
     if args.preprocess_aug_prob > 0.0:
@@ -135,7 +143,7 @@ def main() -> int:
     device = resolve_device(args.device)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    samples = build_sample_pool(args)
+    samples = build_four_class_pool(args) if args.four_class else build_sample_pool(args)
     if args.limit is not None:
         samples = samples[: args.limit]
     train_items, val_items = grouped_split(samples, val_fraction=args.val_fraction, seed=args.seed)
@@ -287,6 +295,50 @@ def build_sample_pool(args: argparse.Namespace) -> list[dict[str, Any]]:
             seen_hashes.add(digest)
         pool.append({"path": path, "label": label, "group": specimen_group(path)})
     print(f"pool excluded: {dict(excluded)}", flush=True)
+    pool.sort(key=lambda s: s["path"])
+    return pool
+
+
+def four_class_label(label_hint: str, path: str) -> str | None:
+    # 4-class grade schema (competitor A): split fine_intergrowth into thin (ч2/тонкие)
+    # vs refractory (труднообогатимые). talc = the talcose grade only, NOT the 42
+    # "Области оталькования" blue-contour annotations (label_hint talc_annotation).
+    if label_hint == "ordinary_intergrowth":
+        return "ordinary"
+    if label_hint == "talcose":
+        return "talc"
+    if label_hint == "fine_intergrowth":
+        low = "/".join(re.split(r"[\\/]", path)).lower()
+        return "thin" if "тонкие" in low else "refractory"
+    return None
+
+
+def build_four_class_pool(args: argparse.Namespace) -> list[dict[str, Any]]:
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    audit = json.loads(args.audit_json.read_text(encoding="utf-8"))
+    path_to_sha = audit.get("path_to_sha256", {})
+    # Group by content to (a) drop label-conflicting content and (b) dedupe.
+    by_hash: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    no_hash: list[dict[str, Any]] = []
+    for item in manifest["items"]:
+        label = four_class_label(item.get("label_hint", ""), item["path"])
+        if label is None:
+            continue
+        if not (args.dataset_root / item["path"]).exists():
+            continue
+        rec = {"path": item["path"], "label": label, "group": specimen_group(item["path"])}
+        digest = path_to_sha.get(item["path"])
+        (by_hash[digest].append(rec) if digest else no_hash.append(rec))
+    pool: list[dict[str, Any]] = list(no_hash)
+    excluded = Counter()
+    for digest, recs in by_hash.items():
+        labels = {r["label"] for r in recs}
+        if len(labels) > 1:
+            excluded["conflict"] += len(recs)  # same content, different grade → drop all
+            continue
+        excluded["duplicate"] += len(recs) - 1
+        pool.append(recs[0])  # dedupe to one representative
+    print(f"four-class pool excluded: {dict(excluded)}", flush=True)
     pool.sort(key=lambda s: s["path"])
     return pool
 

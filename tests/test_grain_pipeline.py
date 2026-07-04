@@ -173,6 +173,50 @@ class CropSandboxTest(unittest.TestCase):
             store.crop_file("../crops_backup/leak.png")
 
 
+class SmoothedGrainTest(unittest.TestCase):
+    def test_radius_zero_is_identity(self):
+        from ore_classifier.component_analysis import smoothed_grain
+
+        m = np.zeros((20, 20), dtype=np.uint8)
+        m[5:15, 5:15] = 1
+        self.assertIs(smoothed_grain(m, 0), m)
+        self.assertIs(smoothed_grain(m, -1), m)
+
+    def test_open_raises_solidity_on_serrated_edge(self):
+        from ore_classifier.component_analysis import component_solidity, smoothed_grain
+
+        m = np.zeros((40, 40), dtype=np.uint8)
+        m[8:32, 8:32] = 1
+        # add thin spikes on the top edge -> concavities lower raw solidity
+        for x in range(9, 31, 3):
+            m[2:8, x] = 1
+        raw = component_solidity(m)
+        smoothed = component_solidity(smoothed_grain(m, 3))
+        self.assertGreater(smoothed, raw)  # opening removes the spikes -> more convex
+
+
+class RecomputeFineLabelTest(unittest.TestCase):
+    def test_floor_zero_matches_current_heuristic(self):
+        from ore_classifier.grain_features import recompute_fine_label
+
+        # boundary-only case: no replacement, but low solidity -> current rule = fine
+        row = {"dark_inside_ratio": "0.10", "solidity": "0.55", "compactness": "0.30"}
+        self.assertEqual(recompute_fine_label(row, fine_dark_inside_floor=0.0), "fine_intergrowth")
+
+    def test_floor_gates_out_boundary_only_fine(self):
+        from ore_classifier.grain_features import recompute_fine_label
+
+        row = {"dark_inside_ratio": "0.10", "solidity": "0.55", "compactness": "0.30"}
+        # with a 0.15 replacement floor, boundary alone no longer counts -> ordinary
+        self.assertEqual(recompute_fine_label(row, fine_dark_inside_floor=0.15), "ordinary_intergrowth")
+
+    def test_real_replacement_stays_fine_regardless_of_floor(self):
+        from ore_classifier.grain_features import recompute_fine_label
+
+        row = {"dark_inside_ratio": "0.25", "solidity": "0.90", "compactness": "0.50"}
+        self.assertEqual(recompute_fine_label(row, fine_dark_inside_floor=0.15), "fine_intergrowth")
+
+
 class TalcSourceTest(unittest.TestCase):
     def test_no_scorer_uses_auto_candidate_source(self):
         # Without a talc checkpoint the aggregator must read the batch's

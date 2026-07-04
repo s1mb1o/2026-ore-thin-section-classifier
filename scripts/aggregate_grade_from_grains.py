@@ -43,6 +43,7 @@ from ore_classifier.grain_features import (  # noqa: E402
     build_grain_feature_matrix,
     grain_feature_vector,
     make_grain_model,
+    recompute_fine_label,
     resolve_grain_label,
 )
 from ore_classifier.specimen import specimen_group  # noqa: E402
@@ -67,6 +68,10 @@ def main() -> int:
     parser.add_argument("--require-human", action="store_true")
     parser.add_argument("--grain-model", default="extra_trees")
     parser.add_argument("--folds", type=int, default=5)
+    # Heuristic experiment (variant A): gate the boundary "fine" signal on some
+    # internal replacement. 0.0 = current behaviour; e.g. 0.08 removes the
+    # massive-grain-with-ragged-contour false positive from bootstrap labels.
+    parser.add_argument("--fine-dark-inside-floor", type=float, default=0.0)
     # Talcose branch (v0.2): score talc with the trained talc segmentation model
     # instead of the batch's colour auto-candidate (which is ≈0 for talcose images).
     parser.add_argument("--talc-checkpoint", type=Path, default=None, help="Trained talc segmentation checkpoint; overrides the auto-candidate talc_fraction.")
@@ -94,7 +99,12 @@ def main() -> int:
     images = load_images(args.batch_dir, talc_scorer=talc_scorer)
     if not images:
         raise SystemExit(f"no usable images with grains under {args.batch_dir}")
-    train_labels_by_run = build_grain_label_index(args.manifest, args.annotations, require_human=args.require_human)
+    train_labels_by_run = build_grain_label_index(
+        args.manifest,
+        args.annotations,
+        require_human=args.require_human,
+        fine_dark_inside_floor=args.fine_dark_inside_floor,
+    )
 
     fine_grid = [round(x, 3) for x in np.linspace(0.15, 0.85, 15)]
     talc_grid = [0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.15, 0.20]
@@ -136,6 +146,7 @@ def main() -> int:
         "folds": n_splits,
         "grain_model": args.grain_model,
         "training_is_bootstrap": not any_human,
+        "fine_dark_inside_floor": args.fine_dark_inside_floor,
         "talc_checkpoint": str(args.talc_checkpoint) if args.talc_checkpoint else None,
         "talc_source_counts": dict(talc_sources),
         "fold_thresholds": fold_thresholds,
@@ -256,6 +267,7 @@ def build_grain_label_index(
     annotations_path: Path | None,
     *,
     require_human: bool,
+    fine_dark_inside_floor: float = 0.0,
 ) -> dict[str, list[dict[str, Any]]]:
     annotations = None
     if annotations_path and annotations_path.exists():
@@ -265,10 +277,18 @@ def build_grain_label_index(
     if not manifest.exists() or manifest.stat().st_size == 0:
         return index
     for row in csv.DictReader(manifest.open(encoding="utf-8")):
-        label = resolve_grain_label(row, annotations, require_human=require_human)
+        is_human = bool(annotations and str(row.get("grain_uid", "")) in annotations)
+        if is_human or fine_dark_inside_floor <= 0.0:
+            # Default / human-labelled path is unchanged.
+            label = resolve_grain_label(row, annotations, require_human=require_human)
+        elif require_human:
+            label = None
+        else:
+            # Variant A: recompute the bootstrap label with the replacement gate,
+            # so a massive grain with only a ragged contour is NOT called fine.
+            label = recompute_fine_label(row, fine_dark_inside_floor=fine_dark_inside_floor)
         if label is None:
             continue
-        is_human = bool(annotations and str(row.get("grain_uid", "")) in annotations)
         index.setdefault(str(row.get("run_id", "")), []).append(
             {"features": grain_feature_vector(row), "label": label, "source": "human" if is_human else "heuristic"}
         )

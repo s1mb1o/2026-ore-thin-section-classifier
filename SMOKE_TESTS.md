@@ -161,6 +161,28 @@ Expected:
 - Preferred browser review shows original blue annotation lines explicitly, edits talc class masks directly, keeps Brush/Fill/Rectangle/Polygon/SAM2 edits in the `positive_bag` class by default, supports `talc_node` and `not_talc` as selectable edit classes for Brush/Fill/Rectangle/Polygon, keeps Similar output in the `talc_node` class, supports undo, autosave, default-on sulfide protection, manual sulfide subtraction, top-right `Save`, `Save & Next`, and transparent `Next`, and saves reviewed class masks plus the compatibility union under each sample's `reviewed/` directory. Polygon/rectangle regions stay editable while the current image is open and are flattened on save. The legacy Streamlit review remains available only as a fallback.
 - The `SAM2 assist` canvas tool shows model/device controls, `Load/check SAM2`, draggable point/box prompts, and `Run SAM2`; without local `torch` and `sam2`, it should report missing optional dependencies rather than blocking the rest of the app.
 
+## Non-Neural Talcose Classifier Smoke
+
+Run from the v2 root:
+
+```bash
+python3 -m py_compile scripts/classify_talcose_heuristic.py src/ore_classifier/talc_zone_heuristic.py
+python3 -m unittest discover -s tests -p 'test_talc_zone_heuristic.py' -v
+```
+
+```bash
+python3 scripts/classify_talcose_heuristic.py \
+  --image "dataset/Фото руд по сортам. ч1/Оталькованные руды/DSCN4718.JPG" \
+  --out-dir outputs/talcose_heuristic_smoke
+```
+
+Expected:
+
+- Focused tests pass, including a real CLI subprocess smoke.
+- The CLI writes `talc_zone_mask.png`, `talc_flake_mask.png`, `overlay.jpg`, and `talcose_result.json` under one output subfolder per image.
+- With `--ore-mask`, the classifier uses that mask as the ore/sulfide exclusion source. Without `--ore-mask`, it warns and uses the brightness fallback.
+- `talcose_result.json` records `schema_version=talc-zone-heuristic-v1`, `ore_class`, `talc_fraction`, threshold config, output paths, image path, and ore-mask source.
+
 ## Talc Browser Review App Smoke
 
 Run from the v2 root:
@@ -179,28 +201,33 @@ python3 apps/talc_review_web.py \
 
 Expected:
 
-- Focused tests pass and cover same-filename annotated/original pairing, first-open `current_talc_mask.png` creation, reviewed save artifacts, Not Talc hard-negative save semantics, optional model/teammate mask discovery, reset behavior, and basic HTTP endpoints.
+- Focused tests pass and cover same-filename annotated/original pairing, first-open `current_talc_mask.png` creation, reviewed save artifacts, Not Talc hard-negative save semantics, optional model/teammate mask discovery, non-neural talcose QA artifacts, reset behavior, and basic HTTP endpoints.
 - The app prints a local URL such as `http://127.0.0.1:<port>/`.
 - `/api/manifest` reports `42` samples for the full conversion workspace.
 - The `Theme` selector supports `System`, `Light`, and `Dark`; explicit dark/light choices update the UI immediately and persist across reloads.
 - Opening a sample auto-creates or reuses `current_positive_bag_mask.png`, `current_talc_node_mask.png`, `current_not_talc_mask.png`, and compatibility union `current_talc_mask.png`.
-- The viewer shows a compact over-image segmentation class widget with checked `Positive bag`, `Talc`, and `Not Talc` visibility toggles plus an `Edit` radio for each editable class; turning visibility off hides only that class overlay, while the selected `Edit` class controls Brush, Fill, Rectangle, and Polygon. The same widget shows live visible-pixel percentages for `Positive bag`, confirmed `Talc`, and `Not Talc`, a separated display-only `Talc cluster areas` row with its own visibility toggle and highlighted-area percentage, and flags confirmed `Talc` below the known talcose threshold of `10%` visible pixels.
+- The viewer shows a compact top-left Segmentation classes widget for editable classes only: checked `Positive bag`, `Talc`, and `Not Talc` visibility toggles plus an `Edit` radio for each class. Turning visibility off hides only that class overlay, while the selected `Edit` class controls Brush, Fill, Rectangle, and Polygon. The widget shows live visible-pixel percentages for `Positive bag`, confirmed `Talc`, and `Not Talc`, and flags confirmed `Talc` below the known talcose threshold of `10%` visible pixels.
+- The viewer also shows a separate top-right `Display layers` widget with a checked `Background` checkbox and display-only `Talc cluster areas` row. Unchecking `Background` hides only the base image while selected mask/QA/cluster overlays remain visible. Turning on `Talc cluster areas` highlights locally dense non-sulfide talc regions and shows the highlighted-area percentage in the top-right widget.
 - The top toolbar is ordered `Brush`, `Fill`, `Similar`, `Rectangle`, `Polygon`, `SAM2`, `Undo`, `Zoom In`, `Zoom Out`, `Fit`, followed by active-tool parameters and a visible zoom percentage, with `Save`, `Save & Next`, and transparent `Next` pinned at the top right; Brush shows brush size with a `2-240 px` range, Similar shows `Strictness`, `+ seed`, `- seed`, `Apply Similar`, and `Clear Preview`, and SAM2 shows prompt mode and `Load SAM2`.
+- The bottom-left viewer zoom widget is a single vertical stack: `Fit`, `Actual size`, `Zoom in`, the live zoom percentage, and `Zoom out`; it shares state with the toolbar and mouse-wheel zoom, and `Actual size` returns the canvas to `100%`.
+- Below the main viewer, the mouse hint row shows `Mouse wheel - zoom in / out` and `Mouse wheel press - pan`.
 - Mouse wheel over the canvas zooms in/out anchored around the cursor without changing mask geometry.
-- Holding the mouse wheel / middle button and dragging over the canvas pans the zoomed view without drawing, erasing, moving shapes, or changing the selected tool.
+- Holding the mouse wheel / middle button and dragging over the canvas pans the zoomed view without drawing, erasing, moving shapes, changing the selected tool, or triggering native middle-click browser scrolling; the canvas can move past the viewer edges so its top-left coordinate can become negative inside the visible viewport.
 - Sample cards and the header show human-readable statuses such as `Candidate OK`, `Needs manual review`, `Working draft`, and `Reviewed`; raw enum strings such as `candidate_ok` or `needs_manual_review` are not shown as user-facing labels.
 - Autosaved edits show `Working mask saved`, `Saving working mask...`, or `Autosave failed` in the metrics panel instead of a stale yes/no unsaved flag.
 - `Save & Next` advances through the currently visible filtered/search queue, not the unfiltered manifest order.
 - `Next` advances through the same currently visible filtered/search queue without saving and has no filled button background.
 - Switching samples warns before discarding an unfinished polygon/rectangle draft or failed local autosave state.
 - The canvas edits talc class masks: Brush left-draw/right-erase, Fill, polygon, and rectangle write the selected `Edit` class (`Positive bag`, `Talc`, or `Not Talc`), optional SAM2 prompt tools edit `positive_bag`, and Similar edits `talc_node`.
-- `Background` includes `Sulfide mask (sulfide/non-sulfide mask segmentation)` and `Mask-only background`; selecting a missing background or layer shows a visible warning instead of silently dropping it.
+- `Background` includes `Sulfide mask (sulfide/non-sulfide mask segmentation)` and `Mask-only background`; selecting a missing background or layer shows a visible warning instead of silently dropping it, unless the top-right `Background` checkbox is off.
 - `Dark pixel preview threshold` is available beside the background controls. `255` leaves the photo unchanged, `90` is a quick talc-candidate starting preset, `0` paints the photo background white, moving the slider reports the visible-pixel percentage/count (`luma <= threshold`) for the active photo background, and moving it never changes the current talc mask pixels.
-- `Show talc cluster areas` is available beside the background controls and as the separated `Talc cluster areas` row in the over-image widget. Turning either toggle on highlights locally dense non-sulfide talc regions without changing mask pixels; source can be `Talc class` or `Positive bag + Talc`, sulfide pixels are excluded from both density source evidence and highlighted cluster pixels, and radius, minimum local talc percentage, and opacity sliders update the overlay, widget percentage, and stats.
+- `Show talc cluster areas` is available beside the background controls and as the `Talc cluster areas` row in the top-right `Display layers` widget. Turning either toggle on highlights locally dense non-sulfide talc regions without changing mask pixels; source can be `Talc class` or `Positive bag + Talc`, sulfide pixels are excluded from both density source evidence and highlighted cluster pixels, and radius, minimum local talc percentage, and opacity sliders update the overlay, widget percentage, and stats.
 - `Fill` adds the selected `Edit` class to the clicked connected area bounded by raw/closed blue annotation strokes, sulfide pixels, existing selected-class regions, and the image edge; it autosaves, is undoable, and still clips newly added pixels against sulfides when protection is enabled.
 - `Similar` supports `+ seed` and `- seed` modes. Positive seeds mean "this is talc"; negative seeds mean "this dark object is not talc". It previews luma/color/texture-similar non-sulfide pixels in yellow, excludes existing `talc_node` and `not_talc` pixels, treats `Not Talc` regions as reusable negative examples, recomputes on `Strictness`, and right-click or `Clear Preview` discards it. `Apply Similar` merges the preview into `talc_node` with autosave/undo, while `Save` and `Save & Next` also apply an active preview before writing reviewed outputs. Clicking inside an existing positive bag still uses the clicked seed patch as the anchor; nearby bag pixels may refine calibration only after passing seed-similarity filtering, so `Strictness=100` should not match broad matrix-heavy regions. Similar may mark pixels inside `positive_bag`; the bag remains a rough containing region, not confirmed talc.
 - `Not Talc` is an editable hard-negative class for dark pores, scratches, and matrix objects that should teach later model training what talc is not. It is drawn in red, saved separately, excluded from `talc_node`, and included in review patch audit metadata.
-- The `Model/Human QA` panel can overlay a trained model talc prediction against the current human `Talc` class when `model_talc_mask.png` or an explicit `--talc-model-mask-dir` artifact is available. It highlights agreement, model-only, human-only, and sulfide-conflict pixels. With teammate masks under `human_reviews/` or `--human-review-dir`, the human-agreement overlay highlights multi-human agreement/disagreement.
+- The `Comparison mode` selector has exactly these user-facing options: `Current`, `Heuristic`, `Neural Model`, `Current vs Heuristic`, and `Current vs Neural Model`. It defaults to `Current`, showing only the normal editable annotation classes in the Segmentation classes widget, with `Background` and display-only `Talc cluster areas` kept in the separate top-right `Display layers` widget.
+- Selecting `Heuristic` shows only the non-neural talc-zone layer. Selecting `Current vs Heuristic` adds a comparison overlay against the current `Talc` mask. Pressing `Run non-neural classifier` in either heuristic mode calls `/api/samples/{sample_id}/talcose-heuristic`, uses the sample sulfide mask as the ore exclusion mask when available, and writes `qa/non_neural_talcose/talc_zone_mask.png`, `talc_flake_mask.png`, `overlay.jpg`, and `talcose_result.json`. The comparison overlay highlights agreement, heuristic-only, current-only, and sulfide-conflict pixels.
+- Selecting `Neural Model` shows only the trained model talc prediction when `model_talc_mask.png` or an explicit `--talc-model-mask-dir` artifact is available. Selecting `Current vs Neural Model` compares that prediction against the current `Talc` mask and highlights agreement, neural-only, current-only, and sulfide-conflict pixels.
 - Keyboard shortcuts select tools without changing text fields: `B` selects Brush and `F` selects Fill.
 - In Brush mode, left mouse draws the selected `Edit` class and right mouse erases it without opening the browser context menu.
 - In Brush mode, hovering over the image shows a circle matching the current brush draw/erase area; changing brush size updates the circle.

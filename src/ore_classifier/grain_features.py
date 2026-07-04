@@ -94,6 +94,32 @@ def make_grain_model(name: str) -> Any:
     raise ValueError(f"unknown grain model: {name}")
 
 
+def recompute_fine_label(
+    row: dict[str, Any],
+    *,
+    fine_dark_inside_ratio: float = 0.18,
+    fine_dark_inside_floor: float = 0.0,
+    fine_solidity_max: float = 0.62,
+    fine_compactness_max: float = 0.12,
+) -> str:
+    """Recompute the ordinary/fine heuristic label from a grain's stored features,
+    with an optional replacement floor gating the boundary signal (variant A).
+
+    With ``fine_dark_inside_floor == 0`` this reproduces the current
+    `component_analysis.component_features` rule exactly (dark_inside_ratio ≥ 0
+    always holds). With a positive floor, the boundary terms (low solidity /
+    compactness) only count as "fine" when there is at least ``floor`` internal
+    replacement — removing the massive-grain-with-ragged-contour false positive.
+    Computed from the CSV features, so no re-inference is needed.
+    """
+    dir_ = _to_float(row.get("dark_inside_ratio"))
+    sol = _to_float(row.get("solidity"))
+    cmp_ = _to_float(row.get("compactness"))
+    boundary_fine = sol <= fine_solidity_max or cmp_ <= fine_compactness_max
+    is_fine = dir_ >= fine_dark_inside_ratio or (dir_ >= fine_dark_inside_floor and boundary_fine)
+    return "fine_intergrowth" if is_fine else "ordinary_intergrowth"
+
+
 def resolve_grain_label(
     row: dict[str, Any],
     annotations: dict[str, dict[str, Any]] | None,
