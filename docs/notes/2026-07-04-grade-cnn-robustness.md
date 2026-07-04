@@ -44,6 +44,59 @@ Neither competitor reports grade-classifier robustness to acquisition/preprocess
 variation. This quantifies ours and gives a concrete hardening action
 (preprocessing-aware training or raw-input serving) before deployment.
 
+## Fix applied: preprocessing-aware training (2026-07-04)
+
+Per `docs/plans/40_preprocessing-aware-grade-training.md`, retrained with the UI
+preprocessing folded into train-time augmentation (`--preprocess-aug-prob 0.5`;
+`apply_preprocessing` applied to each 384² crop with p=0.5). New checkpoint:
+`models/grade_classifier/effb3_ordfine_ppaug_20260704/`. Same robustness sweep,
+same held-out 230, same device (MPS):
+
+| Profile | raw-trained | **pp-aware** | Δ |
+| --- | ---: | ---: | ---: |
+| baseline | 0.9303 | **0.9391** | +0.009 |
+| aug: blur + noise | 0.9087 | 0.9435 | +0.035 |
+| aug: color shift | 0.9000 | 0.9174 | +0.017 |
+| aug: acquisition artifacts | 0.8996 | 0.9079 | +0.008 |
+| **preprocess** | 0.8688 | **0.9174** | **+0.049** |
+
+**Strict win.** The target mismatch is fixed — the preprocessing profile rose
+0.869 → 0.917, shrinking its gap to baseline from −0.062 to −0.022 — and there was
+**no regression**: the raw baseline actually improved (0.930 → 0.939) and *every*
+profile improved. Preprocessing-aware training is now the preferred grade-branch
+checkpoint (pp-aug baseline: ordinary F1 0.941, fine F1 0.937; confusion
+ordinary [112,3], fine [11,104]). Artifacts:
+`outputs/evaluations/grade_robustness_ppaug_20260704/`.
+
+## Pushing further: preprocess p=0.7 + acquisition augmentation (2026-07-04)
+
+Second hardening pass — bumped preprocessing aug to p=0.7 and added acquisition/
+surface augmentation to training (`--augment-aug-prob 0.5`, `RandomTrainAug`:
+scratches/haze/pits/blur/noise via the shared `apply_augmentation`, random seed
+per sample). Checkpoint `models/grade_classifier/effb3_ordfine_ppaug07_acq_20260704/`;
+sweep `outputs/evaluations/grade_robustness_ppaug07_acq_20260704/`.
+
+| Profile | raw | pp p=0.5 | **pp0.7 + acq** |
+| --- | ---: | ---: | ---: |
+| baseline | 0.9303 | 0.9391 | 0.9390 |
+| blur + noise | 0.9087 | **0.9435** | 0.9130 |
+| color shift | 0.9000 | **0.9174** | 0.9130 |
+| acquisition artifacts | 0.8996 | 0.9079 | **0.9435** |
+| preprocess | 0.8688 | 0.9174 | 0.9174 |
+| **worst-case (min)** | 0.869 | 0.908 | **0.913** |
+| **mean** | 0.902 | 0.925 | 0.925 |
+
+**Read:** acquisition augmentation did exactly what it targeted — the previously
+weakest profile (acquisition artifacts) jumped 0.908 → 0.944, and the worst-case
+across all profiles improved to 0.913 (best of the three models). The trade-off is
+a small regression on blur+noise and color (−0.03 vs p=0.5); mean robustness is
+tied (0.925) and baseline is unchanged (0.939). Net: **pp0.7+acq is the
+worst-case-optimal checkpoint** (use where the input distribution is unknown);
+**pp p=0.5 is marginally better balanced** (blur/color) and remains the web-app
+default. Both dominate the raw-trained model everywhere. Further gains on
+blur/color would come from adding those to train-time aug too, or tuning the aug
+mix — diminishing returns from here.
+
 ## Reproduce
 
 ```bash

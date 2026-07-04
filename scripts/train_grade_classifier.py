@@ -40,12 +40,31 @@ from ore_classifier.preprocessing import (  # noqa: E402
     default_preprocess_settings,
     normalize_preprocess_settings,
 )
+from ore_classifier.augmentation import (  # noqa: E402
+    apply_augmentation,
+    normalize_augmentation_settings,
+)
 
 Image.MAX_IMAGE_PIXELS = None
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 SPECIMEN_RE = re.compile(r"^\s*(\d{3,})")
+
+# Moderate acquisition/surface-artifact profile for train-time augmentation
+# (grinding scratches, polishing haze, pits, mild blur/noise). Seed is randomized
+# per sample so each crop gets a distinct artifact pattern.
+DEFAULT_TRAIN_AUGMENT: dict[str, Any] = {
+    "enabled": True,
+    "acquisition": {"blur_radius": 1.5, "gaussian_noise_std": 8.0},
+    "surface_artifacts": {
+        "scratch_count": 30,
+        "scratch_intensity_pct": 35.0,
+        "polishing_haze_pct": 20.0,
+        "pit_count": 100,
+        "pit_intensity_pct": 30.0,
+    },
+}
 
 
 def main() -> int:
@@ -79,6 +98,17 @@ def main() -> int:
         default=None,
         help="Path to JSON file or inline JSON of the preprocessing preset used for --preprocess-aug-prob (default: UI default preset).",
     )
+    parser.add_argument(
+        "--augment-aug-prob",
+        type=float,
+        default=0.0,
+        help="Probability of applying acquisition/surface augmentation (scratches/haze/pits/blur/noise) to each training crop. 0 = off.",
+    )
+    parser.add_argument(
+        "--augment-json",
+        default=None,
+        help="Path to JSON file or inline JSON of augmentation settings for --augment-aug-prob (default: a moderate acquisition profile).",
+    )
     add_mlflow_args(parser, default_experiment="grade-classifier")
     args = parser.parse_args()
 
@@ -90,6 +120,15 @@ def main() -> int:
             preprocess_preset = normalize_preprocess_settings(payload)
         else:
             preprocess_preset = default_preprocess_settings()
+
+    augment_settings = None
+    if args.augment_aug_prob > 0.0:
+        if args.augment_json is not None:
+            candidate = Path(args.augment_json)
+            payload = json.loads(candidate.read_text(encoding="utf-8")) if candidate.exists() else json.loads(args.augment_json)
+            augment_settings = normalize_augmentation_settings(payload)
+        else:
+            augment_settings = normalize_augmentation_settings(DEFAULT_TRAIN_AUGMENT)
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -107,11 +146,19 @@ def main() -> int:
 
     if preprocess_preset is not None:
         print(f"preprocessing augmentation ON: prob={args.preprocess_aug_prob} preset={preprocess_preset}", flush=True)
+    if augment_settings is not None:
+        print(f"acquisition augmentation ON: prob={args.augment_aug_prob} settings={augment_settings}", flush=True)
     train_ds = GradeDataset(
         train_items,
         args.dataset_root,
         class_to_idx,
-        train_transforms(args.img_size, preprocess_preset=preprocess_preset, preprocess_prob=args.preprocess_aug_prob),
+        train_transforms(
+            args.img_size,
+            preprocess_preset=preprocess_preset,
+            preprocess_prob=args.preprocess_aug_prob,
+            augment_settings=augment_settings,
+            augment_prob=args.augment_aug_prob,
+        ),
     )
     val_ds = GradeDataset(val_items, args.dataset_root, class_to_idx, eval_transforms(args.img_size))
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=False, pin_memory=(device.type == "cuda"))
@@ -185,6 +232,8 @@ def main() -> int:
             "class_weights": class_weights.detach().cpu().tolist(),
             "preprocess_aug_prob": args.preprocess_aug_prob,
             "preprocess_preset": preprocess_preset,
+            "augment_aug_prob": args.augment_aug_prob,
+            "augment_settings": augment_settings,
             "best_val_macro_f1": best_f1,
             "history": history,
         }
@@ -318,14 +367,40 @@ class RandomPreprocess:
         return image
 
 
-def train_transforms(img_size: int, preprocess_preset: dict[str, Any] | None = None, preprocess_prob: float = 0.0):
+class RandomTrainAug:
+    """Stochastically apply acquisition/surface augmentation (scratches, haze, pits,
+    blur, noise) via the shared ``apply_augmentation``. A fresh random seed per call
+    gives each crop a distinct artifact pattern (the augmentation is seed-driven)."""
+
+    def __init__(self, settings: dict[str, Any], prob: float):
+        self.settings = settings
+        self.prob = float(prob)
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        if self.prob > 0.0 and float(torch.rand(1).item()) < self.prob:
+            settings = {**self.settings, "enabled": True,
+                        "runtime": {**self.settings.get("runtime", {}),
+                                    "random_seed": int(torch.randint(0, 2**31 - 1, (1,)).item())}}
+            return apply_augmentation(image, settings)
+        return image
+
+
+def train_transforms(
+    img_size: int,
+    preprocess_preset: dict[str, Any] | None = None,
+    preprocess_prob: float = 0.0,
+    augment_settings: dict[str, Any] | None = None,
+    augment_prob: float = 0.0,
+):
     steps: list[Any] = [
         transforms.RandomResizedCrop(img_size, scale=(0.7, 1.0), ratio=(0.85, 1.18)),
         transforms.RandomHorizontalFlip(0.5),
         transforms.RandomVerticalFlip(0.5),
         transforms.RandomApply([transforms.RandomRotation((90, 90))], p=0.5),
     ]
-    # Preprocessing runs on the 384x384 crop (fast) between geometry and color aug.
+    # Acquisition/surface artifacts then preprocessing, both on the 384x384 crop (fast).
+    if augment_settings is not None and augment_prob > 0.0:
+        steps.append(RandomTrainAug(augment_settings, augment_prob))
     if preprocess_preset is not None and preprocess_prob > 0.0:
         steps.append(RandomPreprocess(preprocess_preset, preprocess_prob))
     steps += [
