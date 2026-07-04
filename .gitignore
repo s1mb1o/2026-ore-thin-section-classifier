@@ -23,3 +23,9 @@ dataset
 
 # MLflow local file store (debug experiment tracking)
 mlruns/
+
+# Heavy audio/video artifacts (demo videos, TTS narration) stay local;
+# regenerate via scripts/generate_talc_ui_video*.sh and build_video.py.
+*.wav
+*.mp3
+*.mp4

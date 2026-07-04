@@ -1,0 +1,1 @@
+{"backend": "edge", "rate": "-5%", "sample_rate": 48000, "silero_speaker": "aidar", "text": "Если пересечение уже было в старой маске, отдельная команда вычитает сульфиды из текущей разметки.", "voice": "ru-RU-DmitryNeural"}

@@ -1,0 +1,1 @@
+{"backend": "edge", "rate": "-5%", "sample_rate": 48000, "silero_speaker": "aidar", "text": "Крупные фрагменты проще наметить прямоугольником или полигоном.", "voice": "ru-RU-DmitryNeural"}

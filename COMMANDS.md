@@ -174,8 +174,9 @@ Useful variants:
 
 ```bash
 CHECK_ONLY=1 RUN_STT=0 scripts/generate_talc_ui_video.sh
-RUN_STT=0 scripts/generate_talc_ui_video.sh outputs/demo_video_talc_ui_20260704
+RUN_STT=0 scripts/generate_talc_ui_video.sh presentation/videos/demo_video_talc_ui_20260704
 PYTHON_BIN=/tmp/nornikel_demo_tts_venv/bin/python scripts/generate_talc_ui_video.sh
+PULL_RESULT=1 scripts/generate_talc_ui_video_gx10.sh
 ```
 
 ## Legacy Streamlit Talc Review UI

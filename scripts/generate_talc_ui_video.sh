@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTPUT_DIR="${1:-${ROOT_DIR}/outputs/demo_video_talc_ui_20260704}"
+OUTPUT_DIR="${1:-${ROOT_DIR}/presentation/videos/demo_video_talc_ui_20260704}"
 if [[ "${OUTPUT_DIR}" != /* ]]; then
   OUTPUT_DIR="${ROOT_DIR}/${OUTPUT_DIR}"
 fi

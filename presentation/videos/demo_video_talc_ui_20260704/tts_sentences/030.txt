@@ -1,0 +1,1 @@
+{"backend": "edge", "rate": "-5%", "sample_rate": 48000, "silero_speaker": "aidar", "text": "Поэтому защита включена по умолчанию. Все новые пиксели талька обрезаются по сульфидной маске.", "voice": "ru-RU-DmitryNeural"}

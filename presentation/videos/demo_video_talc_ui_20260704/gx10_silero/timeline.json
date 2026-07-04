@@ -1,0 +1,372 @@
+{
+  "target_seconds": 300.0,
+  "narration_seconds": 299.0,
+  "raw_audio_seconds": 255.6,
+  "tempo": 0.8548494983277591,
+  "tts_backend": "silero",
+  "voice": "ru-RU-DmitryNeural",
+  "rate": "-5%",
+  "silero_speaker": "aidar",
+  "items": [
+    {
+      "scene": "scene_00_intro_original.png",
+      "title": "Вступление",
+      "text": "Это отдельное рабочее место для проверки и аккуратной правки масок талька.",
+      "index": 1,
+      "start": 0.0,
+      "end": 5.90747261345853,
+      "duration": 5.90747261345853,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/001.wav"
+    },
+    {
+      "scene": "scene_00_intro_original.png",
+      "title": "Синие линии",
+      "text": "В исходных данных зоны оталькования размечены вручную: синими линиями поверх фотографии шлифа.",
+      "index": 2,
+      "start": 5.90747261345853,
+      "end": 13.96444640062598,
+      "duration": 8.05697378716745,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/002.wav"
+    },
+    {
+      "scene": "scene_00_intro_original.png",
+      "title": "Почему нужна проверка",
+      "text": "Такая разметка помогает стартовать, но это еще не точная маска. Контуры бывают открытыми, иногда попадают сульфиды, а сам тальк лежит пятнами и прожилками.",
+      "index": 3,
+      "start": 13.96444640062598,
+      "end": 26.495892018779344,
+      "duration": 12.531445618153366,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/003.wav"
+    },
+    {
+      "scene": "scene_00_intro_original.png",
+      "title": "Рабочий процесс",
+      "text": "Поэтому инструмент сначала строит черновую область, а человек быстро уточняет ее прямо в браузере.",
+      "index": 4,
+      "start": 26.495892018779344,
+      "end": 34.5674882629108,
+      "duration": 8.071596244131456,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/004.wav"
+    },
+    {
+      "scene": "scene_01_ms_paint_annotation.png",
+      "title": "Фоны для проверки",
+      "text": "В верхнем списке можно переключать фоны: чистая фотография, исходная картинка с синими линиями и проверочный слой конвертера.",
+      "index": 5,
+      "start": 34.5674882629108,
+      "end": 44.83245305164319,
+      "duration": 10.264964788732396,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/005.wav"
+    },
+    {
+      "scene": "scene_02_converter_qa_overlay.png",
+      "title": "Проверочный слой",
+      "text": "Проверочный слой показывает, как алгоритм замкнул линии, какие зоны считает стартовыми и где видит пересечение с сульфидами.",
+      "index": 6,
+      "start": 44.83245305164319,
+      "end": 54.351672535211264,
+      "duration": 9.519219483568076,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/006.wav"
+    },
+    {
+      "scene": "scene_02_converter_qa_overlay.png",
+      "title": "Редактируем маску",
+      "text": "Правим не сам рисунок с линиями. Работа идет с маской, которая потом попадет в обучение и в расчет доли талька.",
+      "index": 7,
+      "start": 54.351672535211264,
+      "end": 62.891187402190916,
+      "duration": 8.539514866979657,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/007.wav"
+    },
+    {
+      "scene": "scene_03_classes_clusters.png",
+      "title": "Виджет классов",
+      "text": "Слева поверх изображения находится виджет классов и видимости слоев.",
+      "index": 8,
+      "start": 62.891187402190916,
+      "end": 68.6816803599374,
+      "duration": 5.79049295774648,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/008.wav"
+    },
+    {
+      "scene": "scene_03_classes_clusters.png",
+      "title": "Черновая область",
+      "text": "Первый класс задает положительную область-кандидат: где тальк ожидается. Это границы поиска, а не утверждение, что каждый пиксель внутри уже тальк.",
+      "index": 9,
+      "start": 68.6816803599374,
+      "end": 80.51124804381845,
+      "duration": 11.829567683881066,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/009.wav"
+    },
+    {
+      "scene": "scene_03_classes_clusters.png",
+      "title": "Подтвержденный тальк",
+      "text": "Второй класс это подтвержденный тальк. Именно эти пиксели считаются надежной разметкой для модели и метрик.",
+      "index": 10,
+      "start": 80.51124804381845,
+      "end": 88.81680359937401,
+      "duration": 8.305555555555555,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/010.wav"
+    },
+    {
+      "scene": "scene_03_classes_clusters.png",
+      "title": "Скопления талька",
+      "text": "Отдельная подсветка показывает локальные скопления талька. Это подсказка для обзора, а не новый обучающий класс.",
+      "index": 11,
+      "start": 88.81680359937401,
+      "end": 97.92659428794991,
+      "duration": 9.1097906885759,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/011.wav"
+    },
+    {
+      "scene": "scene_03_classes_clusters.png",
+      "title": "Проценты",
+      "text": "Рядом сразу видны проценты по изображению. Нижний статус напоминает, близка ли разметка к порогу оталькованной руды.",
+      "index": 12,
+      "start": 97.92659428794991,
+      "end": 107.2264769170579,
+      "duration": 9.299882629107982,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/012.wav"
+    },
+    {
+      "scene": "scene_04_brush_talc_target.png",
+      "title": "Цель редактирования",
+      "text": "Перед правкой выбираем активный класс. Если выбран подтвержденный тальк, кисть добавляет именно его.",
+      "index": 13,
+      "start": 107.2264769170579,
+      "end": 115.35656298904537,
+      "duration": 8.130086071987481,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/013.wav"
+    },
+    {
+      "scene": "scene_04_brush_talc_target.png",
+      "title": "Кисть",
+      "text": "Левая кнопка мыши рисует, правая сразу стирает; отдельный ластик не нужен.",
+      "index": 14,
+      "start": 115.35656298904537,
+      "end": 121.92204616588418,
+      "duration": 6.565483176838811,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/014.wav"
+    },
+    {
+      "scene": "scene_04_brush_talc_target.png",
+      "title": "Размер кисти",
+      "text": "Размер кисти меняется в панели инструментов, и круг под курсором показывает фактическую область рисования.",
+      "index": 15,
+      "start": 121.92204616588418,
+      "end": 130.19835680751174,
+      "duration": 8.276310641627544,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/015.wav"
+    },
+    {
+      "scene": "scene_05_fill_tool.png",
+      "title": "Заливка",
+      "text": "Для замкнутых или почти замкнутых участков удобна заливка. Она растет до синей линии, текущей маски, сульфида или края изображения.",
+      "index": 16,
+      "start": 130.19835680751174,
+      "end": 141.3552914710485,
+      "duration": 11.156934663536777,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/016.wav"
+    },
+    {
+      "scene": "scene_06_rectangle_tool.png",
+      "title": "Фигуры",
+      "text": "Крупные фрагменты проще наметить прямоугольником или полигоном.",
+      "index": 17,
+      "start": 141.3552914710485,
+      "end": 146.2830594679186,
+      "duration": 4.92776799687011,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/017.wav"
+    },
+    {
+      "scene": "scene_06_rectangle_tool.png",
+      "title": "Заполненные области",
+      "text": "Это не обводка. Инструмент сразу создает заполненную область выбранного класса.",
+      "index": 18,
+      "start": 146.2830594679186,
+      "end": 152.93627738654146,
+      "duration": 6.653217918622849,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/018.wav"
+    },
+    {
+      "scene": "scene_06_rectangle_tool.png",
+      "title": "Правка прямоугольника",
+      "text": "Прямоугольник можно растянуть или сдвинуть, потянув за углы и стороны.",
+      "index": 19,
+      "start": 152.93627738654146,
+      "end": 158.03951486697966,
+      "duration": 5.103237480438185,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/019.wav"
+    },
+    {
+      "scene": "scene_07_polygon_tool.png",
+      "title": "Полигон",
+      "text": "Полигон строится точками: чтобы завершить фигуру, кликаем по первой точке.",
+      "index": 20,
+      "start": 158.03951486697966,
+      "end": 164.1663243348983,
+      "duration": 6.126809467918624,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/020.wav"
+    },
+    {
+      "scene": "scene_07_polygon_tool.png",
+      "title": "Редактирование фигур",
+      "text": "Пока маска не сохранена и образец не сменился, фигуры остаются редактируемыми.",
+      "index": 21,
+      "start": 164.1663243348983,
+      "end": 170.453980829421,
+      "duration": 6.287656494522692,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/021.wav"
+    },
+    {
+      "scene": "scene_07_polygon_tool.png",
+      "title": "Пиксельная маска",
+      "text": "Можно двигать вершины, добавлять и убирать точки. При сохранении все превращается в обычную пиксельную маску.",
+      "index": 22,
+      "start": 170.453980829421,
+      "end": 179.1250978090767,
+      "duration": 8.671116979655713,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/022.wav"
+    },
+    {
+      "scene": "scene_08_similar_preview.png",
+      "title": "Похожие пиксели",
+      "text": "Если конкретное темное зерно выглядит как тальк, включаем поиск похожих пикселей.",
+      "index": 23,
+      "start": 179.1250978090767,
+      "end": 185.9245402973396,
+      "duration": 6.799442488262912,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/023.wav"
+    },
+    {
+      "scene": "scene_08_similar_preview.png",
+      "title": "Предпросмотр",
+      "text": "Инструмент берет цвет и яркость вокруг клика и сразу показывает похожие места по всему изображению.",
+      "index": 24,
+      "start": 185.9245402973396,
+      "end": 193.89377934272304,
+      "duration": 7.9692390453834125,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/024.wav"
+    },
+    {
+      "scene": "scene_08_similar_preview.png",
+      "title": "Применение подсказки",
+      "text": "Это только предварительный просмотр. Маска изменится только после применения подсказки или сохранения активного результата.",
+      "index": 25,
+      "start": 193.89377934272304,
+      "end": 203.73469287949922,
+      "duration": 9.840913536776213,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/025.wav"
+    },
+    {
+      "scene": "scene_08_similar_preview.png",
+      "title": "Строгость поиска",
+      "text": "Строгость регулирует, насколько узко искать похожие пиксели и сколько кандидатов попадет в подсказку.",
+      "index": 26,
+      "start": 203.73469287949922,
+      "end": 211.39686032863852,
+      "duration": 7.662167449139281,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/026.wav"
+    },
+    {
+      "scene": "scene_09_sam2_dark_preview.png",
+      "title": "Нейроассистент",
+      "text": "Еще есть нейросетевой помощник: он может предложить область по точке или прямоугольнику, если модель подключена.",
+      "index": 27,
+      "start": 211.39686032863852,
+      "end": 220.2873141627543,
+      "duration": 8.890453834115807,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/027.wav"
+    },
+    {
+      "scene": "scene_09_sam2_dark_preview.png",
+      "title": "Темные пиксели",
+      "text": "Ползунок предпросмотра темных пикселей тоже не меняет разметку. Он скрывает яркие участки и показывает, сколько изображения остается темным кандидатом.",
+      "index": 28,
+      "start": 220.2873141627543,
+      "end": 232.58480046948358,
+      "duration": 12.297486306729265,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/028.wav"
+    },
+    {
+      "scene": "scene_10_quality_sulfides_clusters.png",
+      "title": "Сульфиды",
+      "text": "Главное правило качества: тальк не должен автоматически попадать в сульфидные зерна.",
+      "index": 29,
+      "start": 232.58480046948358,
+      "end": 239.26726330203445,
+      "duration": 6.682462832550862,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/029.wav"
+    },
+    {
+      "scene": "scene_10_quality_sulfides_clusters.png",
+      "title": "Защита от сульфидов",
+      "text": "Поэтому защита включена по умолчанию. Все новые пиксели талька обрезаются по сульфидной маске.",
+      "index": 30,
+      "start": 239.26726330203445,
+      "end": 246.97329812206576,
+      "duration": 7.7060348200313005,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/030.wav"
+    },
+    {
+      "scene": "scene_10_quality_sulfides_clusters.png",
+      "title": "Вычитание сульфидов",
+      "text": "Если пересечение уже было в старой маске, отдельная команда вычитает сульфиды из текущей разметки.",
+      "index": 31,
+      "start": 246.97329812206576,
+      "end": 254.97178208137717,
+      "duration": 7.998483959311425,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/031.wav"
+    },
+    {
+      "scene": "scene_10_quality_sulfides_clusters.png",
+      "title": "Скопления",
+      "text": "Для финального обзора включаем подсветку скоплений: она помогает увидеть, где тальк расположен кучно, и не создает новый обучающий класс.",
+      "index": 32,
+      "start": 254.97178208137717,
+      "end": 265.9240023474179,
+      "duration": 10.95222026604069,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/032.wav"
+    },
+    {
+      "scene": "scene_11_save_controls_result.png",
+      "title": "Сохранение",
+      "text": "После правки нажимаем кнопку сохранения.",
+      "index": 33,
+      "start": 265.9240023474179,
+      "end": 269.3456572769954,
+      "duration": 3.421654929577465,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/033.wav"
+    },
+    {
+      "scene": "scene_11_save_controls_result.png",
+      "title": "Следующий образец",
+      "text": "Если нужно сразу идти дальше, сохраняем и переходим к следующему. Отдельная кнопка перехода просто открывает следующий образец без записи изменений.",
+      "index": 34,
+      "start": 269.3456572769954,
+      "end": 281.3653169014085,
+      "duration": 12.019659624413148,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/034.wav"
+    },
+    {
+      "scene": "slide_reviewed_masks.png",
+      "title": "Проверенные маски",
+      "text": "На выходе остаются три проверенных результата: область-кандидат, подтвержденный тальк и объединенная совместимая маска.",
+      "index": 35,
+      "start": 281.3653169014085,
+      "end": 290.7821791862286,
+      "duration": 9.416862284820033,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/035.wav"
+    },
+    {
+      "scene": "slide_reviewed_masks.png",
+      "title": "Итог",
+      "text": "Эти маски идут дальше в обучение модели талька и в честный расчет доли оталькования по всему изображению.",
+      "index": 36,
+      "start": 290.7821791862286,
+      "end": 299.0000000000001,
+      "duration": 8.21782081377152,
+      "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/tts_sentences/036.wav"
+    }
+  ]
+}

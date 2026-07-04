@@ -1,0 +1,1 @@
+{"backend": "edge", "rate": "-5%", "sample_rate": 48000, "silero_speaker": "aidar", "text": "Полигон строится точками: чтобы завершить фигуру, кликаем по первой точке.", "voice": "ru-RU-DmitryNeural"}

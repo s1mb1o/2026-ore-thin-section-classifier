@@ -11,13 +11,13 @@ from pathlib import Path
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from ore_classifier.datasets import BinarySulfideTileDataset  # noqa: E402
+from ore_classifier.model_io import forward_logits  # noqa: E402
 from ore_classifier.models import create_resunet  # noqa: E402
 from ore_classifier.tracking import add_mlflow_args, mlflow_run  # noqa: E402
 
@@ -25,7 +25,11 @@ from ore_classifier.tracking import add_mlflow_args, mlflow_run  # noqa: E402
 def main() -> int:
     parser = argparse.ArgumentParser(description="Train a binary sulfide segmentation model.")
     parser.add_argument("--dataset-manifest", type=Path, required=True)
-    parser.add_argument("--model", choices=("resunet", "segformer_b0", "segformer_b1", "segformer_b2"), default="resunet")
+    parser.add_argument(
+        "--model",
+        choices=("resunet", "segformer_b0", "segformer_b1", "segformer_b2", "mask2former"),
+        default="resunet",
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("outputs/train_binary_sulfide"))
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -138,6 +142,8 @@ def resolve_device(raw: str) -> torch.device:
 def create_model(args):
     if args.model == "resunet":
         return create_resunet(base_channels=args.base_channels)
+    if args.model == "mask2former":
+        return create_mask2former(args)
     from transformers import SegformerConfig, SegformerForSemanticSegmentation
 
     pretrained = args.pretrained_model
@@ -196,6 +202,44 @@ def segformer_config(model_name: str):
     )
 
 
+def create_mask2former(args):
+    from transformers import Mask2FormerConfig, Mask2FormerForUniversalSegmentation
+
+    pretrained = args.pretrained_model
+    if pretrained in {"", "none", "random"}:
+        pretrained = None
+        args.allow_random_init = True
+    if pretrained is None:
+        if args.allow_random_init:
+            return Mask2FormerForUniversalSegmentation(mask2former_config())
+        pretrained = "facebook/mask2former-swin-tiny-ade-semantic"
+    try:
+        return Mask2FormerForUniversalSegmentation.from_pretrained(
+            pretrained,
+            num_labels=2,
+            id2label={0: "not_sulfide", 1: "sulfide"},
+            label2id={"not_sulfide": 0, "sulfide": 1},
+            ignore_mismatched_sizes=True,
+            use_safetensors=True,
+        )
+    except Exception as exc:
+        if not args.allow_random_init:
+            raise
+        print(f"pretrained Mask2Former load failed, using random init: {exc}", file=sys.stderr)
+        return Mask2FormerForUniversalSegmentation(mask2former_config())
+
+
+def mask2former_config():
+    from transformers import Mask2FormerConfig
+
+    return Mask2FormerConfig(
+        num_labels=2,
+        id2label={0: "not_sulfide", 1: "sulfide"},
+        label2id={"not_sulfide": 0, "sulfide": 1},
+        ignore_value=255,
+    )
+
+
 def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp: bool, max_steps: int) -> float:
     model.train()
     total_loss = 0.0
@@ -250,14 +294,6 @@ def evaluate(model, loader, criterion, device, max_steps: int) -> dict[str, floa
         "iou_sulfide": iou_sulfide,
         "pixel_acc": correct / max(valid_total, 1),
     }
-
-
-def forward_logits(model, images: torch.Tensor, target_hw: tuple[int, int]) -> torch.Tensor:
-    outputs = model(images)
-    logits = outputs.logits if hasattr(outputs, "logits") else outputs
-    if logits.shape[-2:] != target_hw:
-        logits = F.interpolate(logits, size=target_hw, mode="bilinear", align_corners=False)
-    return logits
 
 
 def class_iou(conf: torch.Tensor, class_id: int) -> float:

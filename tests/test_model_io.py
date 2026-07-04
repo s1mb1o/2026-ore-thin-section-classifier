@@ -122,6 +122,21 @@ class ForwardLogitsTest(unittest.TestCase):
         # already at target size: no interpolation, values untouched
         self.assertTrue(torch.equal(logits, torch.ones(1, 2, 16, 16)))
 
+    def test_mask2former_query_output_is_projected_to_dense_logits(self) -> None:
+        def model(images: torch.Tensor) -> SimpleNamespace:
+            return SimpleNamespace(
+                class_queries_logits=torch.tensor([[[8.0, 0.0, -8.0], [0.0, 8.0, -8.0]]]),
+                masks_queries_logits=torch.tensor([[[[-8.0, -8.0], [-8.0, -8.0]], [[8.0, 8.0], [8.0, 8.0]]]]),
+            )
+
+        logits = forward_logits(model, torch.zeros(1, 3, 8, 8), (8, 8))
+        probs = torch.softmax(logits, dim=1)
+
+        self.assertEqual(tuple(logits.shape), (1, 2, 8, 8))
+        self.assertTrue(torch.isfinite(logits).all())
+        self.assertTrue(torch.allclose(probs.sum(dim=1), torch.ones(1, 8, 8), atol=1e-5))
+        self.assertGreater(float(probs[:, 1].mean()), 0.99)
+
 
 class LoadCheckpointTest(unittest.TestCase):
     def test_resunet_checkpoint_round_trip(self) -> None:

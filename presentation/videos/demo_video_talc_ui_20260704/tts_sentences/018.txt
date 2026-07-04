@@ -1,0 +1,1 @@
+{"backend": "edge", "rate": "-5%", "sample_rate": 48000, "silero_speaker": "aidar", "text": "Это не обводка. Инструмент сразу создает заполненную область выбранного класса.", "voice": "ru-RU-DmitryNeural"}

@@ -1,0 +1,357 @@
+{
+  "target_seconds": 300.0,
+  "voice": "ru-RU-DmitryNeural",
+  "rate": "-12%",
+  "items": [
+    {
+      "scene": "slide_title.png",
+      "title": "Постановка задачи",
+      "text": "Это демонстрация v2 интерфейса решения «Скажи мне, кто твой шлиф».",
+      "index": 1,
+      "start": 0.0,
+      "end": 5.932620031150538,
+      "duration": 5.932620031150538,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/001.mp3"
+    },
+    {
+      "scene": "slide_title.png",
+      "title": "Постановка задачи",
+      "text": "Задача простая для пользователя и сложная для модели: по одному оптическому изображению определить сорт руды.",
+      "index": 2,
+      "start": 5.932620031150538,
+      "end": 12.978871808762781,
+      "duration": 7.046251777612244,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/002.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Пример шлифа",
+      "text": "Мы различаем обычные сростки, труднообогатимые тонкие сросты и оталькованные руды, где важна доля талька.",
+      "index": 3,
+      "start": 12.978871808762781,
+      "end": 20.30859348547437,
+      "duration": 7.3297216767115865,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/003.mp3"
+    },
+    {
+      "scene": "scene_single_sulfide.png",
+      "title": "Что видит модель",
+      "text": "На экране виден реальный run из истории v2 UI: исходный шлиф, маски и результат уже сохранены как неизменяемые артефакты.",
+      "index": 4,
+      "start": 20.30859348547437,
+      "end": 28.873434008261665,
+      "duration": 8.564840522787295,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/004.mp3"
+    },
+    {
+      "scene": "slide_data_audit.png",
+      "title": "Данные без утечек",
+      "text": "Сначала мы проверяем данные, потому что официальные папки размечены на уровне изображения, а не пиксельными масками.",
+      "index": 5,
+      "start": 28.873434008261665,
+      "end": 36.10191643529491,
+      "duration": 7.228482427033249,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/005.mp3"
+    },
+    {
+      "scene": "slide_data_audit.png",
+      "title": "Аудит датасета",
+      "text": "Аудит нашёл пятьдесят шесть групп дубликатов по содержимому и двадцать четыре группы с конфликтующими метками.",
+      "index": 6,
+      "start": 36.10191643529491,
+      "end": 42.72296336425814,
+      "duration": 6.621046928963229,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/006.mp3"
+    },
+    {
+      "scene": "slide_data_audit.png",
+      "title": "Честная оценка",
+      "text": "Такие изображения исключены из оценки, а split делается по образцу, чтобы одинаковый шлиф не попадал одновременно в обучение и проверку.",
+      "index": 7,
+      "start": 42.72296336425814,
+      "end": 51.47003453646644,
+      "duration": 8.747071172208303,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/007.mp3"
+    },
+    {
+      "scene": "slide_data_audit.png",
+      "title": "Оговорка по разметке",
+      "text": "Поэтому все метрики в ролике трактуются аккуратно: weak supervision помогает учиться, но не заменяет экспертную геологическую истину.",
+      "index": 8,
+      "start": 51.47003453646644,
+      "end": 59.6299180605404,
+      "duration": 8.15988352407395,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/008.mp3"
+    },
+    {
+      "scene": "slide_architecture.png",
+      "title": "Пайплайн",
+      "text": "Пайплайн начинается с бинарной сегментации сульфидов, затем считает связные компоненты и признаки каждого зерна.",
+      "index": 9,
+      "start": 59.6299180605404,
+      "end": 66.89889618744498,
+      "duration": 7.2689781269045834,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/009.mp3"
+    },
+    {
+      "scene": "slide_architecture.png",
+      "title": "Пайплайн",
+      "text": "После этого отдельная ветка оценивает тальк, а финальный сорт получается из долей, морфологии и явных правил принятия решения.",
+      "index": 10,
+      "start": 66.89889618744498,
+      "end": 75.36249746055394,
+      "duration": 8.463601273108958,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/010.mp3"
+    },
+    {
+      "scene": "slide_architecture.png",
+      "title": "Метрики сегментации",
+      "text": "Для сульфидов текущий SegFormer-B2 даёт IoU ноль целых девятьсот семьдесят четыре тысячных, F1 ноль целых девятьсот восемьдесят семь тысячных и AUC ноль целых девятьсот девяносто девять тысячных.",
+      "index": 11,
+      "start": 75.36249746055394,
+      "end": 87.04550687343401,
+      "duration": 11.68300941288007,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/011.mp3"
+    },
+    {
+      "scene": "slide_architecture.png",
+      "title": "Метрики классификации",
+      "text": "Классификация сорта на deconflicted split из трёхсот сорока пяти изображений даёт macro F1 ноль целых семьсот сорок четыре тысячных и macro AUC ноль целых восемьсот восемьдесят тысячных.",
+      "index": 12,
+      "start": 87.04550687343401,
+      "end": 98.12108078824406,
+      "duration": 11.075573914810048,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/012.mp3"
+    },
+    {
+      "scene": "scene_history.png",
+      "title": "История запусков",
+      "text": "Теперь переходим в приложение: оно хранит историю запусков, и каждый run можно загрузить, не пересчитывая тяжёлый ML заново.",
+      "index": 13,
+      "start": 98.12108078824406,
+      "end": 106.280964312318,
+      "duration": 8.15988352407395,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/013.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Одиночный шлиф",
+      "text": "В рабочем месте оператор видит загруженный шлиф, выбранную предобработку и доступные слои результата.",
+      "index": 14,
+      "start": 106.280964312318,
+      "end": 112.98300264102389,
+      "duration": 6.702038328705898,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/014.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Финальная маска",
+      "text": "В финальном слое зелёный цвет показывает обычные сростания, красный — тонкие, синий — тальк, а фон остаётся отдельным классом.",
+      "index": 15,
+      "start": 112.98300264102389,
+      "end": 121.60858671361818,
+      "duration": 8.625584072594298,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/015.mp3"
+    },
+    {
+      "scene": "scene_single_sulfide.png",
+      "title": "Сульфидный слой",
+      "text": "Переключаемся на слой сульфидов: можно менять прозрачность, включать контуры и быстро сверять маску с исходным изображением.",
+      "index": 16,
+      "start": 121.60858671361818,
+      "end": 129.30276968917178,
+      "duration": 7.694182975553598,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/016.mp3"
+    },
+    {
+      "scene": "scene_single_sulfide.png",
+      "title": "Артефакты подготовки",
+      "text": "Кнопка «Исправить» открывает ручную разметку артефактов шлифовки; отмеченные области исключаются из знаменателя метрик.",
+      "index": 17,
+      "start": 129.30276968917178,
+      "end": 137.4829010631814,
+      "duration": 8.180131374009616,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/017.mp3"
+    },
+    {
+      "scene": "scene_metrics.png",
+      "title": "Результат",
+      "text": "Ниже приложение пишет человекочитаемый вывод: сорт, долю сульфидов, долю талька и объяснение, почему сработало именно это правило.",
+      "index": 18,
+      "start": 137.4829010631814,
+      "end": 146.39195503487502,
+      "duration": 8.909053971693641,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/018.mp3"
+    },
+    {
+      "scene": "scene_metrics.png",
+      "title": "Таблица метрик",
+      "text": "Таблица метрик показывает проанализированную область, общую долю сульфидов, обычные и тонкие срастания, тальк и артефакты.",
+      "index": 19,
+      "start": 146.39195503487502,
+      "end": 154.65307780862733,
+      "duration": 8.261122773752286,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/019.mp3"
+    },
+    {
+      "scene": "scene_metrics.png",
+      "title": "Компоненты",
+      "text": "Если в метаданных задан калиброванный масштаб, в CSV и отчёте дополнительно появляются физические площади в квадратных микрометрах и миллиметрах.",
+      "index": 20,
+      "start": 154.65307780862733,
+      "end": 163.29890973115727,
+      "duration": 8.645831922529965,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/020.mp3"
+    },
+    {
+      "scene": "scene_grains_files.png",
+      "title": "Зерновой отчёт",
+      "text": "Отдельная таблица сульфидных зёрен показывает площадь, эквивалентный диаметр, периметр, долю сульфидов и proxy-показатели освобождения.",
+      "index": 21,
+      "start": 163.29890973115727,
+      "end": 172.30920295252926,
+      "duration": 9.010293221371978,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/021.mp3"
+    },
+    {
+      "scene": "scene_grains_files.png",
+      "title": "Контроль зерен",
+      "text": "Выбранные строки можно подсветить на изображении, чтобы эксперт быстро проверил, какие компоненты влияют на решение.",
+      "index": 22,
+      "start": 172.30920295252926,
+      "end": 179.88189882846885,
+      "duration": 7.572695875939595,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/022.mp3"
+    },
+    {
+      "scene": "scene_files_popup.png",
+      "title": "Экспорт",
+      "text": "Все файлы запуска открываются из встроенного списка: изображения, CSV, JSON, PDF-отчёт и ZIP-архив остаются связаны с тем же run id.",
+      "index": 23,
+      "start": 179.88189882846885,
+      "end": 189.51987539784653,
+      "duration": 9.637976569377665,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/023.mp3"
+    },
+    {
+      "scene": "scene_talc_2550381.png",
+      "title": "Ревью талька",
+      "text": "Тальк показываем отдельно, через приложение ревью масок, потому что исходные синие контуры — это примерные области, а не полная пиксельная истина.",
+      "index": 24,
+      "start": 189.51987539784653,
+      "end": 198.69215141870384,
+      "duration": 9.172276020857316,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/024.mp3"
+    },
+    {
+      "scene": "scene_talc_2550381.png",
+      "title": "Проверенные маски",
+      "text": "Здесь видны positive bag, подтверждённый talc node, защита от сульфидов и статус reviewed для образца.",
+      "index": 25,
+      "start": 198.69215141870384,
+      "end": 205.75865104625177,
+      "duration": 7.06649962754791,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/025.mp3"
+    },
+    {
+      "scene": "scene_talc_2550381.png",
+      "title": "Метрики талька",
+      "text": "После ручного ревью сорока двух образцов талковая SegFormer-B0 ветка даёт mean IoU ноль целых шестьсот сорок четыре тысячных и F1 ноль целых семьсот восемьдесят две тысячных.",
+      "index": 26,
+      "start": 205.75865104625177,
+      "end": 216.18629376312046,
+      "duration": 10.427642716868693,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/026.mp3"
+    },
+    {
+      "scene": "scene_talc_2550381.png",
+      "title": "Оговорка по тальку",
+      "text": "Важная оговорка: примерно восемьдесят три процента проверенного талька оказалось вне исходных синих мешков, поэтому мы не завышаем точность доли талька.",
+      "index": 27,
+      "start": 216.18629376312046,
+      "end": 225.3383219340421,
+      "duration": 9.15202817092165,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/027.mp3"
+    },
+    {
+      "scene": "scene_panorama_tiling.png",
+      "title": "Панорама",
+      "text": "Для больших панорам v2 UI использует анализ в уменьшенном представлении и тайловую обработку с перекрытием.",
+      "index": 28,
+      "start": 225.3383219340421,
+      "end": 232.32383016184733,
+      "duration": 6.985508227805241,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/028.mp3"
+    },
+    {
+      "scene": "scene_panorama_tiling.png",
+      "title": "Тайлы",
+      "text": "На кадре включена сетка тайлов: так видно, как большая панорама разбивается на участки без ручного кадрирования пользователем.",
+      "index": 29,
+      "start": 232.32383016184733,
+      "end": 239.9167738877226,
+      "duration": 7.592943725875262,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/029.mp3"
+    },
+    {
+      "scene": "scene_panorama_metrics.png",
+      "title": "Панорамный результат",
+      "text": "Панорамный run также сохраняет сорт, доли классов, маски и отчётные файлы, но долгий расчёт для демо открывается из истории и не тратит минуты в кадре.",
+      "index": 30,
+      "start": 239.9167738877226,
+      "end": 249.4535112074219,
+      "duration": 9.536737319699329,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/030.mp3"
+    },
+    {
+      "scene": "scene_status.png",
+      "title": "Статус системы",
+      "text": "Страница статуса показывает активный backend, checkpoint, состояние CPU, памяти, диска, историю запусков и предупреждения по среде.",
+      "index": 31,
+      "start": 249.4535112074219,
+      "end": 258.7675221778289,
+      "duration": 9.314010970406988,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/031.mp3"
+    },
+    {
+      "scene": "scene_api.png",
+      "title": "REST API",
+      "text": "Для интеграции есть REST API: загрузка изображений, запуск, опрос статуса, артефакты, настройки, серии и health checks.",
+      "index": 32,
+      "start": 258.7675221778289,
+      "end": 267.9600460486219,
+      "duration": 9.192523870792984,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/032.mp3"
+    },
+    {
+      "scene": "slide_repro.png",
+      "title": "Воспроизводимость",
+      "text": "Решение разворачивается локально и офлайн через Docker для x86 и ARM64; обычное изображение стартует примерно за восемнадцать целых шесть десятых секунды.",
+      "index": 33,
+      "start": 267.9600460486219,
+      "end": 278.5901672648473,
+      "duration": 10.630121216225367,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/033.mp3"
+    },
+    {
+      "scene": "slide_repro.png",
+      "title": "Финальный вывод",
+      "text": "Главная идея v2 UI — не просто показать красивую маску, а сохранить воспроизводимый пакет: исходник, настройки, модели, метрики, отчёты и ограничения.",
+      "index": 34,
+      "start": 278.5901672648473,
+      "end": 289.90871537888535,
+      "duration": 11.318548114038057,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/034.mp3"
+    },
+    {
+      "scene": "slide_repro.png",
+      "title": "Финальный вывод",
+      "text": "Следующий инженерный шаг — экспертная валидация масок талька и калибровка правила сорта, но текущий pipeline уже готов для понятного судейского демо.",
+      "index": 35,
+      "start": 289.90871537888535,
+      "end": 299.0,
+      "duration": 9.091284621114648,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_20260704/tts_sentences/035.mp3"
+    }
+  ]
+}

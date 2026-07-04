@@ -1,0 +1,1 @@
+{"backend": "edge", "rate": "-5%", "sample_rate": 48000, "silero_speaker": "aidar", "text": "Правим не сам рисунок с линиями. Работа идет с маской, которая потом попадет в обучение и в расчет доли талька.", "voice": "ru-RU-DmitryNeural"}

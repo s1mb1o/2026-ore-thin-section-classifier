@@ -1,0 +1,8 @@
+{
+  "final_mp4": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/nornikel_talc_ui_demo_1080p_ru.mp4",
+  "duration_seconds": 300.0,
+  "audio": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/narration_300s.wav",
+  "subtitles": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/subtitles_ru.srt",
+  "script": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/script_ru.md",
+  "timeline": "/home/ashmelev/Projects/nornikel_tts_video/demo_video_talc_ui_20260704/timeline.json"
+}

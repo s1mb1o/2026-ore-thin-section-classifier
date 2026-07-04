@@ -1271,7 +1271,10 @@ def render_html_page() -> str:
       <div class="filter-hint">Luma = 0.299 R + 0.587 G + 0.114 B. Pixels brighter than the threshold are painted white; darker pixels stay visible.</div>
     </div>
     <div class="cluster-controls">
-      <label class="cluster-toggle"><input type="checkbox" id="clusterOverlayToggle"> Show talc cluster areas</label>
+      <div class="cluster-controls-header">
+        <label class="cluster-toggle"><input type="checkbox" id="clusterOverlayToggle"> Show talc cluster areas</label>
+        <button type="button" id="clusterResetBtn" class="small-button">Reset defaults</button>
+      </div>
       <label class="field-label" for="clusterSource">Cluster source</label>
       <select id="clusterSource" class="select-input" aria-label="Talc cluster source">
         <option value="talc_node">Talc class</option>
@@ -1536,6 +1539,7 @@ button, input, select, textarea { font: inherit; }
 .brightness-filter input[type="range"] { width: 100%; }
 .cluster-controls { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; }
 .cluster-controls input[type="range"] { width: 100%; }
+.cluster-controls-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .cluster-toggle { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
 .model-human-controls { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-top: 10px; display: grid; gap: 8px; font-size: 13px; }
 .model-human-controls label { display: flex; align-items: center; gap: 7px; }
@@ -1597,6 +1601,13 @@ const SAM2_POINT_HOVER_PREVIEW_DELAY_MS = 2000;
 const BRIGHTNESS_THRESHOLD_STORAGE_KEY = 'talcBrightnessThreshold';
 const BRIGHTNESS_THRESHOLD_FORMULA = 'luma = 0.299*R + 0.587*G + 0.114*B; luma <= threshold keeps the pixel, luma > threshold paints it white';
 const CLUSTER_OVERLAY_STORAGE_KEY = 'talcClusterOverlaySettings';
+const CLUSTER_OVERLAY_DEFAULTS = Object.freeze({
+  enabled: false,
+  source: 'talc_node',
+  radiusPx: 64,
+  minDensityPercent: 4,
+  opacityPercent: 45
+});
 const TALC_VISIBLE_THRESHOLD_FRACTION = 0.10;
 const MAX_SIMILAR_TALC_REGION_FRACTION = 0.35;
 const SIMILAR_TALC_SEED_PATCH_RADIUS = 5;
@@ -1757,6 +1768,7 @@ const els = {
   brightnessThreshold90Btn: document.getElementById('brightnessThreshold90Btn'),
   brightnessThresholdOffBtn: document.getElementById('brightnessThresholdOffBtn'),
   clusterOverlayToggle: document.getElementById('clusterOverlayToggle'),
+  clusterResetBtn: document.getElementById('clusterResetBtn'),
   clusterSource: document.getElementById('clusterSource'),
   clusterRadius: document.getElementById('clusterRadius'),
   clusterRadiusValue: document.getElementById('clusterRadiusValue'),
@@ -2763,10 +2775,25 @@ function clampNumber(value, fallback, minValue, maxValue) {
 function readClusterSettingsFromControls() {
   return {
     enabled: Boolean(els.clusterOverlayToggle && els.clusterOverlayToggle.checked),
-    source: els.clusterSource && els.clusterSource.value === 'union' ? 'union' : 'talc_node',
-    radiusPx: Math.round(clampNumber(els.clusterRadius ? els.clusterRadius.value : 64, 64, 8, 240)),
-    minDensityPercent: Math.round(clampNumber(els.clusterDensity ? els.clusterDensity.value : 4, 4, 1, 60)),
-    opacityPercent: Math.round(clampNumber(els.clusterOpacity ? els.clusterOpacity.value : 45, 45, 10, 90))
+    source: els.clusterSource && els.clusterSource.value === 'union' ? 'union' : CLUSTER_OVERLAY_DEFAULTS.source,
+    radiusPx: Math.round(clampNumber(
+      els.clusterRadius ? els.clusterRadius.value : CLUSTER_OVERLAY_DEFAULTS.radiusPx,
+      CLUSTER_OVERLAY_DEFAULTS.radiusPx,
+      8,
+      240
+    )),
+    minDensityPercent: Math.round(clampNumber(
+      els.clusterDensity ? els.clusterDensity.value : CLUSTER_OVERLAY_DEFAULTS.minDensityPercent,
+      CLUSTER_OVERLAY_DEFAULTS.minDensityPercent,
+      1,
+      60
+    )),
+    opacityPercent: Math.round(clampNumber(
+      els.clusterOpacity ? els.clusterOpacity.value : CLUSTER_OVERLAY_DEFAULTS.opacityPercent,
+      CLUSTER_OVERLAY_DEFAULTS.opacityPercent,
+      10,
+      90
+    ))
   };
 }
 
@@ -2788,13 +2815,23 @@ function updateClusterOverlayUi(persist = true) {
 function setClusterOverlaySettings(settings, persist = true) {
   if (!els.clusterOverlayToggle || !settings) return;
   els.clusterOverlayToggle.checked = Boolean(settings.enabled);
-  if (els.clusterSource) els.clusterSource.value = settings.source === 'union' ? 'union' : 'talc_node';
-  if (els.clusterRadius) els.clusterRadius.value = String(Math.round(clampNumber(settings.radiusPx, 64, 8, 240)));
-  if (els.clusterDensity) els.clusterDensity.value = String(Math.round(clampNumber(settings.minDensityPercent, 4, 1, 60)));
-  if (els.clusterOpacity) els.clusterOpacity.value = String(Math.round(clampNumber(settings.opacityPercent, 45, 10, 90)));
+  if (els.clusterSource) els.clusterSource.value = settings.source === 'union' ? 'union' : CLUSTER_OVERLAY_DEFAULTS.source;
+  if (els.clusterRadius) {
+    els.clusterRadius.value = String(Math.round(clampNumber(settings.radiusPx, CLUSTER_OVERLAY_DEFAULTS.radiusPx, 8, 240)));
+  }
+  if (els.clusterDensity) {
+    els.clusterDensity.value = String(Math.round(clampNumber(settings.minDensityPercent, CLUSTER_OVERLAY_DEFAULTS.minDensityPercent, 1, 60)));
+  }
+  if (els.clusterOpacity) {
+    els.clusterOpacity.value = String(Math.round(clampNumber(settings.opacityPercent, CLUSTER_OVERLAY_DEFAULTS.opacityPercent, 10, 90)));
+  }
   invalidateClusterOverlay();
   updateClusterOverlayUi(persist);
   drawWithAvailabilityStatus();
+}
+
+function resetClusterOverlaySettings() {
+  setClusterOverlaySettings(CLUSTER_OVERLAY_DEFAULTS, true);
 }
 
 function loadClusterOverlaySettings() {
@@ -5287,6 +5324,9 @@ if (els.clusterLayerToggle) {
     updateClusterOverlayUi(true);
     drawWithAvailabilityStatus();
   });
+}
+if (els.clusterResetBtn) {
+  els.clusterResetBtn.addEventListener('click', resetClusterOverlaySettings);
 }
 [
   els.clusterOverlayToggle,

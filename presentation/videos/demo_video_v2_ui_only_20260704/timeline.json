@@ -1,0 +1,367 @@
+{
+  "target_seconds": 300.0,
+  "voice": "ru-RU-DmitryNeural",
+  "rate": "-12%",
+  "items": [
+    {
+      "scene": "scene_single_final.png",
+      "title": "Только v2 UI",
+      "text": "Это отдельный ролик только про основной v2 UI инструмента «Скажи мне, кто твой шлиф». Другие приложения в этом видео не используются.",
+      "index": 1,
+      "start": 0.0,
+      "end": 8.875434360091878,
+      "duration": 8.875434360091878,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/001.mp3"
+    },
+    {
+      "scene": "scene_history.png",
+      "title": "Один интерфейс",
+      "text": "В кадре одно браузерное приложение: рабочее место, история запусков, серии, статус системы, API и настройки runtime.",
+      "index": 2,
+      "start": 8.875434360091878,
+      "end": 16.588609458743154,
+      "duration": 7.713175098651276,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/002.mp3"
+    },
+    {
+      "scene": "scene_history.png",
+      "title": "История",
+      "text": "Начинаем с истории. Готовые прогоны загружаются мгновенно, поэтому на демо мы не тратим минуты на повторный расчёт тяжёлой модели.",
+      "index": 3,
+      "start": 16.588609458743154,
+      "end": 24.47788444549149,
+      "duration": 7.889274986748338,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/003.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Рабочее место",
+      "text": "После загрузки run открывается рабочее место: слева карточка входного изображения, метаданные, аугментация, предобработка и блок запуска.",
+      "index": 4,
+      "start": 24.47788444549149,
+      "end": 32.47281936509806,
+      "duration": 7.994934919606574,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/004.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Viewer",
+      "text": "Основная область — viewer. В нём можно переключать оригинал, предобработку, сульфидную маску, финальную сегментацию и режим сравнения слоёв.",
+      "index": 5,
+      "start": 32.47281936509806,
+      "end": 41.54196360209671,
+      "duration": 9.069144236998646,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/005.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Финальный слой",
+      "text": "Сейчас выбран финальный слой. Легенда слева показывает классы: обычные сростания, тонкие сросты, тальк, артефакты и фон.",
+      "index": 6,
+      "start": 41.54196360209671,
+      "end": 50.153248130043,
+      "duration": 8.611284527946287,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/006.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Доли классов",
+      "text": "Рядом с классами сразу видны доли по проанализированной области, поэтому оператор видит не только цветную маску, но и численную основу решения.",
+      "index": 7,
+      "start": 50.153248130043,
+      "end": 57.86642322869427,
+      "duration": 7.713175098651276,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/007.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Тальк внутри UI",
+      "text": "Тальк в этом ролике показан только как слой и настройка внутри v2 UI; отдельное приложение разметки или ревью масок здесь не открывается.",
+      "index": 8,
+      "start": 57.86642322869427,
+      "end": 65.59720831615526,
+      "duration": 7.730785087460982,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/008.mp3"
+    },
+    {
+      "scene": "scene_single_sulfide.png",
+      "title": "Сульфиды",
+      "text": "Переключаемся на слой сульфидов. Он отделяет сульфидную фазу от несульфидной основы и даёт базу для компонентного анализа.",
+      "index": 9,
+      "start": 65.59720831615526,
+      "end": 73.09906354909006,
+      "duration": 7.501855232934802,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/009.mp3"
+    },
+    {
+      "scene": "scene_single_sulfide.png",
+      "title": "Контроль слоя",
+      "text": "Под viewer находятся рабочие переключатели: показать тайлы, оставить только контуры и изменить прозрачность наложения поверх исходного шлифа.",
+      "index": 10,
+      "start": 73.09906354909006,
+      "end": 80.6713587372637,
+      "duration": 7.572295188173627,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/010.mp3"
+    },
+    {
+      "scene": "scene_single_sulfide.png",
+      "title": "Исправление",
+      "text": "Кнопка «Исправить» открывает правку артефактов подготовки. Такие зоны можно исключать, чтобы царапины и мусор не портили знаменатель метрик.",
+      "index": 11,
+      "start": 80.6713587372637,
+      "end": 89.6524530302138,
+      "duration": 8.981094292950116,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/011.mp3"
+    },
+    {
+      "scene": "scene_metrics.png",
+      "title": "Текстовый вывод",
+      "text": "Ниже viewer приложение пишет текстовый вывод: классификацию руды, доли сульфидов и талька, а также краткое объяснение применённого правила.",
+      "index": 12,
+      "start": 89.6524530302138,
+      "end": 97.40084810648449,
+      "duration": 7.748395076270688,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/012.mp3"
+    },
+    {
+      "scene": "scene_metrics.png",
+      "title": "Таблица метрик",
+      "text": "Таблица метрик показывает проанализированную область, доли классов, количество компонент и служебные величины, которые потом попадают в отчёт.",
+      "index": 13,
+      "start": 97.40084810648449,
+      "end": 105.21968313799401,
+      "duration": 7.818835031509512,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/013.mp3"
+    },
+    {
+      "scene": "scene_metrics.png",
+      "title": "Масштаб",
+      "text": "Если в метаданных задан масштаб, тот же интерфейс добавляет физические площади в квадратных микрометрах и миллиметрах, без отдельной обработки файла.",
+      "index": 14,
+      "start": 105.21968313799401,
+      "end": 113.00329819188411,
+      "duration": 7.7836150538901006,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/014.mp3"
+    },
+    {
+      "scene": "scene_grains_files.png",
+      "title": "Зерновой отчёт",
+      "text": "Зерновая таблица разворачивает сульфидные компоненты: площадь, эквивалентный диаметр, периметр, долю сульфидов и proxy-показатели освобождения.",
+      "index": 15,
+      "start": 113.00329819188411,
+      "end": 121.27999293244598,
+      "duration": 8.27669474056187,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/015.mp3"
+    },
+    {
+      "scene": "scene_grains_files.png",
+      "title": "Связь таблицы и картинки",
+      "text": "Строки таблицы можно использовать как навигацию по изображению, чтобы эксперт быстро увидел, какие зёрна сильнее всего влияют на итоговый сорт.",
+      "index": 16,
+      "start": 121.27999293244598,
+      "end": 128.94033806466814,
+      "duration": 7.660345132222157,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/016.mp3"
+    },
+    {
+      "scene": "scene_files_popup.png",
+      "title": "Файлы run",
+      "text": "Список файлов run открывается прямо из интерфейса. Изображения, CSV, JSON, PDF и ZIP остаются привязаны к одному неизменяемому run id.",
+      "index": 17,
+      "start": 128.94033806466814,
+      "end": 138.6082219211968,
+      "duration": 9.667883856528654,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/017.mp3"
+    },
+    {
+      "scene": "scene_files_popup.png",
+      "title": "Экспорт",
+      "text": "Это удобно для передачи результата: можно открыть предпросмотр, скачать отдельный файл или забрать весь пакет артефактов одним ZIP архивом.",
+      "index": 18,
+      "start": 138.6082219211968,
+      "end": 146.02202721008305,
+      "duration": 7.413805288886271,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/018.mp3"
+    },
+    {
+      "scene": "scene_panorama_tiling.png",
+      "title": "Панорама",
+      "text": "Теперь тот же v2 UI показывает панорамный шлиф. Большие изображения обрабатываются через анализируемое представление и тайловую схему.",
+      "index": 19,
+      "start": 146.02202721008305,
+      "end": 154.72136168207786,
+      "duration": 8.699334471994817,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/019.mp3"
+    },
+    {
+      "scene": "scene_panorama_tiling.png",
+      "title": "Тайлы",
+      "text": "Включённая сетка тайлов показывает, как panorama разбивается на участки с перекрытием без ручного кадрирования пользователем.",
+      "index": 20,
+      "start": 154.72136168207786,
+      "end": 161.18422757524,
+      "duration": 6.462865893162141,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/020.mp3"
+    },
+    {
+      "scene": "scene_panorama_final.png",
+      "title": "Результат панорамы",
+      "text": "Панорамный run сохраняет такие же слои, доли классов и отчётные файлы, как обычный шлиф, но визуально работает с гораздо большим исходником.",
+      "index": 21,
+      "start": 161.18422757524,
+      "end": 168.7213027857942,
+      "duration": 7.537075210554215,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/021.mp3"
+    },
+    {
+      "scene": "scene_panorama_metrics.png",
+      "title": "Долгие ожидания",
+      "text": "Если расчёт большой панорамы длится долго, демо открывает готовый run из истории. В реальной записи такой участок можно ускорять без потери смысла.",
+      "index": 22,
+      "start": 168.7213027857942,
+      "end": 177.59673714588607,
+      "duration": 8.875434360091878,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/022.mp3"
+    },
+    {
+      "scene": "scene_history.png",
+      "title": "Журнал запусков",
+      "text": "История хранит одиночные runs с датой, статусом, прогрессом, классификацией, долями сульфидов и талька, а также действиями загрузки и удаления.",
+      "index": 23,
+      "start": 177.59673714588607,
+      "end": 186.3665115731197,
+      "duration": 8.769774427233642,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/023.mp3"
+    },
+    {
+      "scene": "scene_history_current.png",
+      "title": "Активные состояния",
+      "text": "Если run ещё выполняется или остановлен, UI показывает текстовый статус, процент, этап и счётчик тайлов, чтобы пользователь не гадал, что происходит.",
+      "index": 24,
+      "start": 186.3665115731197,
+      "end": 194.7136462689204,
+      "duration": 8.347134695800696,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/024.mp3"
+    },
+    {
+      "scene": "scene_history_series_current.png",
+      "title": "История серий",
+      "text": "В том же разделе есть режим серий. Он показывает batch id, число изображений, итоговый статус, прогресс и быстрый переход к серии.",
+      "index": 25,
+      "start": 194.7136462689204,
+      "end": 203.51864067377346,
+      "duration": 8.804994404853055,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/025.mp3"
+    },
+    {
+      "scene": "scene_series_current.png",
+      "title": "Серии",
+      "text": "Страница «Серии» нужна для групповой обработки. Сюда добавляют несколько изображений, задают общие настройки и запускают последовательный расчёт.",
+      "index": 26,
+      "start": 203.51864067377346,
+      "end": 212.65822486601093,
+      "duration": 9.13958419223747,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/026.mp3"
+    },
+    {
+      "scene": "scene_series_current.png",
+      "title": "Пакетный сценарий",
+      "text": "Каждый элемент серии становится обычным immutable run, поэтому его можно открыть отдельно, выгрузить CSV или включить в общий результат серии.",
+      "index": 27,
+      "start": 212.65822486601093,
+      "end": 220.45944990871075,
+      "duration": 7.801225042699806,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/027.mp3"
+    },
+    {
+      "scene": "scene_settings_current.png",
+      "title": "Настройки",
+      "text": "Настройки сохраняются на сервере приложения. Здесь выбираются язык, тема, backend, checkpoint, источник талька и параметры предобработки по умолчанию.",
+      "index": 28,
+      "start": 220.45944990871075,
+      "end": 230.37387360857528,
+      "duration": 9.914423699864539,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/028.mp3"
+    },
+    {
+      "scene": "scene_settings_current.png",
+      "title": "Runtime",
+      "text": "Переключение backend применяется к новым запускам, а уже созданные runs остаются с тем checkpoint и runtime provenance, с которыми они были рассчитаны.",
+      "index": 29,
+      "start": 230.37387360857528,
+      "end": 238.35119853937218,
+      "duration": 7.977324930796867,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/029.mp3"
+    },
+    {
+      "scene": "scene_settings_current.png",
+      "title": "Проверка модели",
+      "text": "Кнопка проверки runtime позволяет валидировать ML checkpoint без создания run, поэтому проблемы окружения видны до начала обработки изображения.",
+      "index": 30,
+      "start": 238.35119853937218,
+      "end": 246.09959361564285,
+      "duration": 7.748395076270688,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/030.mp3"
+    },
+    {
+      "scene": "scene_status.png",
+      "title": "Статус",
+      "text": "Страница статуса показывает здоровье сервиса: backend, checkpoint, CPU, GPU или Metal, память, диск, размер workspace, активные задачи и журнал событий.",
+      "index": 31,
+      "start": 246.09959361564285,
+      "end": 255.85552741622004,
+      "duration": 9.755933800577184,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/031.mp3"
+    },
+    {
+      "scene": "scene_status.png",
+      "title": "Операционный экран",
+      "text": "Этот экран полезен во время демонстрации: он объясняет, чем занят сервер, сколько есть ресурсов и почему run может идти медленнее обычного.",
+      "index": 32,
+      "start": 255.85552741622004,
+      "end": 263.62153248130045,
+      "duration": 7.766005065080393,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/032.mp3"
+    },
+    {
+      "scene": "scene_api.png",
+      "title": "REST API",
+      "text": "API страница документирует те же операции, что доступны в браузере: загрузка изображений, старт run, опрос статуса, артефакты, серии и настройки.",
+      "index": 33,
+      "start": 263.62153248130045,
+      "end": 272.51457683020203,
+      "duration": 8.893044348901585,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/033.mp3"
+    },
+    {
+      "scene": "scene_api.png",
+      "title": "Песочница",
+      "text": "Встроенная песочница отправляет запросы на этот же сервер, поэтому интегратор может проверить контракт API без отдельного Postman сценария.",
+      "index": 34,
+      "start": 272.51457683020203,
+      "end": 279.85794216384943,
+      "duration": 7.343365333647447,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/034.mp3"
+    },
+    {
+      "scene": "scene_single_final.png",
+      "title": "Итог",
+      "text": "Итоговый сценарий остаётся внутри одного v2 UI: загрузка, настройка, запуск, слои, метрики, зерновой отчёт, экспорт, история, серии и API.",
+      "index": 35,
+      "start": 279.85794216384943,
+      "end": 289.7371458860946,
+      "duration": 9.879203722245128,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/035.mp3"
+    },
+    {
+      "scene": "scene_files_popup.png",
+      "title": "Итог",
+      "text": "Главная ценность интерфейса — воспроизводимый пакет: исходник, настройки, модели, маски, таблицы, отчёты и ограничения сохранены рядом с результатом.",
+      "index": 36,
+      "start": 289.7371458860946,
+      "end": 299.0,
+      "duration": 9.262854113905414,
+      "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704/tts_sentences/036.mp3"
+    }
+  ]
+}

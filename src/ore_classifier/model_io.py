@@ -29,6 +29,8 @@ def load_binary_segmentation_checkpoint(path: Path, device: torch.device):
         model = create_resunet(base_channels=int(train_args.get("base_channels", 32)))
     elif model_name in {"segformer_b0", "segformer_b1", "segformer_b2"}:
         model = create_segformer_for_eval(model_name)
+    elif model_name == "mask2former":
+        model = create_mask2former_for_eval(train_args)
     else:
         raise ValueError(f"Unsupported checkpoint model={model_name!r}")
     state_dict = checkpoint["model"]
@@ -75,6 +77,43 @@ def create_segformer_for_eval(model_name: str):
             label2id={"not_sulfide": 0, "sulfide": 1},
         )
     return SegformerForSemanticSegmentation(config)
+
+
+def create_mask2former_for_eval(train_args: dict[str, Any] | None = None):
+    from transformers import Mask2FormerConfig, Mask2FormerForUniversalSegmentation
+
+    train_args = train_args or {}
+    pretrained = train_args.get("pretrained_model")
+    allow_random = bool(train_args.get("allow_random_init", False))
+    if pretrained in {"", "none", "random"}:
+        pretrained = None
+        allow_random = True
+    if pretrained is None and not allow_random:
+        pretrained = "facebook/mask2former-swin-tiny-ade-semantic"
+
+    if pretrained is None:
+        config = mask2former_config()
+    else:
+        try:
+            config = Mask2FormerConfig.from_pretrained(pretrained)
+        except Exception:
+            config = mask2former_config()
+        config.num_labels = 2
+        config.id2label = {0: "not_sulfide", 1: "sulfide"}
+        config.label2id = {"not_sulfide": 0, "sulfide": 1}
+        config.ignore_value = 255
+    return Mask2FormerForUniversalSegmentation(config)
+
+
+def mask2former_config():
+    from transformers import Mask2FormerConfig
+
+    return Mask2FormerConfig(
+        num_labels=2,
+        id2label={0: "not_sulfide", 1: "sulfide"},
+        label2id={"not_sulfide": 0, "sulfide": 1},
+        ignore_value=255,
+    )
 
 
 def _load_state_dict_strictly(model: torch.nn.Module, state_dict: dict[str, Any]) -> str:
@@ -207,10 +246,25 @@ def _segformer_encoder_to_stages_key(key: str) -> str:
 
 def forward_logits(model, images: torch.Tensor, target_hw: tuple[int, int]) -> torch.Tensor:
     outputs = model(images)
+    if hasattr(outputs, "class_queries_logits") and hasattr(outputs, "masks_queries_logits"):
+        return mask2former_semantic_logits(outputs, target_hw)
     logits = outputs.logits if hasattr(outputs, "logits") else outputs
     if logits.shape[-2:] != target_hw:
         logits = F.interpolate(logits, size=target_hw, mode="bilinear", align_corners=False)
     return logits
+
+
+def mask2former_semantic_logits(outputs: Any, target_hw: tuple[int, int]) -> torch.Tensor:
+    class_logits = outputs.class_queries_logits
+    mask_logits = outputs.masks_queries_logits
+    if mask_logits.shape[-2:] != target_hw:
+        mask_logits = F.interpolate(mask_logits, size=target_hw, mode="bilinear", align_corners=False)
+
+    class_probs = class_logits.softmax(dim=-1)[..., :2]
+    mask_probs = mask_logits.sigmoid()
+    semantic_probs = torch.einsum("bqc,bqhw->bchw", class_probs, mask_probs)
+    semantic_probs = semantic_probs / semantic_probs.sum(dim=1, keepdim=True).clamp_min(1e-6)
+    return semantic_probs.clamp_min(1e-6).log()
 
 
 def _checkpoint_load_error(path: Path, checkpoint: dict[str, Any], exc: RuntimeError) -> str:
