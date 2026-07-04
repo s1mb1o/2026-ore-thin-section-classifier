@@ -16,9 +16,13 @@ Pipeline (see docs/notes/2026-07-04-heuristic-talcose-classifier.md):
 Rationale for each stage is documented per method. All spatial radii are defined
 at a fixed processing width (`proc_width`) so results are resolution-independent.
 
-The opaque/ore mask can be supplied directly (e.g. from the trained sulfide
-segmentation model, which is preferred in production); `opaque_phase_mask` is a
-self-contained brightness fallback.
+PRODUCTION REQUIREMENT — replace the ore mask with the model's mask.
+The whole result derives from the opaque/ore mask (step 1). In production the
+mask MUST come from the trained sulfide segmentation model (SegFormer-B2,
+`models/binary_sulfide/...`), passed as `detect_talc_zones(rgb, ore_mask=...)`.
+`opaque_phase_mask` is only a dependency-light BRIGHTNESS FALLBACK: it matches
+the reference mask on the 82 annotated images (IoU 97%) but over-calls talcose
+on fresh folders. The fixed 87.8% accuracy assumes a good (model) ore mask.
 
 Approved production parameters live in `TalcZoneConfig` defaults (2026-07-04).
 """
@@ -197,6 +201,8 @@ def detect_talc_zones(
     rgb = np.ascontiguousarray(rgb[..., :3])
     h0, w0 = rgb.shape[:2]
     if ore_mask is None:
+        # PRODUCTION: pass ore_mask from the trained sulfide model instead.
+        # This brightness fallback over-calls talcose on unseen folders.
         ore_mask = opaque_phase_mask(rgb, opaque_config)
 
     # matrix = whole frame minus ore (no extra analyzed gate); the dark threshold

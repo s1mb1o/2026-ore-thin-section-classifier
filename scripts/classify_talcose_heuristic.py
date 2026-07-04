@@ -9,6 +9,10 @@ Algorithm and approved production parameters:
 `src/ore_classifier/talc_zone_heuristic.py` and
 `docs/notes/2026-07-04-heuristic-talcose-classifier.md`.
 
+PRODUCTION REQUIREMENT: pass `--ore-mask` from the trained sulfide model. Without
+it, the built-in brightness fallback is used, which over-calls talcose on unseen
+folders. The fixed 87.8% accuracy assumes a model-quality ore mask.
+
 Single image:
 
     python3 scripts/classify_talcose_heuristic.py \
@@ -130,6 +134,10 @@ def main() -> int:
         raise SystemExit("--ore-mask is only valid with a single --image")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    if args.ore_mask is None:
+        print("WARNING: no --ore-mask given; using the BRIGHTNESS FALLBACK ore mask. "
+              "For production pass the trained sulfide model's mask (it over-calls "
+              "talcose on unseen folders otherwise).", file=sys.stderr, flush=True)
     records = []
     for i, path in enumerate(images, 1):
         rec = process_one(path, args.out_dir, cfg, ore_cfg, args.ore_mask, not args.no_overlay)
