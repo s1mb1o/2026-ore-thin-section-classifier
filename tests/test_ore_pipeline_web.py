@@ -109,10 +109,12 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIsNone(describe(6240, 3895, "RGB", 1_090_000))
         # Tiny solid image has a high ratio but a trivial decoded footprint.
         self.assertIsNone(describe(100, 100, "RGB", 1_000))
-        # Megapixel-limit boundary.
-        self.assertIsNone(describe(20000, 9950, "RGB", 5_000_000))
-        self.assertIsNotNone(describe(20000, 10050, "RGB", 5_000_000))
-        # Sub-limit dimensions but an extreme expansion ratio on a large raster.
+        # Largest real panorama (dataset/Панорамы/16.jpg, ~574 MP) must NOT be flagged.
+        self.assertIsNone(describe(27025, 21227, "RGB", 221_610_000))
+        # Megapixel-limit boundary (cap is 1000 MP).
+        self.assertIsNone(describe(30000, 30000, "RGB", 120_000_000))  # ~900 MP
+        self.assertIsNotNone(describe(33000, 33000, "RGB", 120_000_000))  # ~1089 MP
+        # Sub-cap dimensions but an extreme expansion ratio on a large raster.
         self.assertIsNotNone(describe(14000, 14000, "RGB", 1_000_000))
         # Malformed header values are ignored (no false positive / crash).
         self.assertIsNone(describe(0, 0, "RGB", 10))

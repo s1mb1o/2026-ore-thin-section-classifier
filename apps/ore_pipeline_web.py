@@ -92,9 +92,12 @@ MAX_JSON_BYTES = 220 * 1024 * 1024
 # raster (a crafted solid-colour PNG reaches thousands of megapixels at >1000x
 # expansion), which is a cheap OOM/DoS against the upload path. Both signals below
 # are read from the image header *before* any full-resolution decode. Thresholds are
-# grounded in the real dataset, whose largest image is ~26 MP with expansion ratios
-# up to ~93x, so these leave generous headroom for legitimate thin sections.
-DECODE_BOMB_MAX_MEGAPIXELS = 200
+# grounded in the real dataset: single thin sections top out at ~26 MP, but stitched
+# panoramas reach ~574 MP (dataset/Панорамы/16.jpg) with expansion ratios only ~8x.
+# The megapixel cap therefore sits above the largest real panorama yet well below
+# bomb territory (the demonstrated attack was ~2116 MP), while the ratio rule catches
+# highly-compressible bombs whose dimensions stay under the cap.
+DECODE_BOMB_MAX_MEGAPIXELS = 1000
 DECODE_BOMB_MAX_EXPANSION_RATIO = 300
 DECODE_BOMB_RATIO_MIN_DECODED_MB = 512
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
