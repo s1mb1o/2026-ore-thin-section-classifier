@@ -136,9 +136,16 @@ class OrePipelineGrainReportingTest(unittest.TestCase):
         self.assertIn("sulfideGrainsHeaderLiberation", html)
         self.assertIn("sulfideGrainsHeaderContacts", html)
         self.assertIn("sulfideGrainsHeaderLocked", html)
+        self.assertIn("sulfideGrainsTotal", html)
+        self.assertIn("sulfideGrainsLockedTotal", html)
         self.assertIn("function formatGrainContacts", html)
+        self.assertIn("function sulfideGrainTotals", html)
+        self.assertIn("sulfide-grains-total-row", html)
+        self.assertIn("Контакты М/Т/П, px", html)
+        self.assertIn("Сросток (прокси)", html)
         self.assertIn("liberation_proxy", html)
         self.assertIn("locked_composite_proxy", html)
+        self.assertIn("1-px ring around a grain", html)
         self.assertIn("OM-mask proxies", html)
 
 

@@ -25,8 +25,8 @@ Goal: classify one optical thin-section image and export evidence.
 7. Watch stage/progress/elapsed time until completion.
 8. Review the text conclusion and rationale.
 9. Review the hierarchical metrics table.
-10. Open the sulfide-grain table and check grains of interest to outline them on the viewer.
-11. Review the technical details widget below the grain table: backend/model source, tiles, elapsed time, stage outputs, and artifact paths.
+10. Open the sulfide-grain card and check grains of interest to outline them on the viewer.
+11. Review the technical details card below the grain table: backend/model source, tiles, elapsed time, stage outputs, and artifact paths.
 12. Switch between original, preprocessed, sulfide, final, and side-by-side views.
 13. Save CSV, PDF report, or open `View files` and download the ZIP.
 
@@ -103,7 +103,7 @@ Expected behavior:
 Goal: inspect which sulfide grains drive ordinary/fine intergrowth metrics.
 
 1. Complete or load a run.
-2. Scroll to the sulfide-grain table below metrics.
+2. Scroll to the sulfide-grain card below metrics.
 3. Sort visually by type, area, or share using the table values.
 4. Check one or more grain rows.
 5. Inspect the combined outline on the viewer.
@@ -240,7 +240,7 @@ Goal: present the system in a controlled stakeholder demo.
 4. Show layer switching and side-by-side comparison.
 5. Show final text conclusion and hierarchical metrics.
 6. Check several sulfide-grain rows to demonstrate component-level explainability.
-7. Show the technical details widget to explain what backend/model paths ran, how many tiles were processed, operation time, and returned stage results.
+7. Show the technical details card to explain what backend/model paths ran, how many tiles were processed, operation time, and returned stage results.
 8. Open `View files` and show immutable artifacts.
 9. Download the PDF report.
 10. Open `/status` to show deployment/runtime health.

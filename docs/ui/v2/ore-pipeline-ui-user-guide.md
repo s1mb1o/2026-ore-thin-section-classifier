@@ -52,7 +52,7 @@ The main area contains:
 - layer selector and side-by-side selector;
 - image canvas with pan, zoom, segmentation legends, and draggable split-view divider;
 - viewer options row below the image;
-- text conclusion, metrics, sulfide-grain table, technical run details, and export buttons after a run completes.
+- separate result cards for text conclusion, metrics with export buttons, sulfide grains, and technical run details after a run completes.
 
 ## Image Upload
 
@@ -127,6 +127,7 @@ Segmentation class legends appear over the image, not in the toolbar:
 - image-only layers hide class controls;
 - sulfide layer shows sulfides, non-sulfides, and artefacts;
 - final layer shows ordinary, fine, talc, artefacts, and background;
+- each legend row shows the current run percentage for that class;
 - when side-by-side is active, left and right legends are shown independently at the top-left and top-right.
 
 Viewer-level options below the image are:
@@ -153,19 +154,23 @@ Analyzed area fraction
 Image artefact fraction
 ```
 
-Rows with area semantics include pixel area and, when calibrated scale is available, physical area.
+Rows with area semantics include pixel area and, when calibrated scale is available, physical area. The metrics card also contains the CSV, PDF report, and run-files actions.
 
-The sulfide-grain table appears after metrics. Each row represents a classified sulfide connected component from `reports/component_features.csv` and shows:
+The sulfide-grain table appears as a separate card after metrics. Each row represents a classified sulfide connected component from `reports/component_features.csv` and shows:
 
 - checkbox for viewer outline;
 - component ID;
 - ordinary or fine intergrowth type;
 - pixel area;
-- percent share of total sulfide area.
+- percent share of total sulfide area;
+- contact pixels in a one-pixel ring around the grain: `М/M` matrix, `Т/T` talc, `П/O` other sulfides;
+- locked/composite proxy flag. `Да/yes` means the grain touches talc or another sulfide grain, or has low matrix contact by the OM-mask proxy.
+
+The last row summarizes all listed grains. It sums area, perimeter, and contacts, calculates equivalent diameter from total grain area, shows total sulfide share, reports area-weighted liberation, and counts locked/composite proxy grains.
 
 Checking one or more grains draws one combined cyan outline over the current image view. This is visual-only and does not modify masks, metrics, or run artifacts.
 
-The technical details widget appears after the sulfide-grain table. It summarizes run provenance from `run.json` and `reports/runtime.json`:
+The technical details widget appears as a separate card after the sulfide-grain table. It summarizes run provenance from `run.json` and `reports/runtime.json`:
 
 - run id, status, stage, timestamps, and elapsed processing time;
 - effective backend and model/rule sources for sulfide, talc, and final segmentation;
@@ -184,7 +189,7 @@ The result export row contains:
 - Save PDF Report: downloads the current five-page lab-style demonstration report.
 - View files: opens a file browser for the immutable run.
 
-The file browser lists all run files with sortable filename, type, size, and image-dimension columns. Image files show `WxH`. Each row has a `View` action backed by `/artifacts/...`, and `Download ZIP` downloads the entire run directory.
+The file browser lists all run files with sortable filename, type, size, and image-dimension columns. Image files show `WxH`. Image, CSV, and JSON rows have a `Preview` action that opens a second popup backed by `/artifacts/...`; other file types show `Download` in the row instead. `Download ZIP` downloads the entire run directory.
 
 ## Edit And Recalculate
 

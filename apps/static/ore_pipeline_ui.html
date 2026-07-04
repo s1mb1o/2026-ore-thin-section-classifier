@@ -148,16 +148,16 @@
     .metrics-table tr.metric-level-0 .metric-label { font-weight: 750; }
     .metrics-table tr.metric-level-1 .metric-label { font-weight: 650; }
     .metrics-table tr.metric-level-2 .metric-label { color: var(--muted); }
-    .sulfide-grains-section { margin-top: 16px; display: grid; gap: 8px; }
-    .sulfide-grains-section h3 { margin: 0; font-size: 14px; }
+    .sulfide-grains-section { display: grid; gap: 8px; }
     .sulfide-grains-table-wrap { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; }
     .sulfide-grains-table { min-width: 1080px; }
     .sulfide-grains-table td.numeric, .sulfide-grains-table th.numeric { text-align: right; white-space: nowrap; }
     .sulfide-grains-table td.select, .sulfide-grains-table th.select { width: 54px; text-align: center; }
     .sulfide-grains-table td.grain-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .run-technical-section { margin-top: 16px; display: grid; gap: 8px; }
-    .run-technical-section h3 { margin: 0; font-size: 14px; }
-    .run-tech-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 8px; }
+    .sulfide-grains-table tr.sulfide-grains-total-row td { border-top: 2px solid var(--line); background: var(--panel-alt); font-weight: 750; }
+    .run-technical-section { display: grid; gap: 8px; }
+    .run-tech-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    @media (max-width: 820px) { .run-tech-grid { grid-template-columns: 1fr; } }
     .run-tech-card { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: var(--panel-alt); min-width: 0; }
     .run-tech-card h4 { margin: 0 0 8px; font-size: 13px; }
     .run-tech-card dl { margin: 0; display: grid; gap: 0; }
@@ -174,6 +174,8 @@
     .segmentation-legend-title { color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: 0; }
     .class-toggles { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; padding: 0; }
     .class-toggles[hidden] { display: none; }
+    .segmentation-legend-panel label.check { width: 100%; }
+    .legend-percent { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .segmentation-legend-panel.right .class-toggles { align-items: flex-start; justify-content: flex-start; }
     .splitter-overlay { position: absolute; z-index: 6; top: 0; bottom: 0; left: 50%; width: 0; pointer-events: none; transform: translateX(-50%); }
     .splitter-overlay.hidden { display: none; }
@@ -225,6 +227,13 @@
     .run-files-sort { appearance: none; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 800; padding: 0; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
     .run-files-sort:hover, .run-files-sort:focus-visible { color: var(--accent); outline: none; }
     .run-files-sort-indicator { color: var(--accent); min-width: 10px; text-align: center; }
+    .run-file-preview-dialog { width: min(1040px, 96vw); }
+    .run-file-preview-body { padding: 12px 14px; background: var(--bg); display: grid; gap: 10px; min-height: 180px; }
+    .run-file-preview-content { max-height: min(72vh, 720px); overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+    .run-file-preview-content img { display: block; max-width: 100%; max-height: min(72vh, 720px); margin: 0 auto; object-fit: contain; background: var(--viewer-bg); }
+    .run-file-preview-content pre { margin: 0; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; }
+    .run-file-preview-table { min-width: 720px; }
+    .run-file-preview-table td, .run-file-preview-table th { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; vertical-align: top; }
     .metadata-entry { display: grid; gap: 6px; margin-top: 10px; }
     .metadata-entry button { width: 100%; }
     .settings-page { display: grid; gap: 14px; max-width: 1120px; }
@@ -554,23 +563,23 @@
             <h2 data-i18n="metricsTitle">Метрики</h2>
             <table id="metricsTable" class="metrics-table"></table>
             <p id="metricsDenominatorNote" class="metrics-note muted"></p>
-            <div class="sulfide-grains-section">
-              <h3 data-i18n="sulfideGrainsTitle">Сульфидные зерна</h3>
-              <p id="sulfideGrainsNote" class="metrics-note muted"></p>
-              <div class="sulfide-grains-table-wrap">
-                <table id="sulfideGrainsTable" class="sulfide-grains-table"></table>
-              </div>
-            </div>
-            <div class="run-technical-section">
-              <h3 data-i18n="runTechTitle">Технические детали запуска</h3>
-              <p id="runTechNote" class="metrics-note muted"></p>
-              <div id="runTechDetails" class="run-tech-grid"></div>
-            </div>
             <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
               <a id="csvLink"><button data-i18n="saveCsv">Сохранить CSV</button></a>
               <a id="pdfLink"><button data-i18n="savePdf">Сохранить PDF-отчет</button></a>
               <button id="runFilesBtn" type="button" disabled data-i18n="viewRunFiles">Просмотреть файлы</button>
             </div>
+          </div>
+          <div class="panel sulfide-grains-section">
+            <h2 data-i18n="sulfideGrainsTitle">Сульфидные зерна</h2>
+            <p id="sulfideGrainsNote" class="metrics-note muted"></p>
+            <div class="sulfide-grains-table-wrap">
+              <table id="sulfideGrainsTable" class="sulfide-grains-table"></table>
+            </div>
+          </div>
+          <div class="panel run-technical-section">
+            <h2 data-i18n="runTechTitle">Технические детали запуска</h2>
+            <p id="runTechNote" class="metrics-note muted"></p>
+            <div id="runTechDetails" class="run-tech-grid"></div>
           </div>
         </div>
       </div>
@@ -959,6 +968,20 @@
     <div class="modal-foot">
       <span id="runFilesSummary" class="muted"></span>
       <a id="runFilesZipLink"><button type="button" data-i18n="downloadZip">Скачать ZIP</button></a>
+    </div>
+  </dialog>
+  <dialog id="runFilePreviewDialog" class="run-file-preview-dialog">
+    <div class="modal-head">
+      <strong id="runFilePreviewTitle" data-i18n="runFilePreviewTitle">Превью файла</strong>
+      <button id="closeRunFilePreviewBtn" data-i18n="close">Закрыть</button>
+    </div>
+    <div class="run-file-preview-body">
+      <p id="runFilePreviewStatus" class="muted"></p>
+      <div id="runFilePreviewBody" class="run-file-preview-content"></div>
+    </div>
+    <div class="modal-foot">
+      <span id="runFilePreviewMeta" class="muted"></span>
+      <a id="runFilePreviewDownloadLink"><button type="button" data-i18n="runFilesDownloadAction">Скачать</button></a>
     </div>
   </dialog>
   <dialog id="fixDialog">
@@ -1768,6 +1791,12 @@
         runFilesImageKind: 'изображение',
         runFilesFileKind: 'файл',
         runFilesViewAction: 'Просмотр',
+        runFilesPreviewAction: 'Предпросмотр',
+        runFilesDownloadAction: 'Скачать',
+        runFilePreviewTitle: 'Превью файла',
+        runFilePreviewLoading: 'Загрузка превью...',
+        runFilePreviewLoadFailed: 'Не удалось открыть превью: {error}',
+        runFilePreviewRowsLimited: 'Показаны первые {shown} из {total} строк.',
         downloadZip: 'Скачать ZIP',
         historyPage: 'История запусков',
         historyModeAllRuns: 'все запуски',
@@ -1851,8 +1880,9 @@
         metricsHeaderPhysicalArea: 'Физическая площадь',
         metricsDenominatorNote: 'Сульфиды, тальк и остальное считаются от проанализированной области; обычные и тонкие срастания — от площади сульфидов; артефакты — от всего изображения.',
         sulfideGrainsTitle: 'Сульфидные зерна',
-        sulfideGrainsNote: 'Доля считается от общей площади сульфидов. Освобождение, контакты и флаг срастания — прокси по OM-маскам, не химический MLA-анализ. Отмеченные строки обводятся на изображении.',
+        sulfideGrainsNote: 'Доля считается от общей площади сульфидов. Контакты — пиксели в кольце толщиной 1 px вокруг зерна: М = матрица, Т = тальк, П = прочие сульфиды. «Сросток» — прокси-флаг: контакт с тальком/другими сульфидами или мало контакта с матрицей. Это OM-маски, не химический MLA-анализ. Отмеченные строки обводятся на изображении.',
         sulfideGrainsEmpty: 'Сульфидные зерна не найдены.',
+        sulfideGrainsTotal: 'Итого',
         sulfideGrainsHeaderShow: 'Обводка',
         sulfideGrainsHeaderId: 'ID',
         sulfideGrainsHeaderType: 'Тип',
@@ -1861,13 +1891,14 @@
         sulfideGrainsHeaderPerimeter: 'Периметр, px',
         sulfideGrainsHeaderShare: 'Доля сульфидов',
         sulfideGrainsHeaderLiberation: 'Освобожд.',
-        sulfideGrainsHeaderContacts: 'Контакты, px',
-        sulfideGrainsHeaderLocked: 'Сросток',
+        sulfideGrainsHeaderContacts: 'Контакты М/Т/П, px',
+        sulfideGrainsHeaderLocked: 'Сросток (прокси)',
         sulfideGrainsContactMatrixShort: 'М',
         sulfideGrainsContactTalcShort: 'Т',
         sulfideGrainsContactOtherShort: 'П',
         sulfideGrainsLockedYes: 'да',
         sulfideGrainsLockedNo: 'нет',
+        sulfideGrainsLockedTotal: 'да: {count}/{total}',
         runTechTitle: 'Технические детали запуска',
         runTechNote: 'Сводка сформирована из run.json и runtime provenance; она показывает фактический backend, тайлы, время и результаты каждого этапа.',
         runTechRunCard: 'Запуск',
@@ -2271,6 +2302,12 @@
         runFilesImageKind: 'image',
         runFilesFileKind: 'file',
         runFilesViewAction: 'View',
+        runFilesPreviewAction: 'Preview',
+        runFilesDownloadAction: 'Download',
+        runFilePreviewTitle: 'File preview',
+        runFilePreviewLoading: 'Loading preview...',
+        runFilePreviewLoadFailed: 'Could not open preview: {error}',
+        runFilePreviewRowsLimited: 'Showing first {shown} of {total} rows.',
         downloadZip: 'Download ZIP',
         historyPage: 'History page',
         historyModeAllRuns: 'all runs',
@@ -2354,8 +2391,9 @@
         metricsHeaderPhysicalArea: 'Physical area',
         metricsDenominatorNote: 'Sulfides, talc, and other use analyzed area as denominator; ordinary and fine intergrowths use sulfide area; artefacts use the whole image.',
         sulfideGrainsTitle: 'Sulfide grains',
-        sulfideGrainsNote: 'Share is calculated from total sulfide area. Liberation, contacts, and locked/composite values are OM-mask proxies, not chemistry-based MLA analysis. Checked rows are stroked on the image.',
+        sulfideGrainsNote: 'Share is calculated from total sulfide area. Contacts are pixels in the 1-px ring around a grain: M = matrix, T = talc, O = other sulfides. Locked/composite is a proxy flag: talc/other-sulfide contact or low matrix contact. These are OM-mask proxies, not chemistry-based MLA analysis. Checked rows are stroked on the image.',
         sulfideGrainsEmpty: 'No sulfide grains found.',
+        sulfideGrainsTotal: 'Total',
         sulfideGrainsHeaderShow: 'Stroke',
         sulfideGrainsHeaderId: 'ID',
         sulfideGrainsHeaderType: 'Type',
@@ -2364,13 +2402,14 @@
         sulfideGrainsHeaderPerimeter: 'Perimeter, px',
         sulfideGrainsHeaderShare: 'Sulfide share',
         sulfideGrainsHeaderLiberation: 'Liberation',
-        sulfideGrainsHeaderContacts: 'Contacts, px',
-        sulfideGrainsHeaderLocked: 'Locked',
+        sulfideGrainsHeaderContacts: 'Contacts M/T/O, px',
+        sulfideGrainsHeaderLocked: 'Locked proxy',
         sulfideGrainsContactMatrixShort: 'M',
         sulfideGrainsContactTalcShort: 'T',
         sulfideGrainsContactOtherShort: 'O',
         sulfideGrainsLockedYes: 'yes',
         sulfideGrainsLockedNo: 'no',
+        sulfideGrainsLockedTotal: 'yes: {count}/{total}',
         runTechTitle: 'Run technical details',
         runTechNote: 'Summary built from run.json and runtime provenance; it shows the actual backend, tiles, timing, and per-stage returned results.',
         runTechRunCard: 'Run',
@@ -3734,10 +3773,77 @@
     function classVisible(key) {
       return state.classVisibility[key] !== false;
     }
+    function finiteFraction(value) {
+      if (value === null || value === undefined || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) ? Math.max(0, number) : null;
+    }
+    function fractionFromAreas(summary, numeratorKey, denominatorKey) {
+      const numerator = finiteFraction(summary && summary[numeratorKey]);
+      const denominator = finiteFraction(summary && summary[denominatorKey]);
+      if (numerator === null || denominator === null || denominator <= 0) return null;
+      return numerator / denominator;
+    }
+    function legendPercentText(value) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return '';
+      return `${(Math.max(0, Number(value)) * 100).toFixed(1)}%`;
+    }
+    function legendClassFraction(toggleKey, layer) {
+      const summary = runSummary(state.run);
+      if (!summary || !Object.keys(summary).length) return null;
+      const sulfide = finiteFraction(summary.sulfide_fraction)
+        ?? fractionFromAreas(summary, 'sulfide_area_px', 'analysis_area_px')
+        ?? 0;
+      const artifact = finiteFraction(summary.artifact_fraction_image)
+        ?? fractionFromAreas(summary, 'artifact_area_px', 'image_area_px');
+      if (layer === 'sulfide') {
+        if (toggleKey === 'showSulfide') return sulfide;
+        if (toggleKey === 'showNonSulfide') return Math.max(0, 1 - sulfide);
+        if (toggleKey === 'showSulfideArtifacts') return artifact;
+      }
+      if (layer === 'final') {
+        if (toggleKey === 'showOrdinary') {
+          return fractionFromAreas(summary, 'ordinary_sulfide_area_px', 'analysis_area_px')
+            ?? sulfide * (finiteFraction(summary.ordinary_sulfide_fraction) ?? 0);
+        }
+        if (toggleKey === 'showFine') {
+          return fractionFromAreas(summary, 'fine_sulfide_area_px', 'analysis_area_px')
+            ?? sulfide * (finiteFraction(summary.fine_sulfide_fraction) ?? 0);
+        }
+        if (toggleKey === 'showTalc') return finiteFraction(summary.talc_fraction)
+          ?? fractionFromAreas(summary, 'talc_area_px', 'analysis_area_px');
+        if (toggleKey === 'showFinalArtifacts') return artifact;
+        if (toggleKey === 'showBackground') {
+          return finiteFraction(summary.other_fraction)
+            ?? fractionFromAreas(summary, 'other_area_px', 'analysis_area_px')
+            ?? Math.max(0, 1 - sulfide - (finiteFraction(summary.talc_fraction) ?? 0));
+        }
+      }
+      return null;
+    }
+    function syncLegendPercentages() {
+      document.querySelectorAll('[data-legend-layer]').forEach(group => {
+        const layer = group.dataset.legendLayer;
+        group.querySelectorAll('[data-legend-toggle]').forEach(input => {
+          const label = input.closest('label');
+          if (!label) return;
+          let valueNode = label.querySelector('.legend-percent');
+          if (!valueNode) {
+            valueNode = document.createElement('span');
+            valueNode.className = 'legend-percent';
+            label.appendChild(valueNode);
+          }
+          const text = legendPercentText(legendClassFraction(input.dataset.legendToggle, layer));
+          valueNode.textContent = text;
+          valueNode.hidden = !text;
+        });
+      });
+    }
     function syncClassVisibilityControls() {
       document.querySelectorAll('[data-legend-toggle]').forEach(input => {
         input.checked = classVisible(input.dataset.legendToggle);
       });
+      syncLegendPercentages();
     }
     function resetClassVisibility() {
       Object.keys(state.classVisibility).forEach(key => { state.classVisibility[key] = true; });
@@ -5155,6 +5261,128 @@
       const indicator = active ? (dir === 'desc' ? 'v' : '^') : '';
       return `<th class="${escapeHtml(className)}" aria-sort="${ariaSort}"><button class="run-files-sort" type="button" data-run-files-sort="${escapeHtml(key)}"><span>${escapeHtml(label)}</span><span class="run-files-sort-indicator" aria-hidden="true">${escapeHtml(indicator)}</span></button></th>`;
     }
+    function runFileExtension(file) {
+      const name = String((file && (file.path || file.name)) || '').toLowerCase();
+      const index = name.lastIndexOf('.');
+      return index >= 0 ? name.slice(index + 1) : '';
+    }
+    function runFilePreviewKind(file) {
+      const contentType = String((file && file.content_type) || '').toLowerCase();
+      const extension = runFileExtension(file);
+      if ((file && file.is_image) || contentType.startsWith('image/')) return 'image';
+      if (extension === 'csv' || contentType.includes('text/csv')) return 'csv';
+      if (extension === 'json' || contentType.includes('json')) return 'json';
+      return '';
+    }
+    function parseCsvRows(text) {
+      const rows = [];
+      let row = [];
+      let value = '';
+      let quoted = false;
+      const source = String(text || '');
+      for (let index = 0; index < source.length; index += 1) {
+        const char = source[index];
+        if (quoted) {
+          if (char === '"' && source[index + 1] === '"') {
+            value += '"';
+            index += 1;
+          } else if (char === '"') {
+            quoted = false;
+          } else {
+            value += char;
+          }
+        } else if (char === '"') {
+          quoted = true;
+        } else if (char === ',') {
+          row.push(value);
+          value = '';
+        } else if (char === '\n') {
+          row.push(value);
+          rows.push(row);
+          row = [];
+          value = '';
+        } else if (char !== '\r') {
+          value += char;
+        }
+      }
+      if (value || row.length) {
+        row.push(value);
+        rows.push(row);
+      }
+      return rows;
+    }
+    function renderCsvPreview(text) {
+      const rows = parseCsvRows(text);
+      const maxRows = 101;
+      const visibleRows = rows.slice(0, maxRows);
+      if (!visibleRows.length) return {html: '<pre></pre>', total: 0, shown: 0};
+      const header = visibleRows[0];
+      const bodyRows = visibleRows.slice(1);
+      const headHtml = `<thead><tr>${header.map(cell => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead>`;
+      const bodyHtml = `<tbody>${bodyRows.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+      return {
+        html: `<table class="run-file-preview-table">${headHtml}${bodyHtml}</table>`,
+        total: rows.length,
+        shown: visibleRows.length
+      };
+    }
+    function runFileAction(file) {
+      if (!file || !file.view_url) return '';
+      const kind = runFilePreviewKind(file);
+      if (kind) {
+        return `<button type="button" data-run-file-preview="${escapeHtml(file.path || file.name || '')}">${escapeHtml(t('runFilesPreviewAction'))}</button>`;
+      }
+      return `<a href="${escapeHtml(file.view_url)}" download="${escapeHtml(file.name || '')}">${escapeHtml(t('runFilesDownloadAction'))}</a>`;
+    }
+    function findRunFileByPath(path) {
+      const files = state.runFilesPayload && Array.isArray(state.runFilesPayload.files) ? state.runFilesPayload.files : [];
+      return files.find(file => String(file.path || file.name || '') === String(path || '')) || null;
+    }
+    async function openRunFilePreview(file) {
+      if (!file || !file.view_url) return;
+      const kind = runFilePreviewKind(file);
+      if (!kind) return;
+      const title = file.path || file.name || t('runFilePreviewTitle');
+      $('runFilePreviewTitle').textContent = title;
+      $('runFilePreviewStatus').textContent = kind === 'image' ? '' : t('runFilePreviewLoading');
+      $('runFilePreviewMeta').textContent = [
+        file.content_type || '',
+        formatBytes(file.size_bytes),
+        imageDimensionsText(file)
+      ].filter(Boolean).join(' · ');
+      $('runFilePreviewDownloadLink').href = file.view_url;
+      $('runFilePreviewDownloadLink').setAttribute('download', file.name || '');
+      $('runFilePreviewBody').innerHTML = '';
+      $('runFilePreviewDialog').showModal();
+      try {
+        if (kind === 'image') {
+          $('runFilePreviewBody').innerHTML = `<img src="${escapeHtml(file.view_url)}" alt="${escapeHtml(title)}">`;
+          return;
+        }
+        const response = await fetch(file.view_url);
+        const text = await response.text();
+        if (!response.ok) throw new Error(response.statusText || String(response.status));
+        if (kind === 'json') {
+          let formatted = text;
+          try {
+            formatted = JSON.stringify(JSON.parse(text), null, 2);
+          } catch (_) {
+            formatted = text;
+          }
+          $('runFilePreviewBody').innerHTML = `<pre>${escapeHtml(formatted)}</pre>`;
+          $('runFilePreviewStatus').textContent = '';
+          return;
+        }
+        const csv = renderCsvPreview(text);
+        $('runFilePreviewBody').innerHTML = csv.html;
+        $('runFilePreviewStatus').textContent = csv.total > csv.shown
+          ? t('runFilePreviewRowsLimited', {shown: csv.shown, total: csv.total})
+          : '';
+      } catch (error) {
+        $('runFilePreviewStatus').textContent = t('runFilePreviewLoadFailed', {error: error.message || t('unknownError')});
+        $('runFilePreviewBody').innerHTML = '';
+      }
+    }
     function renderRunFiles(payload) {
       state.runFilesPayload = payload;
       const files = sortedRunFiles(payload.files || []);
@@ -5166,10 +5394,7 @@
       $('runFilesZipLink').href = (payload.downloads && payload.downloads.artifacts_zip) || (state.run && state.run.downloads && state.run.downloads.artifacts_zip) || '';
       $('runFilesTable').innerHTML = `<thead><tr>${runFilesSortHeader('path', t('runFilesHeaderPath'))}${runFilesSortHeader('kind', t('runFilesHeaderKind'))}${runFilesSortHeader('size', t('runFilesHeaderSize'), 'numeric')}${runFilesSortHeader('image', t('runFilesHeaderImageSize'), 'numeric')}<th class="action">${escapeHtml(t('runFilesHeaderAction'))}</th></tr></thead><tbody>` + files.map(file => {
         const kind = file.is_image ? t('runFilesImageKind') : t('runFilesFileKind');
-        const view = file.view_url
-          ? `<a href="${escapeHtml(file.view_url)}" target="_blank" rel="noopener">${escapeHtml(t('runFilesViewAction'))}</a>`
-          : '';
-        return `<tr><td>${escapeHtml(file.path || file.name || '')}</td><td>${escapeHtml(kind)}</td><td class="numeric">${escapeHtml(formatBytes(file.size_bytes))}</td><td class="numeric">${escapeHtml(imageDimensionsText(file))}</td><td class="action">${view}</td></tr>`;
+        return `<tr><td>${escapeHtml(file.path || file.name || '')}</td><td>${escapeHtml(kind)}</td><td class="numeric">${escapeHtml(formatBytes(file.size_bytes))}</td><td class="numeric">${escapeHtml(imageDimensionsText(file))}</td><td class="action">${runFileAction(file)}</td></tr>`;
       }).join('') + '</tbody>';
     }
     async function openRunFilesDialog() {
@@ -5212,13 +5437,63 @@
       if (!Number.isFinite(number)) return '—';
       return `${number.toFixed(1)}%`;
     }
-    function formatGrainContacts(grain) {
+    function formatGrainInteger(value) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '—';
+      return Math.round(number).toLocaleString(localeCode());
+    }
+    function grainContacts(grain) {
       const contacts = (grain && grain.contacts) || {};
+      return {
+        matrix_px: Number(contacts.matrix_px || 0),
+        talc_px: Number(contacts.talc_px || 0),
+        other_contact_px: Number(contacts.other_contact_px || 0),
+        total_px: Number(contacts.total_px || 0)
+      };
+    }
+    function formatGrainContacts(grain) {
+      const contacts = grainContacts(grain);
       return [
-        `${t('sulfideGrainsContactMatrixShort')} ${Number(contacts.matrix_px || 0).toLocaleString(localeCode())}`,
-        `${t('sulfideGrainsContactTalcShort')} ${Number(contacts.talc_px || 0).toLocaleString(localeCode())}`,
-        `${t('sulfideGrainsContactOtherShort')} ${Number(contacts.other_contact_px || 0).toLocaleString(localeCode())}`
+        `${t('sulfideGrainsContactMatrixShort')} ${formatGrainInteger(contacts.matrix_px)}`,
+        `${t('sulfideGrainsContactTalcShort')} ${formatGrainInteger(contacts.talc_px)}`,
+        `${t('sulfideGrainsContactOtherShort')} ${formatGrainInteger(contacts.other_contact_px)}`
       ].join(' / ');
+    }
+    function sulfideGrainTotals(items, denominatorPx) {
+      const totals = {
+        area_px: 0,
+        perimeter_px: 0,
+        share_percent: 0,
+        liberation_weighted: 0,
+        contacts: {matrix_px: 0, talc_px: 0, other_contact_px: 0, total_px: 0},
+        locked_count: 0
+      };
+      items.forEach(grain => {
+        const area = Number(grain.area_px || 0);
+        const perimeter = Number(grain.perimeter_px || 0);
+        const liberation = Number(grain.liberation_proxy);
+        const contacts = grainContacts(grain);
+        totals.area_px += Number.isFinite(area) ? area : 0;
+        totals.perimeter_px += Number.isFinite(perimeter) ? perimeter : 0;
+        totals.liberation_weighted += Number.isFinite(liberation) && Number.isFinite(area) ? liberation * area : 0;
+        totals.contacts.matrix_px += contacts.matrix_px;
+        totals.contacts.talc_px += contacts.talc_px;
+        totals.contacts.other_contact_px += contacts.other_contact_px;
+        totals.contacts.total_px += contacts.total_px;
+        if (grain.locked_composite_proxy) totals.locked_count += 1;
+      });
+      const denominator = Number(denominatorPx || 0);
+      totals.equivalent_diameter_px = totals.area_px > 0 ? Math.sqrt(4 * totals.area_px / Math.PI) : Number.NaN;
+      totals.share_percent = denominator > 0
+        ? totals.area_px / denominator * 100
+        : items.reduce((sum, grain) => sum + Number(grain.share_percent || 0), 0);
+      totals.liberation_proxy = totals.area_px > 0 ? totals.liberation_weighted / totals.area_px : Number.NaN;
+      return totals;
+    }
+    function formatGrainLockedTotal(lockedCount, totalCount) {
+      return t('sulfideGrainsLockedTotal')
+        .replace('{count}', Number(lockedCount || 0).toLocaleString(localeCode()))
+        .replace('{total}', Number(totalCount || 0).toLocaleString(localeCode()));
     }
     function renderSulfideGrains(run) {
       if (state.grainRunId !== (run && run.run_id)) {
@@ -5232,6 +5507,11 @@
         $('sulfideGrainsTable').innerHTML = `<tbody><tr><td>${escapeHtml(t('sulfideGrainsEmpty'))}</td></tr></tbody>`;
         return;
       }
+      const totals = sulfideGrainTotals(items, grains.share_denominator_px);
+      const totalShare = `${Number(totals.share_percent || 0).toFixed(2)}%`;
+      const totalLiberation = formatGrainPercent(totals.liberation_proxy * 100);
+      const totalLocked = formatGrainLockedTotal(totals.locked_count, items.length);
+      const totalRow = `<tr class="sulfide-grains-total-row"><td class="select"></td><td class="grain-id">—</td><td>${escapeHtml(t('sulfideGrainsTotal'))}</td><td class="numeric">${escapeHtml(formatGrainInteger(totals.area_px))}</td><td class="numeric">${escapeHtml(formatGrainNumber(totals.equivalent_diameter_px, 1))}</td><td class="numeric">${escapeHtml(formatGrainNumber(totals.perimeter_px, 1))}</td><td class="numeric">${escapeHtml(totalShare)}</td><td class="numeric">${escapeHtml(totalLiberation)}</td><td>${escapeHtml(formatGrainContacts(totals))}</td><td>${escapeHtml(totalLocked)}</td></tr>`;
       $('sulfideGrainsTable').innerHTML = `<thead><tr><th class="select">${escapeHtml(t('sulfideGrainsHeaderShow'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderId'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderType'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderArea'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderDiameter'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderPerimeter'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderShare'))}</th><th class="numeric">${escapeHtml(t('sulfideGrainsHeaderLiberation'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderContacts'))}</th><th>${escapeHtml(t('sulfideGrainsHeaderLocked'))}</th></tr></thead><tbody>` + items.map(grain => {
         const id = Number(grain.component_id || 0);
         const checked = state.selectedGrainIds.has(id) ? ' checked' : '';
@@ -5243,7 +5523,7 @@
         const contacts = formatGrainContacts(grain);
         const locked = grain.locked_composite_proxy ? t('sulfideGrainsLockedYes') : t('sulfideGrainsLockedNo');
         return `<tr data-grain-row="${escapeHtml(id)}"><td class="select"><input type="checkbox" data-grain-id="${escapeHtml(id)}"${checked}></td><td class="grain-id">${escapeHtml(id)}</td><td>${escapeHtml(localizedGrainType(grain))}</td><td class="numeric">${escapeHtml(area)}</td><td class="numeric">${escapeHtml(diameter)}</td><td class="numeric">${escapeHtml(perimeter)}</td><td class="numeric">${escapeHtml(share)}</td><td class="numeric">${escapeHtml(liberation)}</td><td>${escapeHtml(contacts)}</td><td>${escapeHtml(locked)}</td></tr>`;
-      }).join('') + '</tbody>';
+      }).join('') + totalRow + '</tbody>';
       document.querySelectorAll('[data-grain-id]').forEach(input => {
         input.addEventListener('change', event => {
           const id = Number(event.target.dataset.grainId || 0);
@@ -5565,7 +5845,16 @@
     $('runFilesDialog').addEventListener('click', event => {
       if (event.target === $('runFilesDialog')) $('runFilesDialog').close();
     });
+    $('closeRunFilePreviewBtn').addEventListener('click', () => $('runFilePreviewDialog').close());
+    $('runFilePreviewDialog').addEventListener('click', event => {
+      if (event.target === $('runFilePreviewDialog')) $('runFilePreviewDialog').close();
+    });
     $('runFilesTable').addEventListener('click', event => {
+      const previewButton = event.target.closest('[data-run-file-preview]');
+      if (previewButton) {
+        openRunFilePreview(findRunFileByPath(previewButton.dataset.runFilePreview));
+        return;
+      }
       const button = event.target.closest('[data-run-files-sort]');
       if (!button || !state.runFilesPayload) return;
       const key = button.dataset.runFilesSort;
