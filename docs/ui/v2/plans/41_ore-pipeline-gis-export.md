@@ -49,7 +49,7 @@ Status: done.
 
 ## Phase 2: Shapefile
 
-Status: pending.
+Status: done.
 
 1. Add a lightweight Shapefile writer for the GeoJSON feature set.
 2. Package `.shp`, `.shx`, `.dbf`, and `.cpg` as

@@ -54,7 +54,11 @@ from ore_classifier.component_analysis import (  # noqa: E402
     summary_warnings,
     write_component_csv,
 )
-from ore_classifier.gis_export import GisClassSpec, write_geojson_export  # noqa: E402
+from ore_classifier.gis_export import (  # noqa: E402
+    GisClassSpec,
+    write_geojson_export,
+    write_shapefile_zip_export,
+)
 from ore_classifier.preprocessing import (  # noqa: E402
     apply_preprocessing,
     normalize_preprocess_settings,
@@ -4110,6 +4114,13 @@ print(json.dumps({
             self.record_system_event("warning", "GIS GeoJSON export failed", run_id=run_id, error=str(exc))
             return
 
+        shapefile_zip_path = run_dir / "reports/final_classes_shapefile.zip"
+        shapefile_metadata: dict[str, Any] = {}
+        try:
+            shapefile_metadata = write_shapefile_zip_export(collection, shapefile_zip_path, layer_name="final_classes")
+        except Exception as exc:  # noqa: BLE001 - keep GeoJSON available if Shapefile packaging fails.
+            self.record_system_event("warning", "GIS Shapefile export failed", run_id=run_id, error=str(exc))
+
         export_metadata = {
             "schema_version": "ore-pipeline-gis-export-v0.1",
             "coordinate_space": "local_image_pixel_top_left",
@@ -4117,8 +4128,13 @@ print(json.dumps({
             "feature_count": int((collection.get("metadata") or {}).get("feature_count") or 0),
             "source_mask": str(final_mask_path),
         }
+        if shapefile_metadata:
+            export_metadata["shapefile_zip"] = str(shapefile_zip_path)
+            export_metadata["shapefile_feature_count"] = int(shapefile_metadata.get("feature_count") or 0)
         metadata["gis_exports"] = export_metadata
         metadata.setdefault("reports", {})["final_classes_geojson"] = str(geojson_path)
+        if shapefile_metadata:
+            metadata["reports"]["final_classes_shapefile_zip"] = str(shapefile_zip_path)
 
     def _finalize_run_metadata(self, metadata: dict[str, Any], run_dir: Path) -> None:
         summary = json.loads((run_dir / "reports/ore_summary.json").read_text(encoding="utf-8"))

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +23,7 @@ from ore_classifier.gis_export import (  # noqa: E402
     GisClassSpec,
     build_geojson_feature_collection,
     write_geojson_export,
+    write_shapefile_zip_export,
 )
 
 
@@ -125,6 +128,40 @@ class GisGeojsonExportTest(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_write_shapefile_zip_exports_polygon_package(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="test_gis_shapefile_"))
+        try:
+            mask = np.zeros((20, 30), dtype=np.uint8)
+            mask[2:8, 3:13] = 1
+            mask[10:18, 4:12] = 2
+            collection = build_geojson_feature_collection(
+                mask,
+                class_specs=CLASS_SPECS,
+                run_id="run_shp",
+                source_mask="masks/final_mask.png",
+                scale=calibrated_scale(1.0),
+                simplify_tolerance_px=0,
+            )
+            zip_path = root / "final_classes_shapefile.zip"
+
+            result = write_shapefile_zip_export(collection, zip_path, layer_name="final_classes")
+
+            self.assertEqual(result["feature_count"], 2)
+            with zipfile.ZipFile(zip_path) as archive:
+                names = set(archive.namelist())
+                shp = archive.read("final_classes.shp")
+                shx = archive.read("final_classes.shx")
+                dbf = archive.read("final_classes.dbf")
+                cpg = archive.read("final_classes.cpg")
+            self.assertEqual(names, {"final_classes.shp", "final_classes.shx", "final_classes.dbf", "final_classes.cpg"})
+            self.assertEqual(cpg, b"UTF-8\n")
+            self.assertEqual(struct.unpack(">i", shp[:4])[0], 9994)
+            self.assertEqual(struct.unpack("<i", shp[32:36])[0], 5)
+            self.assertEqual(struct.unpack(">i", shx[:4])[0], 9994)
+            self.assertEqual(struct.unpack("<L", dbf[4:8])[0], 2)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 class OrePipelineGisFinalizationTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -207,15 +244,21 @@ class OrePipelineGisFinalizationTest(unittest.TestCase):
         self.store._finalize_run_metadata(metadata, run_dir)
 
         geojson_path = run_dir / "reports/final_classes.geojson"
+        shapefile_path = run_dir / "reports/final_classes_shapefile.zip"
         self.assertTrue(geojson_path.exists())
+        self.assertTrue(shapefile_path.exists())
         self.assertEqual(metadata["reports"]["final_classes_geojson"], str(geojson_path))
+        self.assertEqual(metadata["reports"]["final_classes_shapefile_zip"], str(shapefile_path))
         self.assertEqual(metadata["gis_exports"]["geojson"], str(geojson_path))
+        self.assertEqual(metadata["gis_exports"]["shapefile_zip"], str(shapefile_path))
         payload = json.loads(geojson_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["metadata"]["feature_count"], 3)
         self.assertEqual(payload["metadata"]["coordinate_space"], COORDINATE_SPACE)
         ordinary = next(feature for feature in payload["features"] if feature["properties"]["class_key"] == "ordinary")
         self.assertEqual(ordinary["properties"]["area_px"], 12)
         self.assertAlmostEqual(ordinary["properties"]["area_um2"], 48.0)
+        with zipfile.ZipFile(shapefile_path) as archive:
+            self.assertIn("final_classes.shp", archive.namelist())
 
 
 if __name__ == "__main__":
