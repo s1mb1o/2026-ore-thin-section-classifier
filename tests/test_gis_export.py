@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import struct
@@ -51,6 +52,54 @@ def calibrated_scale(area_um2_per_pixel: float = 0.25) -> dict[str, object]:
         "analysis_width": 30,
         "analysis_height": 20,
     }
+
+
+def parse_dbf_rows(payload: bytes) -> list[dict[str, str]]:
+    record_count = struct.unpack("<L", payload[4:8])[0]
+    header_length = struct.unpack("<H", payload[8:10])[0]
+    record_length = struct.unpack("<H", payload[10:12])[0]
+    fields: list[tuple[str, int]] = []
+    offset = 32
+    while offset < header_length and payload[offset] != 0x0D:
+        name = payload[offset : offset + 11].split(b"\x00", 1)[0].decode("ascii")
+        width = payload[offset + 16]
+        fields.append((name, width))
+        offset += 32
+    rows: list[dict[str, str]] = []
+    for index in range(record_count):
+        record = payload[header_length + index * record_length : header_length + (index + 1) * record_length]
+        if not record or record[:1] == b"*":
+            continue
+        field_offset = 1
+        row: dict[str, str] = {}
+        for name, width in fields:
+            row[name] = record[field_offset : field_offset + width].decode("utf-8").strip()
+            field_offset += width
+        rows.append(row)
+    return rows
+
+
+def parse_shp_records(payload: bytes) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    offset = 100
+    while offset < len(payload):
+        record_number, content_length_words = struct.unpack(">2i", payload[offset : offset + 8])
+        offset += 8
+        content = payload[offset : offset + content_length_words * 2]
+        offset += content_length_words * 2
+        shape_type = struct.unpack("<i", content[:4])[0]
+        bbox = struct.unpack("<4d", content[4:36])
+        part_count, point_count = struct.unpack("<2i", content[36:44])
+        records.append(
+            {
+                "record_number": record_number,
+                "shape_type": shape_type,
+                "bbox": bbox,
+                "part_count": part_count,
+                "point_count": point_count,
+            }
+        )
+    return records
 
 
 class GisGeojsonExportTest(unittest.TestCase):
@@ -159,6 +208,24 @@ class GisGeojsonExportTest(unittest.TestCase):
             self.assertEqual(struct.unpack("<i", shp[32:36])[0], 5)
             self.assertEqual(struct.unpack(">i", shx[:4])[0], 9994)
             self.assertEqual(struct.unpack("<L", dbf[4:8])[0], 2)
+            records = parse_shp_records(shp)
+            self.assertEqual(len(records), 2)
+            self.assertEqual(records[0]["record_number"], 1)
+            self.assertEqual(records[0]["shape_type"], 5)
+            self.assertEqual(records[0]["part_count"], 1)
+            self.assertGreaterEqual(records[0]["point_count"], 4)
+            self.assertEqual(records[0]["bbox"], (3.0, 2.0, 12.0, 7.0))
+            rows = parse_dbf_rows(dbf)
+            self.assertEqual(rows[0]["FID"], "1")
+            self.assertEqual(rows[0]["RUN_ID"], "run_shp")
+            self.assertEqual(rows[0]["CLASS_ID"], "1")
+            self.assertEqual(rows[0]["CLASS_KEY"], "ordinary")
+            self.assertEqual(rows[0]["LABEL"], "ordinary intergrowth")
+            self.assertEqual(rows[0]["AREA_PX"], "60")
+            self.assertEqual(rows[0]["AREA_UM2"], "60.000000")
+            self.assertEqual(rows[0]["AREA_MM2"], "0.000060000")
+            self.assertEqual(rows[1]["CLASS_KEY"], "fine")
+            self.assertEqual(rows[1]["AREA_PX"], "64")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -280,9 +347,15 @@ class OrePipelineGisFinalizationTest(unittest.TestCase):
         run_zip = self.store.run_zip_path("run_gis")
         with zipfile.ZipFile(run_zip) as archive:
             names = set(archive.namelist())
+            nested_shapefile = archive.read("reports/final_classes_shapefile.zip")
         self.assertIn("reports/final_classes.geojson", names)
         self.assertIn("reports/final_classes_shapefile.zip", names)
         self.assertNotIn("reports/run_artifacts.zip", names)
+        with zipfile.ZipFile(io.BytesIO(nested_shapefile)) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {"final_classes.shp", "final_classes.shx", "final_classes.dbf", "final_classes.cpg"},
+            )
 
 
 if __name__ == "__main__":
