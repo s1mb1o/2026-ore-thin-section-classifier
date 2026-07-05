@@ -175,15 +175,13 @@ The Streamlit app should be framed as QA and weak-label cleanup, not expert mine
 Proposed entry point:
 
 ```text
-submissions/ore_classifier/apps/sulfide_qa_streamlit.py
+apps/ore_pipeline_web.py
 ```
 
 Example command:
 
 ```bash
-streamlit run submissions/ore_classifier/apps/sulfide_qa_streamlit.py -- \
-  --pseudo-label-dir outputs/official_pseudo_labels \
-  --output-dir outputs/binary_sulfide_qa
+python apps/ore_pipeline_web.py --host 127.0.0.1 --port 0
 ```
 
 Required layers:

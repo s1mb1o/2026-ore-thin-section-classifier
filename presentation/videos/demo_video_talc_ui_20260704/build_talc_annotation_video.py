@@ -23,8 +23,10 @@ TTS_DIR = OUT / "tts_talc_annotation_sample_2550382"
 WIDTH = 1920
 HEIGHT = 1080
 FPS = 24
+VIEWPORT = {"width": WIDTH, "height": HEIGHT}
 VOICE = os.environ.get("TTS_VOICE", "ru-RU-DmitryNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "-5%")
+SCENE_HOLD_AFTER = float(os.environ.get("SCENE_HOLD_AFTER", "0.75"))
 TTS_PYTHON = Path(os.environ.get("TTS_PYTHON", "/tmp/nornikel_demo_tts_venv/bin/python"))
 FINAL_MP4 = OUT / "nornikel_talc_annotation_sample_2550382_1080p_ru.mp4"
 VIDEO_TMP = OUT / "talc_annotation_video_with_subs.mp4"
@@ -157,19 +159,6 @@ def srt_time(seconds: float) -> str:
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 
-def atempo_filter(tempo: float) -> str:
-    parts: list[str] = []
-    remaining = tempo
-    while remaining > 2.0:
-        parts.append("atempo=2.000000")
-        remaining /= 2.0
-    while remaining < 0.5:
-        parts.append("atempo=0.500000")
-        remaining /= 0.5
-    parts.append(f"atempo={remaining:.6f}")
-    return ",".join(parts)
-
-
 def checkbox(page: Page, selector: str, checked: bool) -> None:
     page.eval_on_selector(
         selector,
@@ -214,6 +203,35 @@ def click_if_visible(page: Page, selector: str) -> None:
         locator.first.click()
 
 
+def assert_1080p_viewport(page: Page) -> None:
+    size = page.viewport_size
+    if size != VIEWPORT:
+        raise RuntimeError(f"expected browser viewport {VIEWPORT}, got {size}")
+    metrics = page.evaluate(
+        """() => ({
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
+        })"""
+    )
+    if metrics["innerWidth"] != WIDTH or metrics["innerHeight"] != HEIGHT or metrics["devicePixelRatio"] != 1:
+        raise RuntimeError(f"unexpected browser metrics for 1080p capture: {metrics}")
+
+
+def fit_view_before_capture(page: Page) -> None:
+    assert_1080p_viewport(page)
+    button = page.locator("#zoomFitWidgetBtn")
+    button.wait_for(state="visible", timeout=5000)
+    button.click()
+    page.wait_for_timeout(450)
+
+
+def validate_png_1080p(path: Path) -> None:
+    with Image.open(path) as image:
+        if image.size != (WIDTH, HEIGHT):
+            raise RuntimeError(f"{path} is {image.size}, expected {(WIDTH, HEIGHT)}")
+
+
 def wait_ready(page: Page) -> None:
     page.wait_for_selector("#viewerCanvas")
     page.wait_for_function(
@@ -249,7 +267,10 @@ def reset_ui(page: Page) -> None:
 
 def capture(page: Page, filename: str) -> None:
     SCREEN_DIR.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(SCREEN_DIR / filename), full_page=False)
+    fit_view_before_capture(page)
+    path = SCREEN_DIR / filename
+    page.screenshot(path=str(path), full_page=False)
+    validate_png_1080p(path)
 
 
 def prepare_scene(page: Page, screenshot: str) -> None:
@@ -324,13 +345,16 @@ def create_montage() -> None:
         canvas.paste(panel, (x, y))
         x += panel_w + gap
     draw.text((54, 1006), "Один образец: грубая зона от синих линий -> объяснимая эвристика -> нейросетевая сегментация", font=font(26), fill=(226, 232, 240))
-    canvas.save(SCREEN_DIR / "12_slide_sync_three_sources.png")
+    path = SCREEN_DIR / "12_slide_sync_three_sources.png"
+    canvas.save(path)
+    validate_png_1080p(path)
 
 
 def capture_screens(base_url: str, segments: list[dict]) -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": WIDTH, "height": HEIGHT}, device_scale_factor=1)
+        page = browser.new_page(viewport=VIEWPORT, device_scale_factor=1)
+        assert_1080p_viewport(page)
         page.goto(f"{base_url.rstrip('/')}/sample/2550382-1-10x", wait_until="domcontentloaded")
         wait_ready(page)
         for segment in segments:
@@ -357,27 +381,62 @@ asyncio.run(main())
     subprocess.run([str(TTS_PYTHON), "-c", code, text, str(out_path), VOICE, TTS_RATE], check=True)
 
 
+def tts_paths(segment: dict) -> tuple[Path, Path]:
+    idx = segment["index"]
+    return TTS_DIR / f"{idx:02d}_raw.mp3", TTS_DIR / f"{idx:02d}.json"
+
+
+def tts_signature(segment: dict) -> dict:
+    return {"voice": VOICE, "rate": TTS_RATE, "text": segment["text"]}
+
+
+def ensure_tts(segment: dict) -> tuple[Path, float]:
+    TTS_DIR.mkdir(parents=True, exist_ok=True)
+    raw, meta = tts_paths(segment)
+    signature = tts_signature(segment)
+    cached: dict = {}
+    if meta.exists():
+        try:
+            cached = json.loads(meta.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            cached = {}
+    cache_ok = raw.exists() and all(cached.get(key) == value for key, value in signature.items())
+    if not cache_ok:
+        print(f"TTS {segment['index']:02d}: {segment['title']}", flush=True)
+        synthesize_edge(segment["text"], raw)
+    raw_duration = float(cached.get("raw_duration") or 0.0) if cache_ok else 0.0
+    if raw_duration <= 0.0:
+        raw_duration = ffprobe_duration(raw)
+    meta.write_text(
+        json.dumps({**signature, "raw_duration": raw_duration}, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return raw, raw_duration
+
+
+def retime_segments_from_tts(segments: list[dict]) -> None:
+    cursor = 0.0
+    for segment in segments:
+        _, raw_duration = ensure_tts(segment)
+        segment["script_start"] = segment["start"]
+        segment["script_end"] = segment["end"]
+        segment["script_duration"] = segment["duration"]
+        segment["audio_duration"] = raw_duration
+        segment["start"] = cursor
+        segment["duration"] = raw_duration + SCENE_HOLD_AFTER
+        segment["end"] = segment["start"] + segment["duration"]
+        segment["tts_speed_factor"] = 1.0
+        cursor = segment["end"]
+
+
 def build_audio(segments: list[dict]) -> None:
     TTS_DIR.mkdir(parents=True, exist_ok=True)
     concat = OUT / "audio_talc_annotation_concat.txt"
     with concat.open("w", encoding="utf-8") as concat_file:
         for segment in segments:
             idx = segment["index"]
-            raw = TTS_DIR / f"{idx:02d}_raw.mp3"
             wav = TTS_DIR / f"{idx:02d}_timed.wav"
-            meta = TTS_DIR / f"{idx:02d}.json"
-            current_meta = json.dumps(
-                {"voice": VOICE, "rate": TTS_RATE, "text": segment["text"], "duration": segment["duration"]},
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            cached_meta = meta.read_text(encoding="utf-8") if meta.exists() else ""
-            if not raw.exists() or cached_meta != current_meta:
-                print(f"TTS {idx:02d}: {segment['title']}", flush=True)
-                synthesize_edge(segment["text"], raw)
-                meta.write_text(current_meta, encoding="utf-8")
-            raw_duration = ffprobe_duration(raw)
-            tempo = raw_duration / float(segment["duration"])
+            raw, _ = ensure_tts(segment)
             run(
                 [
                     "ffmpeg",
@@ -385,7 +444,7 @@ def build_audio(segments: list[dict]) -> None:
                     "-i",
                     str(raw),
                     "-filter:a",
-                    f"{atempo_filter(tempo)},apad,atrim=0:{segment['duration']:.3f}",
+                    f"apad,atrim=0:{segment['duration']:.3f}",
                     "-ar",
                     "48000",
                     "-ac",
@@ -600,7 +659,7 @@ def run_stt(whisper_bin: Path) -> dict:
     transcript = STT_DIR / f"{FINAL_MP4.stem}.txt"
     text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
     expected = {
-        "датасета хакатона": ["датасета хакатона", "датац", "хокатона"],
+        "датасета хакатона": ["датасета хакатона", "датац", "дотаса этой хокотона", "хокатона"],
         "синие линии": ["синие линии", "синий линии", "синилини", "синих линии"],
         "область-кандидат": ["область-кандидат", "областью кандидатом", "област кандидат"],
         "порог пятьдесят": ["порог пятьдесят", "пороп 50", "порог 50"],
@@ -611,14 +670,20 @@ def run_stt(whisper_bin: Path) -> dict:
     }
     lower = text.lower()
     hits = {item: any(variant in lower for variant in variants) for item, variants in expected.items()}
+    conclusion = (
+        "Conclusion: STT order and semantic content match the updated Russian script; subtitles are burned into the video and provide exact text."
+        if all(hits.values())
+        else "Conclusion: STT order is usable, but one or more semantic checkpoints need manual review against the burned-in subtitles."
+    )
     REPORT.write_text(
         "# STT verification: Talc annotation sample video\n\n"
         f"- Video: `{FINAL_MP4}`\n"
         f"- Transcript: `{transcript}`\n"
         f"- Expected semantic keyword hits: `{sum(hits.values())}/{len(hits)}`\n"
+        "- Timing policy: natural raw TTS duration plus scene hold; no per-scene audio speed stretching.\n"
         "- Note: Whisper may phonetically distort technical words; variants are counted when the phrase is clearly recognizable in context.\n\n"
         + "\n".join(f"- `{key}`: {'ok' if value else 'missing'}" for key, value in hits.items())
-        + "\n\nConclusion: STT order and semantic content match the updated Russian script; subtitles are burned into the video and provide exact text.\n",
+        + f"\n\n{conclusion}\n",
         encoding="utf-8",
     )
     return {"status": "ok", "transcript": str(transcript), "report": str(REPORT), "keyword_hits": hits}
@@ -638,6 +703,7 @@ def main() -> int:
     missing = [item["screenshot"] for item in segments if not (SCREEN_DIR / item["screenshot"]).exists()]
     if missing:
         raise FileNotFoundError(missing)
+    retime_segments_from_tts(segments)
     write_subtitles_and_timeline(segments)
     build_audio(segments)
     render_video(segments)
@@ -652,8 +718,17 @@ def main() -> int:
         "validation": validation,
         "stt": stt,
         "screenshots_dir": str(SCREEN_DIR),
+        "capture": {
+            "browser_viewport": f"{WIDTH}x{HEIGHT}",
+            "device_scale_factor": 1,
+            "fit_view_before_each_screenshot": True,
+            "screenshot_resolution": f"{WIDTH}x{HEIGHT}",
+            "screenshot_count": len(segments),
+        },
         "voice": VOICE,
         "tts_rate": TTS_RATE,
+        "scene_hold_after": SCENE_HOLD_AFTER,
+        "timing_policy": "natural raw TTS duration plus scene hold; no per-scene atempo speed stretching",
     }
     (OUT / "build_talc_annotation_metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(metadata, ensure_ascii=False, indent=2))

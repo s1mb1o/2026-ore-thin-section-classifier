@@ -333,9 +333,11 @@ IMAGE_ML=nornikel/ore-pipeline-ui:v2-gx10-ml
 ssh "$GX10" "rm -rf '$BUILD_DIR' && mkdir -p '$BUILD_DIR'"
 rsync -az --delete \
   --exclude='.git/' --exclude='.venv/' --exclude='venv/' \
-  --exclude='dataset/' --exclude='outputs/' \
+  --exclude='dataset/' --exclude='data/external/' --exclude='outputs/' \
   --include='models/' --include='models/README.md' --exclude='models/***' \
-  --exclude='__pycache__/' --exclude='.pytest_cache/' --exclude='*.pyc' --exclude='*.zip' \
+  --exclude='presentation/videos/' \
+  --exclude='__pycache__/' --exclude='.pytest_cache/' --exclude='*.pyc' \
+  --exclude='*.zip' --exclude='*.tar' --exclude='*.tar.gz' --exclude='*.7z' \
   "$REPO/" "$GX10:$BUILD_DIR/"
 
 ssh "$GX10" "cd '$BUILD_DIR' && docker build --platform linux/arm64 --pull=false -f docker/ore-pipeline-ui/Dockerfile -t '$IMAGE' ."
@@ -352,12 +354,12 @@ linux/arm64
 sha256:a55f381707f584b8cbceb94e073603fb2988cdf1a947166b23d5242d4e0c22be
 ```
 
-Verified SOTA ML image from the 2026-07-04 gx10 deployment:
+Verified current SOTA ML image from the 2026-07-05 gx10 redeploy:
 
 ```text
 nornikel/ore-pipeline-ui:v2-gx10-ml
 linux/arm64
-sha256:3406de0bdbc3a3a7c3e528b53f0fbe19315bb188d96d4d73903fb7c0c7e0ad7b
+sha256:4e08a307651453d86f33c10e4e4ae3a9fe3614181016fc6c3c28ea932bcbcc9d
 ```
 
 ### 2. Run On gx10
@@ -404,6 +406,17 @@ curl -sS -H 'Content-Type: application/json' -d '{}' http://192.168.86.14:8210/a
 ssh "$GX10" 'docker stats --no-stream --format "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}" nornikel-ore-pipeline-ui-v2'
 ```
 
+Public backup smoke through MikroTik Caddy:
+
+```bash
+PUBLIC=https://nornickel-ai-hackathon.my.3simbio.ru
+REVIEWER_PASS="$(security find-generic-password -a reviewer -s nornickel-ai-hackathon-basic-auth -w)"
+curl -sS -o /dev/null -w '%{http_code}\n' "$PUBLIC/workspace"  # 401
+curl -fsS -u "reviewer:$REVIEWER_PASS" "$PUBLIC/workspace" -o /tmp/gx10-backup-workspace.html
+curl -fsS -u "reviewer:$REVIEWER_PASS" "$PUBLIC/api/status" | jq '{overall:.health.overall, backend:.app.backend, talc_backend:.app.talc_backend, gpu:.gpu.devices[0].name}'
+curl -fsS -u "reviewer:$REVIEWER_PASS" -H 'Content-Type: application/json' -d '{}' "$PUBLIC/api/runtime/test" | jq '{ok,status,backend,talc_backend,device:.details.device}'
+```
+
 Expected gx10 status details:
 
 - `/api/status` returns `200`.
@@ -411,7 +424,8 @@ Expected gx10 status details:
 - For the SOTA ML deployment, `/api/status` reports `app.backend=ml`, the SegFormer-B2 binary checkpoint, `app.talc_backend=ml`, and the SegFormer-B0 talc checkpoint.
 - `POST /api/runtime/test` returns `ok=true` and loads both segmentation checkpoints on `cuda`.
 - GB10 memory values may be `null` because gx10's `nvidia-smi` reports memory as `[N/A]`.
-- Health may be `warning` if gx10 flash free space is still around `9%`.
+- Health is `ok` when gx10 flash free space is around `12%`; it may become
+  `warning` again if build caches or generated artifacts fill the root disk.
 
 Optional functional smoke from the Mac:
 
@@ -465,7 +479,10 @@ Do not remove mounted workspace directories unless explicitly clearing demo stat
 
 ## Known Caveats
 
-- The VM is public on `111.88.145.15:8080`; gx10 port `8210` is LAN-only unless a router/NAT rule is added.
+- The VM is public on `111.88.145.15:8080`; gx10 port `8210` is LAN-only. The
+  current public backup path is the MikroTik Caddy hostname
+  `https://nornickel-ai-hackathon.my.3simbio.ru/workspace`, protected by Basic
+  Auth and reverse-proxied to `192.168.86.14:8210`.
 - Full panorama uploads currently create full-size `preprocessed_full.png` synchronously before the run id is returned. Normal images are fine; panorama live demos should wait for the preparation path optimization.
 - Keep the team VM SSH key outside the repo and remove temporary extraction directories after use.
 - If gx10 `/api/status` fails with `could not convert string to float: '[N/A]'`, the deployed image predates the GB10 parser fix; rebuild from the current v2 checkout and redeploy.

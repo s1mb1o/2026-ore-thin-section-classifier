@@ -17,15 +17,20 @@ The existing repository remains valuable as a source of utilities, UI/report exa
 
 ## Recommendation
 
-Use a standalone source tree first:
+Status on 2026-07-05: this early standalone-tree recommendation is superseded by
+the current v2 layout. The same narrow official contour now lives in the v2 repo
+root:
 
 ```text
-submissions/ore_classifier/
+src/ore_classifier/          # core pipeline modules
+scripts/run_ore_pipeline.py  # one-image CLI
+scripts/run_official_batch.py
+scripts/run_resident_batch.py
+apps/ore_pipeline_web.py     # reviewer web/API app
 ```
 
-This is faster than creating a new repository immediately, keeps the code versioned in the current project, and makes later extraction to a clean public/private VCS repository straightforward.
-
-If the submission needs a very clean VCS link, extract only this folder into a separate repository after the pipeline is runnable and documented.
+If the submission needs a clean VCS link, publish this v2 repo or an export of the
+v2 layout above. Do not point reviewers to the earlier standalone-folder sketch.
 
 ## Why Not Rewire the Full Project
 
@@ -45,10 +50,11 @@ A standalone P0 code path makes the official logic explicit and auditable.
 For one image:
 
 ```bash
-python run_image.py \
+python scripts/run_ore_pipeline.py \
   --image path/to/panorama.jpg \
-  --output-dir outputs/sample_001 \
-  --scale-um-per-pixel 0.5
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/sample_001 \
+  --auto-talc-candidate
 ```
 
 Required artifacts:
@@ -67,11 +73,13 @@ outputs/sample_001/
 For a folder:
 
 ```bash
-python run_batch.py \
-  --input-dir data/official/panoramas \
-  --output-dir outputs/batch_001 \
+python scripts/run_official_batch.py \
+  --dataset-root dataset \
+  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --out-dir outputs/batch_001 \
   --tile-size 2048 \
-  --overlap 256
+  --stride 1792 \
+  --keep-going
 ```
 
 Batch artifacts:
@@ -97,35 +105,31 @@ Use the task labels directly:
 
 `background_matrix` is not the main scientific output. It is the residual analyzed area after sulfides, talc, and excluded artifacts are removed.
 
-## Proposed File Layout
+## Current v2 File Layout
 
 ```text
-submissions/ore_classifier/
-  README.md
-  requirements.txt
-  run_image.py
-  run_batch.py
-  src/
-    __init__.py
-    config.py
-    io.py
-    preprocessing.py
-    tiling.py
-    sulfides.py
-    talc.py
-    intergrowths.py
-    masks.py
-    metrics.py
-    ore_rules.py
-    visualization.py
-    report.py
-    logging_utils.py
-  tests/
-    test_ore_rules.py
-    test_metrics.py
-    test_masks.py
-  examples/
-    README.md
+apps/ore_pipeline_web.py
+scripts/run_ore_pipeline.py
+scripts/run_official_batch.py
+scripts/run_resident_batch.py
+src/ore_classifier/
+  analyzed_area.py
+  component_analysis.py
+  component_reports.py
+  gis_export.py
+  grade_classifier.py
+  grain_features.py
+  model_io.py
+  preprocessing.py
+  resident_pipeline.py
+  rule_config_io.py
+  talc_candidate.py
+  talc_zone_heuristic.py
+  tiling.py
+tests/
+  test_ore_pipeline_web.py
+  test_run_official_batch.py
+  test_ore_pipeline_grain_reporting.py
 ```
 
 ## Pipeline
@@ -467,8 +471,8 @@ Only after Phases 1-4 work:
 
 Allowed reuse:
 
-- report/overlay patterns from `experiments/qc_pipeline/create_sample_report.py`;
-- tiled inference ideas from `experiments/qc_pipeline/run_segmentation_inference.py`;
+- report/overlay/export patterns from `apps/ore_pipeline_web.py` and `src/ore_classifier/component_reports.py`;
+- tiled inference and resident model-loading code from `scripts/infer_binary_sulfide.py` and `src/ore_classifier/resident_pipeline.py`;
 - existing batch/report artifact conventions;
 - project docs and official requirement sources.
 
@@ -509,11 +513,12 @@ The standalone README should answer:
 
 This plan is complete when:
 
-- `submissions/ore_classifier/README.md` exists;
-- `run_image.py` and `run_batch.py` run from a clean checkout;
+- the v2 reviewer docs (`README.md`, `SUBMISSION_README.md`, `QUICKSTART.md`) describe
+  the current v2 layout;
+- `scripts/run_ore_pipeline.py` and `scripts/run_official_batch.py` run from a clean checkout;
 - one sample produces mask, overlay, metrics CSV, JSON conclusion, PDF, and run summary;
 - batch mode produces `summary.csv`;
-- the final presentation can point to this standalone path as the official solution core.
+- the final presentation points to the v2 repo root as the official solution core.
 
 ## Review (Claude Cross-Check, 2026-07-02)
 

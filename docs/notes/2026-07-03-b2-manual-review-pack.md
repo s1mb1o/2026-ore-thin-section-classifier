@@ -28,7 +28,7 @@ This is a human review artifact, not a statistical benchmark. It is intended to 
 Run from the v2 root:
 
 ```bash
-streamlit run apps/sulfide_qa_streamlit.py -- \
+streamlit run apps/deprecated/streamlit/sulfide_qa_streamlit.py -- \
   --runs-dir outputs/manual_review/b2_balanced_review_pack/runs \
   --review-dir outputs/manual_review/b2_balanced_review_pack/reviews
 ```

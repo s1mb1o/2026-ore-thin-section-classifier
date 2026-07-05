@@ -10,6 +10,10 @@ The old `outputs/demo_video_*` paths are compatibility symlinks only.
   - `gx10_silero/nornikel_talc_ui_demo_1080p_ru.mp4`: gx10-local Silero `aidar` Russian male voice variant.
 - `demo_video_v2_ui_only_20260704/`
   - `nornikel_v2_ui_only_demo_1080p_ru.mp4`: 5:00 main v2 ore-pipeline UI-only Russian demo.
+- `demo_video_v2_ui_only_20260704_video2/`
+  - `script.md`: VIDEO #2 director script for the main v2 ore-pipeline UI,
+    using sample `2550382-1-10x`, disabled augmentation/preprocessing, screenshot
+    markup, and reference captures under `screenshots/`.
 - `demo_video_v2_ui_20260704/`
   - `nornikel_v2_ui_demo_1080p_ru.mp4`: 5:00 broader v2 UI demo with talc-review context.
 
@@ -21,6 +25,9 @@ The Talc bundle also includes `talc_annotation_script_ru.md`, a sample-specific
 director script for `/sample/2550382-1-10x` with screenshot capture points,
 required UI state, and Russian narration for re-recording the Talc annotation
 walkthrough.
+The VIDEO #2 bundle is script-first rather than a rendered MP4 bundle: it stores
+the exact UI navigation, screenshot filenames, and run ids needed to re-record
+the requested `apps/ore_pipeline_web.py` walkthrough.
 
 `manifest.sha256` records checksums for all MP4 files in this directory tree.
 `stt_refresh_verification_20260704.md` summarizes the fresh Whisper transcripts

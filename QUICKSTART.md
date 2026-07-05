@@ -2,6 +2,22 @@
 
 Три способа, от самого простого к самому гибкому. Для проверки жюри достаточно **способа 1**.
 
+Все локальные команды выполняются из корня v2-репозитория:
+
+```text
+/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2
+```
+
+Быстрая проверка правильного каталога:
+
+```bash
+test -f apps/ore_pipeline_web.py
+test -f compose.yaml
+test -f requirements.txt
+```
+
+Если эти файлы не находятся, смотрите [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
 ---
 
 ## Способ 1. Развёрнутое решение (ничего ставить не нужно) ⭐
@@ -58,20 +74,31 @@ docker compose --profile gpu up --build
 ### 3a. Эвристический бэкенд (минимум зависимостей, без GPU)
 
 ```bash
-python3 -m pip install numpy Pillow opencv-python
-python3 apps/ore_pipeline_web.py --host 127.0.0.1 --port 0
+python3 -m venv /tmp/nornikel_v2_venv
+source /tmp/nornikel_v2_venv/bin/activate
+python -m pip install numpy Pillow opencv-python
+rm -rf /tmp/nornikel_v2_quickstart_workspace
+python apps/ore_pipeline_web.py \
+  --workspace-dir /tmp/nornikel_v2_quickstart_workspace \
+  --host 127.0.0.1 --port 0 \
+  --backend heuristic \
+  --talc-backend heuristic \
+  --grain-backend heuristic
 # порт 0 = случайный свободный порт; адрес печатается в консоли
 ```
 
 Это объяснимый baseline: детерминированная сегментация без нейросетей. Годится для смоук-проверки
-на любой машине.
+на любой машине. Отдельный `/tmp` workspace нужен, чтобы сохраненные настройки из
+`outputs/ore_pipeline_ui/settings/app_settings.json` не переопределили эвристический режим.
 
 ### 3b. Полный ML-бэкенд (SegFormer + Grade-CNN)
 
 ```bash
-python3 -m pip install -r requirements.txt   # torch, torchvision, transformers, ...
+python3 -m venv /tmp/nornikel_v2_ml_venv
+source /tmp/nornikel_v2_ml_venv/bin/activate
+python -m pip install -r requirements.txt   # torch, torchvision, transformers, ...
 git lfs pull                                  # подтянуть чекпойнты (см. ниже)
-python3 apps/ore_pipeline_web.py --host 127.0.0.1 --port 0
+python apps/ore_pipeline_web.py --host 127.0.0.1 --port 0
 ```
 
 Приложение само выбирает ML-бэкенд, если чекпойнты на месте (иначе — эвристику).

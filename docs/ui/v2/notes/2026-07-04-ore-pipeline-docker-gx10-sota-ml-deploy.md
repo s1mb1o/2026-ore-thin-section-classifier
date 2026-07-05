@@ -84,8 +84,54 @@ Functional ML smoke:
 - Fractions: `sulfide_fraction=0.3486527660682404`, `talc_fraction=0.00024047601335713814`
 - Grade branch executed with checkpoint `effb3_ordfine_ppaug_20260704/best.pt`: predicted `ordinary_intergrowth` / `рядовая руда`, confidence `0.9997366070747375`.
 
+## 2026-07-05 Redeploy
+
+The gx10 backup was rebuilt from the current v2 tree and redeployed through the
+repo-root Compose GPU profile.
+
+- Host preflight: gx10 reported `115Gi` RAM available, `222G` root free space,
+  low load, and no heavy training process on the GB10.
+- Staged build tree: `gx10:~/Projects/nornikel-v2-ore-pipeline-ui-build`,
+  with `.git`, virtualenvs, `dataset/`, `data/external/`, `outputs/`, model
+  weights, archives, and `presentation/videos/` excluded.
+- Docker build context: `1.89MB`.
+- New image: `nornikel/ore-pipeline-ui:v2-gx10-ml`
+  `sha256:4e08a307651453d86f33c10e4e4ae3a9fe3614181016fc6c3c28ea932bcbcc9d`,
+  created `2026-07-05T04:58:41+03:00`, size about `20.0GB`.
+- Container: `nornikel-ore-pipeline-ui-v2`, id `5a9c800fc126`, published as
+  `0.0.0.0:8210->8080/tcp`.
+- The previous container had been created outside the current Compose project,
+  so it was removed by exact name before `docker compose --profile gpu up -d
+  --no-build ore-pipeline-ui-gpu`.
+
+Verification:
+
+- Direct `GET http://192.168.86.14:8210/workspace`: `200` in `0.075449s`.
+- Public unauthenticated
+  `GET https://nornickel-ai-hackathon.my.3simbio.ru/workspace`: `401`.
+- Public authenticated `/workspace`: `200` in `0.074314s`.
+- Direct and public authenticated `/api/status`: `health.overall=ok`,
+  `app.version=v2`, `app.backend=ml`, `app.talc_backend=ml`, all mounted
+  checkpoint paths present, GPU `NVIDIA GB10`, `history.runs_total=6`.
+- `POST /api/runtime/test`: `ok=true`, `status=ok`, total `6.653s`, device
+  `cuda`; loaded SegFormer-B2 sulfide and SegFormer-B0 talc checkpoints.
+
+Public functional smoke:
+
+- Sample: `dataset/Фото руд по сортам. ч2/тонкие/69 1.jpg`.
+- Upload: `20260705_020001_794549784_e169c1215e`.
+- Completed run: `run_20260705_020001_861893916_b8b9425d`.
+- Result: `status=complete`, `progress=100`, `backend=ml`,
+  `talc_backend=ml`, `ore_class=hard_to_process_ore`,
+  `sulfide_fraction=0.33442079670457303`,
+  `talc_cluster_fraction=0.0`.
+- Files endpoint returned `47` artifacts and an artifacts ZIP link.
+
 ## Caveats
 
-- gx10 `8210` is LAN-only.
-- A separate isolated class-folder evaluation was running in `tmux codex_e2e_20260704_1333` during deployment; the deployed service was validated with one normal image and should not be load-tested heavily until that evaluation finishes.
+- gx10 port `8210` is LAN-only; public access uses the protected MikroTik Caddy
+  route `https://nornickel-ai-hackathon.my.3simbio.ru/workspace`.
+- During the original 2026-07-04 deployment, a separate isolated class-folder
+  evaluation was running in `tmux codex_e2e_20260704_1333`; the 2026-07-05
+  redeploy preflight showed no heavy gx10 training process.
 - The grade branch is an auxiliary ordinary/fine opinion. The final UI verdict still comes from the current segmentation/rule path unless the application logic is changed.

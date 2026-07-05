@@ -3,7 +3,7 @@
   "source_script": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/talc_annotation_script_ru.md",
   "validation": {
     "path": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/nornikel_talc_annotation_sample_2550382_1080p_ru.mp4",
-    "duration": 252.0,
+    "duration": 237.264,
     "video_codec": "h264",
     "width": 1920,
     "height": 1080,
@@ -17,17 +17,26 @@
     "transcript": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/stt_talc_annotation_sample_2550382/nornikel_talc_annotation_sample_2550382_1080p_ru.txt",
     "report": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/stt_talc_annotation_sample_2550382_report.md",
     "keyword_hits": {
-      "датасета хакатона": false,
-      "синие линии": false,
-      "областью-кандидатом": false,
-      "порог пятьдесят": false,
+      "датасета хакатона": true,
+      "синие линии": true,
+      "область-кандидат": true,
+      "порог пятьдесят": true,
       "кисть": true,
       "сохранить": true,
-      "эвристический": false,
-      "нейросетевую модель": false
+      "эвристический": true,
+      "нейросетевая модель": true
     }
   },
   "screenshots_dir": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/screenshots/sample_2550382_1_10x",
+  "capture": {
+    "browser_viewport": "1920x1080",
+    "device_scale_factor": 1,
+    "fit_view_before_each_screenshot": true,
+    "screenshot_resolution": "1920x1080",
+    "screenshot_count": 12
+  },
   "voice": "ru-RU-DmitryNeural",
-  "tts_rate": "-5%"
+  "tts_rate": "-5%",
+  "scene_hold_after": 0.75,
+  "timing_policy": "natural raw TTS duration plus scene hold; no per-scene atempo speed stretching"
 }

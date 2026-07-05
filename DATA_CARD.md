@@ -90,7 +90,7 @@ Otsu яркостно-морфологический на офиц. фото  ->
 
 ## 6. Ссылки
 
-- Постановка: [`docs/official/Скажи мне кто твой шлиф.md`](docs/official/Скажи%20мне%20кто%20твой%20шлиф.md);
+- Постановка: [`docs/official/Скажи мне кто твой шлиф.md`](docs/official/Скажи мне кто твой шлиф.md);
 - QA-сессии: [`docs/official/QnA_sessions.md`](docs/official/QnA_sessions.md);
 - Карты данных: [`docs/cards/official-balanced-eval-dataset-card.md`](docs/cards/official-balanced-eval-dataset-card.md);
 - Стратегия GT талька: [`docs/notes/2026-07-03-talc-ground-truth-strategy.md`](docs/notes/2026-07-03-talc-ground-truth-strategy.md);

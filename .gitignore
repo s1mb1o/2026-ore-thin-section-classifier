@@ -9,6 +9,9 @@ __pycache__/
 .coverage.*
 htmlcov/
 
+# Local publishing/submission delivery tracker.
+PUBLISHING_DELIVERIES_CHECKLIST.md
+
 # Generated artifacts
 data/external/
 outputs/*

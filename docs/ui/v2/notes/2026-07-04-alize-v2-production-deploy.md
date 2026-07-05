@@ -35,7 +35,7 @@ This replaced the earlier same-day legacy deployment from
 | Field | Value |
 |---|---|
 | Image | `nornickel-ore-pipeline-ui:v2-ml` |
-| Image id | `sha256:f72410291546f2250f0a7608070312703cadc82b60d8a319960f714325076118` |
+| Image id | `sha256:978d9ba0768dcf5c7d9d422c159099e08c2c348dc7d739e2be2037aaf1befb49` |
 | Image size | about `21.1 GB` |
 | Container | `nornickel-ore-pipeline-ui-v2` |
 | Restart policy | `unless-stopped` |
@@ -55,6 +55,11 @@ ORE_UI_PROCESSING_MAX_SIDE=2600
 ORE_UI_PANORAMA_MAX_SIDE=1800
 ORE_UI_PREVIEW_MAX_SIDES=1024,2048,4096
 ```
+
+Current 2026-07-05 effective runtime defaults are ML sulfide segmentation, ML
+talc segmentation, and heuristic grain classification. The Grade-CNN checkpoint
+is mounted and present, but the current v2 app uses it only when a run or saved
+setting selects the ML grain-classification backend.
 
 Mounted read-only assets:
 
@@ -93,6 +98,82 @@ step accepted `libjpeg-turbo8` on Ubuntu Noble; no Dockerfile patch was needed.
 The image was first started on temporary local port `18765` for status/runtime
 testing, then promoted to the production Caddy backend port `8765`.
 
+## 2026-07-05 Redeploy
+
+The current v2 Docker image was rebuilt from the v2 working tree and redeployed
+on Alize.
+
+Preflight on the Mac:
+
+```text
+git diff --check -> passed
+.venv/bin/python -m unittest discover -s tests -p 'test_ore_pipeline_docker.py' -v -> 1 test passed
+docker compose config -> passed
+.venv/bin/python -m py_compile apps/ore_pipeline_web.py apps/talc_review_web.py src/ore_classifier/grade_classifier.py src/ore_classifier/model_io.py -> passed
+```
+
+The source sync was intentionally scoped to the Docker-copied runtime tree:
+`apps/`, `src/`, `heuristic_segmentation/`, `scripts/`, `docker/`, and
+`.dockerignore`. Persistent model mounts and the production run workspace were
+left untouched.
+
+Build/deploy facts:
+
+| Field | Value |
+|---|---|
+| Previous image backup tag | `nornickel-ore-pipeline-ui:v2-ml-prev-20260705T021049` |
+| New image id | `sha256:978d9ba0768dcf5c7d9d422c159099e08c2c348dc7d739e2be2037aaf1befb49` |
+| Image created | `2026-07-05T02:11:17.652171805Z` |
+| Container id | `c95f078ce5c0af60806563838f8e0c9bc76e05321289332e0bfd72e4c0cab147` |
+| Container started | `2026-07-05T02:13:22.355951959Z` |
+| Root disk after deploy | `222G` free on `/` |
+
+Canary verification used a temporary container on `127.0.0.1:18765` and a
+separate canary workspace. It reported `health=ok`, backend `ml`, talc backend
+`ml`, grain backend `heuristic`, app version `v2`, and the Grade-CNN checkpoint
+present. Canary `/api/runtime/test` loaded SegFormer-B2 sulfide and SegFormer-B0
+talc on CUDA and reported grain classification as `ore_grain_heuristics`.
+
+Public production verification after promotion:
+
+```text
+unauthenticated https://nornickel-ai-hackathon.alola.ru/workspace -> 401
+authenticated   https://nornickel-ai-hackathon.alola.ru/workspace -> 200, 436955 bytes
+direct external http://111.88.124.80:8765/ -> connection refused
+```
+
+Authenticated public `/api/status` summary after redeploy:
+
+```json
+{
+  "health": "ok",
+  "version": "v2",
+  "backend": "ml",
+  "talc_backend": "ml",
+  "grain_backend": "heuristic",
+  "grade_checkpoint_exists": true,
+  "gpu": "NVIDIA L4"
+}
+```
+
+Authenticated public `POST /api/runtime/test` after redeploy returned
+`ok=true`, `status=ok`, `backend=ml`, `talc_backend=ml`,
+`grain_backend=heuristic`, with B2/B0 loaded on CUDA and grain classification
+using component-feature heuristics.
+
+Functional public smoke after redeploy:
+
+| Field | Value |
+|---|---|
+| Sample | `dataset/Фото руд по сортам. ч2/тонкие/69 1.jpg` |
+| Upload id | `20260705_021520_259614359_e169c1215e` |
+| Run id | `run_20260705_021520_400084582_23f96eb4` |
+| Final status | `complete` |
+| Final progress | `100` |
+| Runtime backends | sulfide `ml`, talc `ml`, grain `heuristic` |
+| Grade branch present by default | `false` |
+| Files listed | `47` |
+
 ## Verification
 
 Unauthenticated public access is blocked at Caddy:
@@ -107,7 +188,7 @@ Authenticated public `GET /workspace`:
 ```text
 HTTP/2 200
 content-type: text/html; charset=utf-8
-content-length: 423042
+content-length: 436955
 server: Caddy
 server: BaseHTTP/0.6 Python/3.12.3
 ```
@@ -117,7 +198,7 @@ Authenticated plain HTTP IP access:
 ```text
 http://111.88.124.80/           -> 302 /workspace
 http://111.88.124.80/workspace  -> 200
-http://111.88.124.80/api/status -> health ok, backend ml, GPU NVIDIA L4
+http://111.88.124.80/api/status -> health ok, backend ml, talc ml, grain heuristic, GPU NVIDIA L4
 ```
 
 Wrong reviewer credentials return `401`.
@@ -132,9 +213,11 @@ Authenticated public `/api/status` summary:
   "status_health": "ok",
   "backend": "ml",
   "talc_backend": "ml",
+  "grain_backend": "heuristic",
   "gpu": "NVIDIA L4",
   "checkpoint_exists": true,
-  "talc_checkpoint_exists": true
+  "talc_checkpoint_exists": true,
+  "grade_checkpoint_exists": true
 }
 ```
 
@@ -146,7 +229,8 @@ Authenticated public `POST /api/runtime/test` summary:
   "runtime_status": "ok",
   "runtime_device": "cuda",
   "binary_model": "binary_sulfide ML checkpoint loaded: model=segformer_b2, device=cuda",
-  "talc_model": "talc ML checkpoint loaded: model=segformer_b0, device=cuda"
+  "talc_model": "talc ML checkpoint loaded: model=segformer_b0, device=cuda",
+  "grain_model": "ore_grain_heuristics"
 }
 ```
 
@@ -155,11 +239,11 @@ Functional public smoke:
 | Field | Value |
 |---|---|
 | Sample | `dataset/Фото руд по сортам. ч2/тонкие/69 1.jpg` |
-| Upload id | `20260704_180452_821455814_e169c1215e` |
-| Run id | `run_20260704_180453_030668504_b9327d1a` |
+| Upload id | `20260705_021520_259614359_e169c1215e` |
+| Run id | `run_20260705_021520_400084582_23f96eb4` |
 | Final status | `complete` |
 | Final progress | `100` |
-| Files listed | `49` |
+| Files listed | `47` |
 
 Representative metrics from the completed run:
 

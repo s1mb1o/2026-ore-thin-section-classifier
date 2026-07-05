@@ -8,14 +8,14 @@
 `панорама → маска талька и его доля → класс руды`. Каждый процент прослеживается до
 маски, источника сигнала и параметров запуска.
 
-**Судимый путь:** `изображение → доля талька → правило `> 10%` → класс руды`.
+**Основной проверяемый контур:** `изображение -> доля талька -> правило > 10% -> класс руды`.
 Официальное правило простое и детерминированное: **`доля талька > 10%` → `оталькованная`**
 (строго `>`; ровно 10% — ещё не оталькованная).
 
 - **Развёрнутое решение (ничего ставить не нужно):** <https://nornickel-ai-hackathon.alola.ru/>
   — доступ на слайде «Ссылки» презентации (резерв: <https://nornickel-ai-hackathon.my.3simbio.ru/>).
-- **Одна команда локально:** `python3 apps/ore_pipeline_web.py --host 127.0.0.1 --port 0`
-  (или `docker compose up --build` → `http://<host>:8080/workspace`).
+- **Локально:** через venv и `python apps/ore_pipeline_web.py --host 127.0.0.1 --port 0`
+  (или `docker compose up --build` -> `http://<host>:8080/workspace`).
 - **С чего начать ревью кода:** [`apps/ore_pipeline_web.py`](apps/ore_pipeline_web.py),
   [`src/ore_classifier/resident_pipeline.py`](src/ore_classifier/resident_pipeline.py),
   [`scripts/run_ore_pipeline.py`](scripts/run_ore_pipeline.py) — карта в [CODE_REVIEW.md](CODE_REVIEW.md).
@@ -24,7 +24,8 @@
 
 > Судейские документы: [SUBMISSION_README.md](SUBMISSION_README.md) · [QUICKSTART.md](QUICKSTART.md)
 > · [EVALUATION.md](EVALUATION.md) · [MODEL_CARD.md](MODEL_CARD.md) · [DATA_CARD.md](DATA_CARD.md)
-> · [LIMITATIONS.md](LIMITATIONS.md) · [CODE_REVIEW.md](CODE_REVIEW.md)
+> · [LIMITATIONS.md](LIMITATIONS.md) · [CODE_REVIEW.md](CODE_REVIEW.md) ·
+> [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ---
 
@@ -85,8 +86,10 @@ docker compose up --build          # -> http://<host>:8080/workspace
 docker compose --profile gpu up --build   # ML-бэкенд на NVIDIA GPU (порт 8210)
 
 # 3. Локально без Docker
-python3 -m pip install -r requirements.txt
-python3 apps/ore_pipeline_web.py --host 127.0.0.1 --port 0
+python3 -m venv /tmp/nornikel_v2_ml_venv
+source /tmp/nornikel_v2_ml_venv/bin/activate
+python -m pip install -r requirements.txt
+python apps/ore_pipeline_web.py --host 127.0.0.1 --port 0
 ```
 
 Подробные инструкции для жюри — [QUICKSTART.md](QUICKSTART.md).
@@ -186,4 +189,4 @@ python3 scripts/run_ore_pipeline.py \
 - **Развёрнутое решение:** <https://nornickel-ai-hackathon.alola.ru/> (доступ — на слайде «Ссылки» презентации)
 - **Резерв:** <https://nornickel-ai-hackathon.my.3simbio.ru/> · <https://nornickel-backup.my.3simbio.ru/workspace>
 - **Презентация:** `presentation/` (RU-дек `presentation_ru.md`, рендер `presentation.html`)
-- **Постановка задачи:** [`docs/official/Скажи мне кто твой шлиф.md`](docs/official/Скажи%20мне%20кто%20твой%20шлиф.md)
+- **Постановка задачи:** [`docs/official/Скажи мне кто твой шлиф.md`](docs/official/Скажи мне кто твой шлиф.md)

@@ -39,21 +39,24 @@ Submission by 2026-07-04 23:59: VCS link, cloud-disk archive of the code, video 
 
 ## 2. Verified Current-State Facts
 
-Checked directly in code on 2026-07-02 (not from memory):
+Checked directly in code on 2026-07-02 (not from memory). Status note on
+2026-07-05: the bullets below describe the old broad QC codebase at the time of
+the gap analysis; the v2 implementation now lives under `src/ore_classifier/`,
+`scripts/`, and `apps/ore_pipeline_web.py`.
 
-- Current OM ontology is LumenStone S1 minerals: `S1_LABELS = ("bg", "ccp", "gl", "br", "py", "sh", "tnt")` in `experiments/qc_pipeline/run_segmentation_inference.py`. `grep` over `experiments/`, `tests/`, `submissions/`, `data/samples/` finds **zero** occurrences of talc/intergrowth/ore-class concepts in code — they exist only in docs (plans 23, session-sync). This confirms the ontology gap as the #1 blocker.
-- The S1 label set is hardcoded in ~13 pipeline files plus 4 test files (`create_sample_report.py`, `run_upload_ui.py`, `match_xrd_references.py`, `classify_microstructure.py`, `postprocess_optimizer.py`, ...). A full refactor is not affordable in two days; an adapter-level label-map injection is.
-- Tiled inference with overlap and logits accumulation **already exists** in `run_segmentation_inference.py` (`tile_positions`, per-tile logits summed into a full-size `logits_sum` tensor) for both SegFormer and Petroscope ResUNet paths. However, current smokes run through `resize_for_inference(max_side)` at ~768 px, which destroys inclusion morphology; the TZ explicitly requires pixel-level segmentation preserving inclusion morphology, so full-resolution tiling must become the default for panoramas.
+- At the time, the OM ontology was still the LumenStone S1 mineral label set (`bg`, `ccp`, `gl`, `br`, `py`, `sh`, `tnt`) and talc/intergrowth/ore-class concepts were not implemented in code. In v2, the official ore classes are represented by `apps/ore_pipeline_web.py` (`CLASS_COLORS`, `CLASS_LABELS_RU`, `REPORT_CLASS_SPECS`) and the component analysis modules.
+- At the time, the old broad label set was spread across many pipeline/report/test files. In v2, the official task path is concentrated in `src/ore_classifier/component_analysis.py`, `src/ore_classifier/component_reports.py`, `src/ore_classifier/resident_pipeline.py`, and `apps/ore_pipeline_web.py`.
+- Tiled inference with overlap is now represented by `scripts/infer_binary_sulfide.py`, `scripts/run_ore_pipeline.py`, and the resident path in `src/ore_classifier/resident_pipeline.py`; full-resolution/panorama behavior is benchmarked separately in `docs/benchmarks/`.
 - The full-resolution `logits_sum` buffer is `num_classes x H x W float32`; at 10000 x 10000 x 7 that is ~2.8 GB on the inference device. Needs a memory strategy (band-wise accumulation, float16, or uint8 vote counting) before the 10k benchmark can pass.
 - YOLO11 tiled evaluation with confidence stitching is proven (full/void mIoU `0.8741`/`0.8881` at 1280/320 on S1 proxy; `docs/benchmarks/46_yolo_om_segmentation_tiled_eval.md`) — a second deployable model family.
-- `classify_microstructure.py` already computes a sulfide-set fraction (`sulfide_labels = {"ccp", "py", "sh", "gl", "br", "po", "pn"}`) from phase-fraction rows — a direct skeleton for the deterministic ore classifier.
-- `create_sample_report.py` computes phase fractions generically from a mask + label map with an artifact/exclusion-adjusted denominator — the fraction table only needs a new label map and task wording, not new math.
+- The current deterministic ore classifier is `src/ore_classifier/component_analysis.py` (`classify_ore_type`, `ComponentRuleConfig`), using the strict talc `> 10%` rule and ordinary/fine predominance.
+- The current fraction/report path is `src/ore_classifier/component_reports.py` plus `apps/ore_pipeline_web.py`, which writes `reports/metrics.csv`, `reports/ore_summary.json`, PDF, overlays, GIS exports, and artifact bundles.
 - The vendored `experiments/petroscope/petroscope/analysis/geometry.py` already converts masks to polygons and saves GeoJSON — the GIS-export wish is mostly a wiring task.
 - Preprocessing normalization is essentially absent as a pipeline stage: the only CLAHE usage is in `prepare_manual_mvp_sample.py` (sample prep), not in the inference/report path. The TZ lists illumination normalization/denoising/contrast correction as functional requirements.
 - Confidence heatmap ("карта уверенности") is absent; logits are already computed in the tiled path, so per-pixel max-softmax export is cheap.
-- The result-page interactive preview (Original/Overlay/Segmented, per-phase toggles, exclusion muting) exists in `run_upload_ui.py`, but there is no zoom/pan on the result canvas; TZ asks for interactive viewing with zoom.
+- The result-page interactive preview, per-class toggles, exclusion muting, zoom/pan, history, series, and API surface are now in `apps/ore_pipeline_web.py`.
 - Physical scale: SEM footer OCR scale parsing and manual metadata fields exist, but the report table does not compute absolute areas (µm²); fractions only. TZ requires area computation "с учётом масштаба изображения".
-- Batch mode (`run_e2e_batch.py`, `summary.csv`, static queue index), PDF RU/EN reports, CSV exports, run-parameter logging, Docker/local deploy, expert correction modal with SAM2 assist, correction-exclusion reruns, robustness service, RU/EN manuals, and a 17-page RU pitch deck are all implemented and verified — these cover most of the TZ "Визуализация и экспорт", "Пакетная обработка", "Интерфейс", "Безопасность", and the expert-review wish almost for free.
+- Batch mode (`scripts/run_official_batch.py`, `scripts/run_resident_batch.py`, UI Series page, `summary.csv`), PDF reports, CSV exports, run-parameter logging, Docker/local deploy, expert correction, exclusion masks, robustness/evaluation harness, RU/EN manuals, and the RU pitch deck cover most of the TZ "Визуализация и экспорт", "Пакетная обработка", "Интерфейс", "Безопасность", and expert-review wishes.
 - Git remote exists: `git@github.com:s1mb1o/microstructure-qc-assistant.git` (single `main` branch). Repo visibility/jury access must be verified before submission.
 - Organizer constraints from `docs/plans/22_official-qna-metric-license-update.md`: open-license pretrained models only, no automatic checking, recommended metrics IoU/Hausdorff (segmentation) + F1/AUC (classification). License provenance for every shipped checkpoint is a submission-blocking item (note: YOLO11/Ultralytics is AGPL-3.0 — open but copyleft; SegFormer/ResUNet/SAM2 checkpoint licenses must be verified and recorded individually rather than assumed).
 
@@ -67,7 +70,7 @@ Status legend: `DONE` (exists, may need relabeling), `PART` (infrastructure exis
 | --- | --- | --- | --- |
 | 1 | Segment + classify sulfide intergrowths (ordinary vs fine) | MISS | No model, no labels, no classes in code; S1 minerals are a proxy only. Two-stage fallback possible (see §4). |
 | 2 | Detect + quantify talc share | MISS | No talc concept anywhere in code; training-data "colored line" annotation needs a conversion tool. |
-| 3 | Expert rule talc>10% / predominance | MISS | Rule absent; `classify_microstructure.py` is a usable skeleton. |
+| 3 | Expert rule talc>10% / predominance | DONE | Implemented in `src/ore_classifier/component_analysis.py` (`classify_ore_type`, strict `> 10%`). |
 | 4a | Color mask green/red/blue over source | PART | Overlay/legend/interactive preview exist; need exact 3-class palette + legend wording. |
 | 4b | Table with fractions | PART | `phase_fractions` table + CSV exist; need task-specific rows (total sulfides, per-type shares, talc). |
 | 4c | Text conclusion | PART | Report text + optional LLM narrator exist; need the deterministic RU sentence exactly per TZ (never LLM-dependent). |
@@ -84,10 +87,10 @@ Status legend: `DONE` (exists, may need relabeling), `PART` (infrastructure exis
 | Talc as dark dispersed phase in matrix | MISS | Core new work (§4). |
 | Area/percent computation with image scale | PART | Fractions with exclusion-adjusted denominator: done. Absolute µm² areas from metadata scale: missing. |
 | Mask overlay + interactive zoomed view | PART | Interactive preview with per-class toggles: done. Zoom/pan: missing (small JS task). |
-| Metrics table in UI + CSV export | DONE | Result page table + `phase_fractions.csv`; needs relabeled rows. |
+| Metrics table in UI + CSV export | DONE | Result page table + `reports/metrics.csv` with official v2 rows. |
 | Text conclusion + PDF report export | DONE | RU/EN PDF generation from result pages/API; needs task wording block. |
-| Optional Streamlit/Gradio web UI | DONE | Custom upload UI exceeds the ask (jobs, history, API playground, health). |
-| Batch processing without user | DONE | `run_e2e_batch.py`, `summary.csv`, `batch_summary.json`, queue index; needs `ore_class` column. |
+| Optional Streamlit/Gradio web UI | DONE | `apps/ore_pipeline_web.py` exceeds the ask (jobs, history, API/OpenAPI, status, RU/EN). |
+| Batch processing without user | DONE | `scripts/run_official_batch.py`, `scripts/run_resident_batch.py`, UI Series page, `summary.csv`, `batch_summary.json`, `ore_class` columns. |
 | Analysis-parameter logging for reproducibility | DONE | Run summaries, inference metadata, command transcripts, manifests. |
 
 ### Нефункциональные требования
@@ -146,13 +149,20 @@ Disaster fallback (package unusable): the same two-stage pipeline on adapted Lum
 
 ### W1. Ore ontology module
 
-New `experiments/qc_pipeline/ore_ontology.py`: class registry `{background, ordinary_intergrowth, fine_intergrowth, talc}` with ids, RU/EN names, and the exact TZ palette (green/red/blue + neutral background); loadable as a label map by `create_sample_report.py`, overlay rendering, and `run_upload_ui.py` legends without refactoring the 13 S1-hardcoded files — inject via the existing label-map/model-family plumbing and keep the S1 path intact as the proxy demo mode.
+Current v2 equivalent: the class registry `{background, ordinary_intergrowth,
+fine_intergrowth, talc}` is encoded in `apps/ore_pipeline_web.py`
+(`CLASS_COLORS`, `CLASS_LABELS_RU`, `REPORT_CLASS_SPECS`) and exported through
+overlays, reports, GIS files, and UI legends.
 
 Acceptance: report/overlay/CSV/PDF/UI render the three classes with TZ colors; unknown labels fail loudly; S1 mode still passes its smokes.
 
 ### W2. Deterministic ore classifier
 
-New `classify_ore_type.py` (or an explicit mode of `classify_microstructure.py`): consumes phase-fraction rows, emits `total_sulfide_fraction`, `ordinary_intergrowth_fraction`, `fine_intergrowth_fraction`, `talc_fraction`, predominance shares among sulfides, `ore_class` in `{talcose_ore, ordinary_ore, hard_to_process_ore}`, and the exact RU conclusion sentence in TZ style.
+Current v2 equivalent: `src/ore_classifier/component_analysis.py` consumes
+sulfide/talc masks and component statistics, emits `total_sulfide_fraction`,
+`ordinary_intergrowth_fraction`, `fine_intergrowth_fraction`, `talc_fraction`,
+predominance shares among sulfides, `ore_class` in `{talcose_ore,
+ordinary_ore, hard_to_process_ore}`, and the RU conclusion used by UI/PDF/CSV.
 
 Semantics to fix in code and tests (and to confirm at the Q&A):
 
@@ -171,7 +181,11 @@ Acceptance: one command produces a 4-class mask from a raw OM image; talc-fracti
 
 ### W4. Full-resolution panorama inference + 10k benchmark + confidence map
 
-Extend `run_segmentation_inference.py`: `--no-resize` full-res tiled mode as panorama default; band-wise or reduced-precision logits accumulation to keep the 10k x 10k buffer within memory; per-pixel confidence (max softmax / tile-vote agreement) exported as a heatmap PNG artifact; runtime/memory/tile-parameters logged into inference metadata. Add a synthetic 10000 x 10000 benchmark fixture and a smoke that records wall-clock vs the 5-minute bar on MPS and CPU.
+Current v2 path: `scripts/infer_binary_sulfide.py`, `scripts/run_ore_pipeline.py`,
+and `src/ore_classifier/resident_pipeline.py` provide tiled inference and
+resident model loading; panorama performance evidence is recorded in
+`docs/benchmarks/07_panorama_performance_20260705.md` and
+`docs/benchmarks/08_largest_panorama_16jpg_zelda_20260705.md`.
 
 Acceptance: 10k smoke passes and prints measured runtime; failure on low memory is graceful with a documented downscale fallback; heatmap artifact appears in result page/report links.
 
