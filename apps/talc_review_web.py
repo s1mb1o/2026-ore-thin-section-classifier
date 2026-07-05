@@ -1797,10 +1797,11 @@ CSS = r"""
   }
 }
 * { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
 body { margin: 0; background: var(--bg); color: var(--text); }
 button, input, select, textarea { font: inherit; }
 .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.app-shell { display: grid; grid-template-columns: 280px minmax(0, 1fr) 300px; height: 100vh; overflow: hidden; }
+.app-shell { display: grid; grid-template-columns: 280px minmax(0, 1fr) 300px; width: 100vw; max-width: 100vw; height: 100vh; overflow: hidden; }
 .queue-pane, .details-pane { background: var(--panel); border-right: 1px solid var(--line); padding: 14px; overflow: auto; }
 .details-pane { border-right: 0; border-left: 1px solid var(--line); }
 .pane-title { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
@@ -1818,7 +1819,7 @@ button, input, select, textarea { font: inherit; }
 .tag.warn { background: var(--tag-warn-bg); color: var(--tag-warn-text); }
 .tag.ok { background: var(--tag-ok-bg); color: var(--tag-ok-text); }
 .tag.reviewed { background: var(--tag-reviewed-bg); color: var(--tag-reviewed-text); }
-.work-pane { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.work-pane { min-width: 0; width: 100%; max-width: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .topbar { flex: 0 0 auto; min-height: 56px; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 12px; display: grid; grid-template-columns: minmax(170px, 250px) minmax(0, 1fr); align-items: start; gap: 12px; }
 .topbar-title { min-width: 0; }
 .sample-title { font-size: 17px; font-weight: 750; }
@@ -1864,8 +1865,8 @@ button, input, select, textarea { font: inherit; }
   transform: translateX(-50%);
 }
 .tool-tooltip.hidden { display: none; }
-.viewer-wrap { --pan-gutter-x: 0px; --pan-gutter-y: 0px; position: relative; flex: 1; overflow: auto; padding: 14px; padding-right: calc(14px + var(--pan-gutter-x)); padding-bottom: calc(14px + var(--pan-gutter-y)); background: var(--viewer-bg); }
-#viewerCanvas { display: block; margin-top: var(--pan-gutter-y); margin-left: var(--pan-gutter-x); background: var(--canvas-bg); image-rendering: auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.22); user-select: none; touch-action: none; -webkit-user-drag: none; }
+.viewer-wrap { --pan-gutter-x: 0px; --pan-gutter-y: 0px; position: relative; flex: 1; min-width: 0; min-height: 0; max-width: 100%; overflow: auto; padding: 14px; background: var(--viewer-bg); }
+#viewerCanvas { display: block; margin: var(--pan-gutter-y) var(--pan-gutter-x) var(--pan-gutter-y) var(--pan-gutter-x); background: var(--canvas-bg); image-rendering: auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.22); user-select: none; touch-action: none; -webkit-user-drag: none; }
 .viewer-options-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
 .viewer-options-hints { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
 .viewer-options-hint { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -1874,8 +1875,8 @@ button, input, select, textarea { font: inherit; }
   position: fixed;
   left: var(--zoom-widget-left, 12px);
   bottom: var(--zoom-widget-bottom, 12px);
-  z-index: 8;
-  min-width: 56px;
+  z-index: 20;
+  min-width: 58px;
   display: grid;
   justify-items: center;
   gap: 6px;
@@ -1888,10 +1889,10 @@ button, input, select, textarea { font: inherit; }
   backdrop-filter: blur(8px);
   pointer-events: auto;
 }
-.zoom-widget-row, .zoom-widget-main { display: grid; grid-template-columns: 32px; gap: 6px; justify-content: center; }
+.zoom-widget-row, .zoom-widget-main { display: grid; grid-template-columns: 40px; gap: 6px; justify-content: center; }
 .zoom-widget button {
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -1903,8 +1904,8 @@ button, input, select, textarea { font: inherit; }
 }
 .zoom-widget button:hover, .zoom-widget button:focus-visible { border-color: var(--hover-line); }
 .zoom-widget svg {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   stroke: currentColor;
   fill: none;
   stroke-width: 2;
@@ -2570,14 +2571,25 @@ function handleToolTooltipOut(event) {
   hideToolTooltip();
 }
 
+function viewerViewportSize() {
+  const wrap = document.getElementById('viewerWrap');
+  if (!wrap) return { width: 0, height: 0 };
+  const rect = wrap.getBoundingClientRect();
+  return {
+    width: Math.max(0, Math.round(wrap.clientWidth || rect.width || 0)),
+    height: Math.max(0, Math.round(wrap.clientHeight || rect.height || 0))
+  };
+}
+
 function updatePanGutter(options = {}) {
   const wrap = document.getElementById('viewerWrap');
   if (!wrap) return state.panGutter;
   updateViewerOverlayPositions();
   const previous = { ...state.panGutter };
+  const viewport = viewerViewportSize();
   const next = {
-    x: Math.max(PAN_GUTTER_MIN_PX, Math.round(wrap.clientWidth || 0)),
-    y: Math.max(PAN_GUTTER_MIN_PX, Math.round(wrap.clientHeight || 0))
+    x: Math.max(PAN_GUTTER_MIN_PX, viewport.width),
+    y: Math.max(PAN_GUTTER_MIN_PX, viewport.height)
   };
   state.panGutter = next;
   wrap.style.setProperty('--pan-gutter-x', `${next.x}px`);
@@ -2589,11 +2601,34 @@ function updatePanGutter(options = {}) {
   return next;
 }
 
-function resetViewPanOrigin() {
+function viewerPadding(wrap) {
+  const style = getComputedStyle(wrap);
+  return {
+    left: Number.parseFloat(style.paddingLeft) || 0,
+    right: Number.parseFloat(style.paddingRight) || 0,
+    top: Number.parseFloat(style.paddingTop) || 0,
+    bottom: Number.parseFloat(style.paddingBottom) || 0
+  };
+}
+
+function resetViewPanOrigin(options = {}) {
   const wrap = document.getElementById('viewerWrap');
-  updatePanGutter();
-  wrap.scrollLeft = state.panGutter.x;
-  wrap.scrollTop = state.panGutter.y;
+  if (!wrap) return;
+  updatePanGutter({ preserveCanvasPosition: false });
+  let scrollLeft = state.panGutter.x;
+  let scrollTop = state.panGutter.y;
+  if (options.center) {
+    const viewport = viewerViewportSize();
+    const padding = viewerPadding(wrap);
+    const canvasWidth = Math.max(120, Math.round(state.imageW * state.zoom));
+    const canvasHeight = Math.max(120, Math.round(state.imageH * state.zoom));
+    const extraX = Math.max(0, viewport.width - padding.left - padding.right - canvasWidth);
+    const extraY = Math.max(0, viewport.height - padding.top - padding.bottom - canvasHeight);
+    scrollLeft = state.panGutter.x - extraX / 2;
+    scrollTop = state.panGutter.y - extraY / 2;
+  }
+  wrap.scrollLeft = Math.max(0, Math.round(scrollLeft));
+  wrap.scrollTop = Math.max(0, Math.round(scrollTop));
 }
 
 function clampZoom(value) {
@@ -2602,12 +2637,13 @@ function clampZoom(value) {
   return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, numeric));
 }
 
-function setZoom(value, anchor = null) {
+function setZoom(value, anchor = null, options = {}) {
   const wrap = document.getElementById('viewerWrap');
-  updatePanGutter({ preserveCanvasPosition: true });
+  const resetPanOrigin = Boolean(options.resetPanOrigin);
+  updatePanGutter({ preserveCanvasPosition: !resetPanOrigin });
   let anchorImagePoint = null;
   let anchorOffset = null;
-  if (anchor && viewer.clientWidth > 0 && viewer.clientHeight > 0) {
+  if (!resetPanOrigin && anchor && viewer.clientWidth > 0 && viewer.clientHeight > 0) {
     const rect = viewer.getBoundingClientRect();
     const wrapRect = wrap.getBoundingClientRect();
     anchorImagePoint = {
@@ -2621,7 +2657,9 @@ function setZoom(value, anchor = null) {
   }
   state.zoom = clampZoom(value);
   applyZoom();
-  if (anchorImagePoint && anchorOffset) {
+  if (resetPanOrigin) {
+    resetViewPanOrigin({ center: Boolean(options.centerView) });
+  } else if (anchorImagePoint && anchorOffset) {
     wrap.scrollLeft = Math.max(0, state.panGutter.x + anchorImagePoint.x * state.zoom - anchorOffset.x);
     wrap.scrollTop = Math.max(0, state.panGutter.y + anchorImagePoint.y * state.zoom - anchorOffset.y);
   }
@@ -2630,6 +2668,32 @@ function setZoom(value, anchor = null) {
 
 function zoomBy(factor, anchor = null) {
   setZoom(state.zoom * factor, anchor);
+}
+
+function zoomPercentText() {
+  return `${Math.round(state.zoom * 100)}%`;
+}
+
+function handleZoomWidgetPointer(event) {
+  if (event.type === 'wheel') event.preventDefault();
+  event.stopPropagation();
+  if ((event.type === 'pointerdown' || event.type === 'mousedown') && state.viewPan.active) {
+    finishViewPan();
+  }
+}
+
+function runZoomControl(event, action, messagePrefix) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if (!state.sample) {
+    setStatus('No sample is loaded for zoom controls.', true);
+    return;
+  }
+  if (state.viewPan.active) finishViewPan();
+  action();
+  if (messagePrefix) setStatus(`${messagePrefix}: ${zoomPercentText()}.`);
 }
 
 function isMiddleButtonEvent(event) {
@@ -2692,17 +2756,15 @@ function finishViewPan(event = null) {
 }
 
 function fitToViewer() {
-  const wrap = document.getElementById('viewerWrap');
-  updatePanGutter();
-  const maxW = Math.max(240, wrap.clientWidth - 36);
-  const maxH = Math.max(180, wrap.clientHeight - 36);
-  setZoom(Math.min(maxW / state.imageW, maxH / state.imageH, 1));
-  resetViewPanOrigin();
+  updatePanGutter({ preserveCanvasPosition: false });
+  const viewport = viewerViewportSize();
+  const maxW = Math.max(240, viewport.width - 36);
+  const maxH = Math.max(180, viewport.height - 36);
+  setZoom(Math.min(maxW / state.imageW, maxH / state.imageH, 1), null, { resetPanOrigin: true, centerView: true });
 }
 
 function actualSizeView() {
-  setZoom(1);
-  resetViewPanOrigin();
+  setZoom(1, null, { resetPanOrigin: true });
 }
 
 function updateToolParams() {
@@ -6681,10 +6743,13 @@ els.sam2PromptMode.addEventListener('change', () => {
   updateSam2ApplyButton();
   if (state.tool === 'sam2') draw();
 });
-els.zoomInWidgetBtn.addEventListener('click', () => zoomBy(ZOOM_STEP));
-els.zoomOutWidgetBtn.addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
-els.zoomFitWidgetBtn.addEventListener('click', fitToViewer);
-els.zoomActualWidgetBtn.addEventListener('click', actualSizeView);
+['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu', 'wheel'].forEach((eventName) => {
+  els.zoomWidget.addEventListener(eventName, handleZoomWidgetPointer, { passive: eventName !== 'wheel' });
+});
+els.zoomInWidgetBtn.addEventListener('click', (event) => runZoomControl(event, () => zoomBy(ZOOM_STEP), 'Zoom in'));
+els.zoomOutWidgetBtn.addEventListener('click', (event) => runZoomControl(event, () => zoomBy(1 / ZOOM_STEP), 'Zoom out'));
+els.zoomFitWidgetBtn.addEventListener('click', (event) => runZoomControl(event, fitToViewer, 'Fit view'));
+els.zoomActualWidgetBtn.addEventListener('click', (event) => runZoomControl(event, actualSizeView, 'Actual size'));
 els.themeSelect.addEventListener('change', () => applyTheme(els.themeSelect.value));
 els.subtractSulfidesBtn.addEventListener('click', () => {
   subtractSulfidesFromMask().catch((err) => setStatus(`Sulfide subtraction failed: ${err.message}`, true));

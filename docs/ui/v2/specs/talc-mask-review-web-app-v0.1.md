@@ -830,7 +830,9 @@ Required checks:
   talc-candidate pixels visible while whitening brighter matrix/sulfides, and
   `0` paints the background white.
 - The bottom-left zoom widget and mouse-wheel zoom work and do not change mask
-  geometry.
+  geometry. `Fit` centers the fitted image in the visible viewer. `Fit` and
+  `Actual size` / `1:1` are idempotent: repeated clicks keep the same zoom and
+  pan origin instead of continuing to move or resize the image.
 - The below-viewer mouse hint row is visible without opening a help panel.
 - Polygon points can be added, closed by clicking the first point, edited, and
   flattened on save.
