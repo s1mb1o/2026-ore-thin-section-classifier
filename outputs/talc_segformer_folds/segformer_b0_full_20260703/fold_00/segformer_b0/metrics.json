@@ -1,0 +1,5 @@
+{
+  "task": "binary_talc_non_sulfide",
+  "best_val_iou_talc": 0.6305144211440308,
+  "note": "checkpoint keeps best_iou_sulfide for loader compatibility; it is talc IoU for this task"
+}

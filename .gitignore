@@ -1,4 +1,6 @@
 .DS_Store
+# Local, machine/session-specific agent overrides (see AGENTS.md)
+AGENTS.local.md
 __pycache__/
 *.py[cod]
 .venv/
@@ -27,6 +29,21 @@ models/component_grade/*
 !models/component_grade/hgb_weak100_20260704/*
 !models/component_grade/hgb_weak100_nomag_20260705/
 !models/component_grade/hgb_weak100_nomag_20260705/*
+# Grade-CNN checkpoint actually loaded by DEFAULT_GRADE_CHECKPOINT (apps/ore_pipeline_web.py).
+!models/grade_classifier/
+models/grade_classifier/*
+!models/grade_classifier/effb3_ordfine_ppaug_20260704/
+!models/grade_classifier/effb3_ordfine_ppaug_20260704/*
+
+# Talc SegFormer-B0 checkpoint actually loaded by DEFAULT_TALC_CHECKPOINT (apps/ore_pipeline_web.py).
+!outputs/talc_segformer_folds/
+outputs/talc_segformer_folds/*
+!outputs/talc_segformer_folds/segformer_b0_full_20260703/
+outputs/talc_segformer_folds/segformer_b0_full_20260703/*
+!outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/
+outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/*
+!outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/
+outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/last.pt
 
 # The official dataset is linked from the original project.
 dataset

@@ -1,1 +1,2 @@
 models/**/*.pt filter=lfs diff=lfs merge=lfs -text
+outputs/talc_segformer_folds/**/*.pt filter=lfs diff=lfs merge=lfs -text
