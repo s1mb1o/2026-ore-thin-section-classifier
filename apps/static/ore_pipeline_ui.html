@@ -761,6 +761,12 @@
                 <option value="ml" data-i18n="settingsGrainBackendMl">ML (Grade-CNN)</option>
                 <option value="grain_aggregate" disabled data-i18n="settingsGrainBackendGrainAgg">ML — по суммарной оценке зёрен (скоро)</option>
               </select></label>
+              <label class="settings-field"><span data-i18n="settingsComponentBackend">Final segmentation backend</span><select id="settingsComponentBackend">
+                <option value="rule" data-i18n="settingsComponentBackendRule">Component rules</option>
+                <option value="model" data-i18n="settingsComponentBackendModel">Learned component model</option>
+              </select></label>
+              <div id="settingsComponentModelField" class="settings-field full"><span data-i18n="settingsComponentModel">Component model</span><input id="settingsComponentModel" type="hidden"><div id="settingsComponentModelDisplay" class="checkpoint-display"></div></div>
+              <label class="check settings-field full"><input type="checkbox" id="settingsMagnetitePrep"> <span data-i18n="settingsMagnetitePrep">magnetite prep before component grading</span></label>
             </div>
             <div class="settings-actions settings-runtime-actions">
               <button id="testRuntimeBtn" type="button" data-i18n="settingsRuntimeTest">Проверить все</button>
@@ -1328,6 +1334,7 @@
       min_local_talc_percent: 4,
       opacity_percent: 45
     };
+    const DEFAULT_COMPONENT_MODEL = 'models/component_grade/hgb_weak100_nomag_20260705/model.joblib';
     const DEFAULT_APP_SETTINGS = {
       language: DEFAULT_LANGUAGE,
       theme: 'system',
@@ -1340,7 +1347,9 @@
         talc_checkpoint: 'outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt',
         talc_threshold: 0.5,
         grain_backend: 'heuristic',
-        grade_checkpoint: 'models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt'
+        grade_checkpoint: 'models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt',
+        component_model: '',
+        magnetite_prep: false
       },
       preprocess: {...DEFAULT_PREPROCESS_PRESET},
       talc_clusterization: {...DEFAULT_TALC_CLUSTERIZATION},
@@ -1652,10 +1661,10 @@
         path: '/api/settings',
         title: 'Read settings',
         titleRu: 'Получить настройки',
-        summary: 'Read server-backed UI defaults for language, theme, runtime backend/checkpoint, preprocessing, tiling, and session metadata.',
-        summaryRu: 'Возвращает серверные настройки UI: язык, тему, runtime backend/checkpoint, предобработку, тайлинг и шаблон метаданных сессии.',
+        summary: 'Read server-backed UI defaults for language, theme, runtime backends/checkpoints, preprocessing, tiling, and session metadata.',
+        summaryRu: 'Возвращает серверные настройки UI: язык, тему, runtime backend/checkpoint по этапам, предобработку, тайлинг и шаблон метаданных сессии.',
         body: null,
-        response: {schema_version: 'ore-pipeline-app-settings-v0.1', language: 'ru', theme: 'system', runtime: {backend: 'heuristic', checkpoint: 'models/.../best.pt'}}
+        response: {schema_version: 'ore-pipeline-app-settings-v0.1', language: 'ru', theme: 'system', runtime: {backend: 'heuristic', checkpoint: 'models/.../best.pt', component_model: '', magnetite_prep: false}}
       },
       {
         id: 'save-settings',
@@ -1664,15 +1673,15 @@
         path: '/api/settings',
         title: 'Save settings',
         titleRu: 'Сохранить настройки',
-        summary: 'Persist app defaults and apply the runtime backend/checkpoint immediately for new runs.',
-        summaryRu: 'Сохраняет настройки приложения и сразу применяет runtime backend/checkpoint для новых запусков.',
+        summary: 'Persist app defaults and apply the runtime backend/checkpoint selections immediately for new runs.',
+        summaryRu: 'Сохраняет настройки приложения и сразу применяет runtime backend/checkpoint по этапам для новых запусков.',
         body: {
           schema_version: 'ore-pipeline-app-settings-v0.1',
           language: 'ru',
           theme: 'system',
           show_tiling: false,
           detect_decode_bomb: true,
-          runtime: {backend: 'heuristic', checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt'},
+          runtime: {backend: 'heuristic', checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt', component_model: '', magnetite_prep: false},
           preprocess: {...DEFAULT_PREPROCESS_PRESET},
           metadata_defaults: {}
         },
@@ -1685,9 +1694,9 @@
         path: '/api/runtime/test',
         title: 'Test runtime',
         titleRu: 'Проверить runtime',
-        summary: 'Validate an unsaved runtime backend/checkpoint selection. ML mode loads the checkpoint through the same model loader used by runs, without creating a run.',
-        summaryRu: 'Проверяет выбранный backend/checkpoint без сохранения настроек. Для ML checkpoint загружается тем же загрузчиком модели, что и в run, но новый run не создается.',
-        body: {runtime: {backend: 'ml', checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt'}},
+        summary: 'Validate an unsaved runtime backend/checkpoint selection. ML modes load or validate their configured checkpoints without creating a run.',
+        summaryRu: 'Проверяет выбранный backend/checkpoint без сохранения настроек. ML-режимы загружают или проверяют свои checkpoint, но новый run не создается.',
+        body: {runtime: {backend: 'ml', checkpoint: 'models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt', component_model: ''}},
         response: {schema_version: 'ore-pipeline-runtime-test-v0.1', backend: 'ml', ok: true, status: 'ok'}
       }
     ];
@@ -1796,6 +1805,12 @@
         settingsGrainBackendHeuristic: 'эвристики зерен руды',
         settingsGrainBackendMl: 'ML (Grade-CNN)',
         settingsGrainBackendGrainAgg: 'ML — по суммарной оценке зёрен (скоро)',
+        settingsComponentBackend: 'Финальная сегментация',
+        settingsComponentBackendRule: 'правила компонентов',
+        settingsComponentBackendModel: 'ML-модель компонентов',
+        settingsComponentModel: 'Модель компонентов',
+        settingsComponentRulesActive: 'активны правила компонентов',
+        settingsMagnetitePrep: 'магнетитовая подготовка перед классификацией компонентов',
         settingsTalcClusterDefaults: 'Кластеризация талька по умолчанию',
         configurationRuntime: 'Runtime этапов',
         configSulfideBackend: 'Сегментация сульфидов',
@@ -2365,6 +2380,12 @@
         settingsGrainBackendHeuristic: 'Ore Grain Heuristics',
         settingsGrainBackendMl: 'ML (Grade-CNN)',
         settingsGrainBackendGrainAgg: 'ML — grain-aggregate vote (soon)',
+        settingsComponentBackend: 'Final segmentation backend',
+        settingsComponentBackendRule: 'Component rules',
+        settingsComponentBackendModel: 'Learned component model',
+        settingsComponentModel: 'Component model',
+        settingsComponentRulesActive: 'component rules active',
+        settingsMagnetitePrep: 'magnetite prep before component grading',
         settingsTalcClusterDefaults: 'Default talc clusterization',
         configurationRuntime: 'Stage runtime',
         configSulfideBackend: 'Sulfide segmentation',
@@ -3456,7 +3477,20 @@
       const talcThreshold = Number.isFinite(talcThresholdValue) ? Math.max(0.01, Math.min(0.99, talcThresholdValue)) : 0.5;
       const grainBackend = ['heuristic', 'ml'].includes(values.grain_backend) ? values.grain_backend : (fallbackValues.grain_backend || 'heuristic');
       const gradeCheckpoint = typeof values.grade_checkpoint === 'string' ? values.grade_checkpoint : (fallbackValues.grade_checkpoint || '');
-      return {backend, checkpoint, talc_backend: talcBackend, talc_checkpoint: talcCheckpoint, talc_threshold: talcThreshold, grain_backend: grainBackend, grade_checkpoint: gradeCheckpoint};
+      const componentModelRaw = values.component_model ?? values.componentModel ?? values.component_checkpoint ?? fallbackValues.component_model ?? '';
+      const componentModel = typeof componentModelRaw === 'string' ? componentModelRaw : String(componentModelRaw || '');
+      const magnetitePrep = Boolean(values.magnetite_prep ?? values.magnetitePrep ?? fallbackValues.magnetite_prep ?? false);
+      return {
+        backend,
+        checkpoint,
+        talc_backend: talcBackend,
+        talc_checkpoint: talcCheckpoint,
+        talc_threshold: talcThreshold,
+        grain_backend: grainBackend,
+        grade_checkpoint: gradeCheckpoint,
+        component_model: componentModel,
+        magnetite_prep: magnetitePrep
+      };
     }
     function shortCheckpointName(value) {
       const checkpoint = String(value || '').trim();
@@ -3481,6 +3515,22 @@
       if (field) {
         field.classList.toggle('is-disabled', !talcUsesMl);
         field.title = $('settingsTalcThreshold').title;
+      }
+      if (!$('settingsComponentBackend') || !$('settingsComponentModel')) return;
+      const componentUsesModel = $('settingsComponentBackend').value === 'model';
+      if (componentUsesModel && !$('settingsComponentModel').value.trim()) {
+        $('settingsComponentModel').value = DEFAULT_COMPONENT_MODEL;
+      }
+      const componentField = $('settingsComponentModelField');
+      if (componentField) componentField.classList.toggle('is-disabled', !componentUsesModel);
+      if (componentUsesModel) {
+        setCheckpointDisplay('settingsComponentModelDisplay', $('settingsComponentModel').value.trim());
+      } else {
+        const display = $('settingsComponentModelDisplay');
+        if (display) {
+          display.textContent = t('settingsComponentRulesActive');
+          display.classList.add('empty');
+        }
       }
     }
     function normalizedTalcClusterization(settings = {}, fallback = DEFAULT_TALC_CLUSTERIZATION) {
@@ -3531,7 +3581,9 @@
               talc_checkpoint: state.systemStatus.app.talc_checkpoint || '',
               talc_threshold: state.systemStatus.app.talc_threshold ?? DEFAULT_APP_SETTINGS.runtime.talc_threshold,
               grain_backend: state.systemStatus.app.grain_backend || 'heuristic',
-              grade_checkpoint: state.systemStatus.app.grade_checkpoint || ''
+              grade_checkpoint: state.systemStatus.app.grade_checkpoint || '',
+              component_model: state.systemStatus.app.component_model || '',
+              magnetite_prep: Boolean(state.systemStatus.app.magnetite_prep)
             }
           : DEFAULT_APP_SETTINGS.runtime,
         preprocess: storedPreprocessPreset(),
@@ -3794,6 +3846,9 @@
       setCheckpointDisplay('settingsTalcCheckpointDisplay', normalized.runtime.talc_checkpoint);
       $('settingsTalcThreshold').value = Number(normalized.runtime.talc_threshold || 0.5).toFixed(2);
       $('settingsGrainBackend').value = normalized.runtime.grain_backend || 'heuristic';
+      $('settingsComponentBackend').value = normalized.runtime.component_model ? 'model' : 'rule';
+      $('settingsComponentModel').value = normalized.runtime.component_model || DEFAULT_COMPONENT_MODEL;
+      $('settingsMagnetitePrep').checked = Boolean(normalized.runtime.magnetite_prep);
       updateSettingsRuntimeControls();
       $('settingsPreprocessingEnabled').checked = normalized.preprocess.preprocessing_enabled;
       $('settingsIllumination').checked = normalized.preprocess.illumination_normalization;
@@ -3841,7 +3896,9 @@
           talc_checkpoint: $('settingsTalcCheckpoint').value.trim(),
           talc_threshold: $('settingsTalcThreshold').value,
           grain_backend: $('settingsGrainBackend').value,
-          grade_checkpoint: currentAppSettings().runtime.grade_checkpoint || DEFAULT_APP_SETTINGS.runtime.grade_checkpoint || ''
+          grade_checkpoint: currentAppSettings().runtime.grade_checkpoint || DEFAULT_APP_SETTINGS.runtime.grade_checkpoint || '',
+          component_model: $('settingsComponentBackend').value === 'model' ? $('settingsComponentModel').value.trim() : '',
+          magnetite_prep: $('settingsMagnetitePrep').checked
         },
         preprocess: {
           preprocessing_enabled: $('settingsPreprocessingEnabled').checked,
@@ -4021,14 +4078,15 @@
       const details = payload && payload.details && typeof payload.details === 'object' ? payload.details : {};
       const checkpointMeta = details.checkpoint_meta && typeof details.checkpoint_meta === 'object' ? details.checkpoint_meta : {};
       const models = payload && payload.models && typeof payload.models === 'object' ? payload.models : {};
-      const loadedModels = Object.values(models).filter(model => model && model.ok && model.backend === 'ml');
+      const loadedModels = Object.values(models).filter(model => model && model.ok && ['ml', 'component_grade_model'].includes(model.backend));
       if (loadedModels.length) {
         return {
           key: 'settingsRuntimeTestOkModels',
           params: {
             models: loadedModels.map(model => {
               const meta = model.details && typeof model.details === 'object' && model.details.checkpoint_meta ? model.details.checkpoint_meta : {};
-              return `${model.role || 'model'}=${meta.model || 'model'}`;
+              const detailsModel = model.details && typeof model.details === 'object' ? model.details.model : '';
+              return `${model.role || 'model'}=${meta.model || detailsModel || model.backend || 'model'}`;
             }).join(', ')
           }
         };
@@ -7061,6 +7119,7 @@
     $('removeAllHistoryBtn').addEventListener('click', removeAllHistoryFromSettings);
     $('testRuntimeBtn').addEventListener('click', testRuntimeFromPage);
     $('settingsTalcBackend').addEventListener('change', updateSettingsRuntimeControls);
+    $('settingsComponentBackend').addEventListener('change', updateSettingsRuntimeControls);
     ['settingsPanoramaScaling','settingsPanoramaScalingMode'].forEach(id => $(id).addEventListener('change', () => updatePanoramaScalingControls('settings')));
     window.addEventListener('popstate', event => setPage(pageFromLocation(event.state && event.state.historyMode), {push: false}));
     loadAppSettings();

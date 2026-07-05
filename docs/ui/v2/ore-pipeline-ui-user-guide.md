@@ -260,12 +260,14 @@ The Settings page controls:
 - sulfide segmentation backend/checkpoint (`ML Sulfide (SegFormer-B2)` by default when the checkpoint is present);
 - talc segmentation backend (`ML model` by default, or `heuristics`), checkpoint, and ML probability threshold;
 - grain classification backend (`Ore Grain Heuristics` by default, or `ML Ore Grain Classification`);
+- final segmentation backend (`Component rules` by default, or the opt-in learned component model at `models/component_grade/hgb_weak100_nomag_20260705/model.joblib`);
+- optional magnetite preparation before learned component grading;
 - preprocessing defaults;
 - default tiling overlay;
 - repeated session metadata defaults;
 - history removal.
 
-Runtime changes apply to new runs, validate checkpoint paths, and are blocked while a run or Series job is active. Settings keeps full checkpoint paths internally but the Runtime panel shows only shortened checkpoint names. The talc probability threshold is enabled only for `ML model`; heuristic talc paths do not consume this cutoff. The Runtime `Test All` button probes unsaved settings without saving them or creating a run.
+Runtime changes apply to new runs, validate checkpoint paths, and are blocked while a run or Series job is active. Settings keeps full checkpoint paths internally but the Runtime panel shows only shortened checkpoint names. The talc probability threshold is enabled only for `ML model`; heuristic talc paths do not consume this cutoff. The learned component model is not part of the default judged path; it is enabled only when `Final segmentation backend` is switched from `Component rules` to `Learned component model`. The Runtime `Test All` button probes unsaved settings without saving them or creating a run.
 
 The Security section can set a password for the UI. When a password is set, opening UI pages, API endpoints, or run artifacts requires login through `/login`. The app stores only a salted PBKDF2 password hash and `/api/settings` exposes only whether password protection is enabled. Leaving the password field empty keeps the current password unchanged; checking `remove password` disables protection.
 

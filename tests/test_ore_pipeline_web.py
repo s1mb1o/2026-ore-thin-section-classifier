@@ -541,8 +541,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(run["runtime"]["backend"], "heuristic")
         self.assertIsNone(run["runtime"]["checkpoints"]["binary_sulfide"])
         self.assertEqual(run["runtime"]["models"]["binary_sulfide"]["backend"], "heuristic")
-        self.assertEqual(run["runtime"]["grain_backend"], "heuristic")
-        self.assertEqual(run["runtime"]["models"]["grain_classification"]["backend"], "ore_grain_heuristics")
+        self.assertEqual(run["runtime"]["grain_backend"], "ml")
+        self.assertEqual(run["runtime"]["models"]["grain_classification"]["backend"], "ml")
         self.assertTrue((self.store.runs_dir / run["run_id"] / "reports/runtime.json").exists())
 
         history = self.store.list_runs()["runs"]
@@ -1577,6 +1577,8 @@ class OrePipelineWebTest(unittest.TestCase):
         fake_grade_checkpoint.write_bytes(b"fake grade checkpoint")
         fake_grade_checkpoint = self.root / "fake_grade_checkpoint.pt"
         fake_grade_checkpoint.write_bytes(b"fake grade checkpoint")
+        fake_component_model = self.root / "fake_component_model.joblib"
+        fake_component_model.write_bytes(b"fake component model")
         settings = self.store.save_app_settings(
             {
                 "language": "en",
@@ -1590,6 +1592,8 @@ class OrePipelineWebTest(unittest.TestCase):
                     "talc_threshold": 0.42,
                     "grain_backend": "ml",
                     "grade_checkpoint": str(fake_grade_checkpoint),
+                    "component_model": str(fake_component_model),
+                    "magnetite_prep": True,
                 },
                 "preprocess": {
                     "preprocessing_enabled": False,
@@ -1623,6 +1627,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(settings["runtime"]["talc_threshold"], 0.42)
         self.assertEqual(settings["runtime"]["grain_backend"], "ml")
         self.assertEqual(settings["runtime"]["grade_checkpoint"], str(fake_grade_checkpoint.resolve()))
+        self.assertEqual(settings["runtime"]["component_model"], str(fake_component_model.resolve()))
+        self.assertTrue(settings["runtime"]["magnetite_prep"])
         self.assertEqual(self.store.backend, "ml")
         self.assertEqual(self.store.checkpoint, fake_checkpoint.resolve())
         self.assertEqual(self.store.talc_backend, "ml")
@@ -1630,6 +1636,8 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(self.store.talc_threshold, 0.42)
         self.assertEqual(self.store.grain_backend, "ml")
         self.assertEqual(self.store.grade_checkpoint, fake_grade_checkpoint.resolve())
+        self.assertEqual(self.store.component_model_path, fake_component_model.resolve())
+        self.assertTrue(self.store.magnetite_prep)
         self.assertFalse(settings["preprocess"]["preprocessing_enabled"])
         self.assertEqual(settings["preprocess"]["panorama_scaling_mode"], "scale_factor")
         self.assertEqual(settings["preprocess"]["panorama_max_side_px"], 4096)
@@ -1655,9 +1663,13 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(restarted.talc_threshold, 0.42)
         self.assertEqual(restarted.grain_backend, "ml")
         self.assertEqual(restarted.grade_checkpoint, fake_grade_checkpoint.resolve())
+        self.assertEqual(restarted.component_model_path, fake_component_model.resolve())
+        self.assertTrue(restarted.magnetite_prep)
         self.assertEqual(restarted.app_settings()["runtime"]["backend"], "ml")
         self.assertEqual(restarted.app_settings()["runtime"]["talc_backend"], "ml")
         self.assertEqual(restarted.app_settings()["runtime"]["grain_backend"], "ml")
+        self.assertEqual(restarted.app_settings()["runtime"]["component_model"], str(fake_component_model.resolve()))
+        self.assertTrue(restarted.app_settings()["runtime"]["magnetite_prep"])
         self.assertEqual(restarted.app_settings()["metadata_defaults"]["om_instrument"], "scope-1")
         self.assertEqual(restarted.app_settings()["preprocess"]["panorama_scaling_mode"], "scale_factor")
         self.assertEqual(restarted.app_settings()["preprocess"]["panorama_scale_factor"], 0.25)
@@ -1678,6 +1690,8 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertEqual(payload["runtime"]["backend"], "ml")
             self.assertEqual(payload["runtime"]["talc_backend"], "ml")
             self.assertEqual(payload["runtime"]["grain_backend"], "ml")
+            self.assertEqual(payload["runtime"]["component_model"], str(fake_component_model.resolve()))
+            self.assertTrue(payload["runtime"]["magnetite_prep"])
 
             connection = http.client.HTTPConnection(host, port, timeout=5)
             body = json.dumps({"theme": "neon"}).encode("utf-8")
@@ -1714,6 +1728,15 @@ class OrePipelineWebTest(unittest.TestCase):
             connection.close()
             self.assertEqual(response.status, 400)
             self.assertIn("settings.runtime.grade_checkpoint", payload["error"])
+
+            connection = http.client.HTTPConnection(host, port, timeout=5)
+            body = json.dumps({"runtime": {"component_model": str(self.root / "missing_component.joblib")}}).encode("utf-8")
+            connection.request("PUT", "/api/settings", body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            connection.close()
+            self.assertEqual(response.status, 400)
+            self.assertIn("settings.runtime.component_model", payload["error"])
         finally:
             server.shutdown()
             server.server_close()
@@ -1862,6 +1885,8 @@ class OrePipelineWebTest(unittest.TestCase):
         fake_talc_checkpoint.write_bytes(b"fake talc checkpoint")
         fake_grade_checkpoint = self.root / "fake_grade_checkpoint.pt"
         fake_grade_checkpoint.write_bytes(b"fake grade checkpoint")
+        fake_component_model = self.root / "fake_component_model.joblib"
+        fake_component_model.write_bytes(b"fake component model")
         server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -1882,11 +1907,17 @@ class OrePipelineWebTest(unittest.TestCase):
             return response.status, payload
 
         try:
-            status, payload = request_runtime_test({"runtime": {"backend": "heuristic"}})
+            # talc_backend/grain_backend must be pinned explicitly: the store's ML
+            # defaults now select real checkpoints, and an unmocked probe of them
+            # here would run a real subprocess and blow the 5s client timeout.
+            status, payload = request_runtime_test(
+                {"runtime": {"backend": "heuristic", "talc_backend": "heuristic", "grain_backend": "heuristic"}}
+            )
             self.assertEqual(status, 200)
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["backend"], "heuristic")
             self.assertEqual(payload["status"], "ok")
+            self.assertEqual(payload["models"]["final_segmentation"]["backend"], "component_rules")
 
             with mock.patch("apps.ore_pipeline_web.subprocess.run") as run_probe:
                 run_probe.return_value = subprocess.CompletedProcess(
@@ -1980,6 +2011,24 @@ class OrePipelineWebTest(unittest.TestCase):
             self.assertEqual(payload["grain_backend"], "ml")
             self.assertEqual(payload["models"]["grain_classification"]["details"]["checkpoint_meta"]["model"], "efficientnet_b3")
 
+            status, payload = request_runtime_test(
+                {
+                    "runtime": {
+                        "backend": "heuristic",
+                        "talc_backend": "heuristic",
+                        "grain_backend": "heuristic",
+                        "component_model": str(fake_component_model),
+                        "magnetite_prep": True,
+                    }
+                }
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["component_model"], str(fake_component_model.resolve()))
+            self.assertTrue(payload["magnetite_prep"])
+            self.assertEqual(payload["models"]["final_segmentation"]["backend"], "component_grade_model")
+            self.assertEqual(payload["models"]["final_segmentation"]["details"]["model"], "component_grade_model")
+
             with mock.patch("apps.ore_pipeline_web.subprocess.run") as run_probe:
                 run_probe.return_value = subprocess.CompletedProcess(args=["python"], returncode=1, stdout="", stderr="loader failed")
                 status, payload = request_runtime_test(
@@ -2006,6 +2055,19 @@ class OrePipelineWebTest(unittest.TestCase):
             )
             self.assertEqual(status, 400)
             self.assertIn("settings.runtime.grade_checkpoint", payload["error"])
+
+            status, payload = request_runtime_test(
+                {
+                    "runtime": {
+                        "backend": "heuristic",
+                        "talc_backend": "heuristic",
+                        "grain_backend": "heuristic",
+                        "component_model": str(self.root / "missing_component.joblib"),
+                    }
+                }
+            )
+            self.assertEqual(status, 400)
+            self.assertIn("settings.runtime.component_model", payload["error"])
         finally:
             server.shutdown()
             server.server_close()
@@ -2311,6 +2373,22 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(int(final[15:55, 20:80].sum()), 0)
         parent_analyzed = np.asarray(Image.open(run_dir / "masks/analyzed_mask.png").convert("L"))
         self.assertGreater(int(parent_analyzed[15:55, 20:80].sum()), 0)
+        upload_after_edit = self.store.upload_payload(upload["upload_id"])
+        self.assertIn("artifact_mask", upload_after_edit)
+        self.assertEqual(upload_after_edit["artifact_mask"]["source_run_id"], edited["run_id"])
+
+        repeat = self.store.start_run(upload["upload_id"], {"panorama_scaling": False}, run_async=False)
+        repeat_dir = self.store.runs_dir / repeat["run_id"]
+        repeat_analyzed = np.asarray(Image.open(repeat_dir / "masks/analyzed_mask.png").convert("L"))
+        repeat_sulfide = np.asarray(Image.open(repeat_dir / "masks/sulfide_mask.png").convert("L"))
+        repeat_talc = np.asarray(Image.open(repeat_dir / "masks/talc_mask.png").convert("L"))
+        repeat_final = np.asarray(Image.open(repeat_dir / "masks/final_mask.png").convert("L"))
+        repeat_artifact = np.asarray(Image.open(repeat_dir / "masks/artifact_mask.png").convert("L"))
+        self.assertGreater(int(repeat_artifact[15:55, 20:80].sum()), 0)
+        self.assertEqual(int(repeat_analyzed[15:55, 20:80].sum()), 0)
+        self.assertEqual(int(repeat_sulfide[15:55, 20:80].sum()), 0)
+        self.assertEqual(int(repeat_talc[15:55, 20:80].sum()), 0)
+        self.assertEqual(int(repeat_final[15:55, 20:80].sum()), 0)
 
     def test_page_exposes_required_controls(self) -> None:
         html = render_html_page()
@@ -2592,6 +2670,18 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("Бэкенд классификации зерен", html)
         self.assertIn("Grain classification backend", html)
         self.assertIn("grain_backend: 'heuristic'", html)
+        self.assertIn('id="settingsComponentBackend"', html)
+        self.assertIn('id="settingsComponentModel"', html)
+        self.assertIn('id="settingsComponentModel" type="hidden"', html)
+        self.assertIn('id="settingsComponentModelDisplay"', html)
+        self.assertIn('id="settingsMagnetitePrep"', html)
+        self.assertIn("Финальная сегментация", html)
+        self.assertIn("Final segmentation backend", html)
+        self.assertIn("ML-модель компонентов", html)
+        self.assertIn("Learned component model", html)
+        self.assertIn("models/component_grade/hgb_weak100_nomag_20260705/model.joblib", html)
+        self.assertIn("component_model: ''", html)
+        self.assertIn("magnetite_prep: false", html)
         self.assertIn("backend: 'ml'", html)
         self.assertIn("talc_backend: 'ml'", html)
         self.assertIn("settingsTalcBackendHeuristic", html)
@@ -2609,6 +2699,7 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertIn("$('settingsTalcThreshold').disabled = !talcUsesMl", html)
         self.assertIn("settingsTalcThresholdHintHeuristic", html)
         self.assertIn("$('settingsTalcBackend').addEventListener('change', updateSettingsRuntimeControls)", html)
+        self.assertIn("$('settingsComponentBackend').addEventListener('change', updateSettingsRuntimeControls)", html)
         self.assertIn('id="testRuntimeBtn"', html)
         self.assertIn("settings-runtime-actions", html)
         self.assertIn("Проверить все", html)
