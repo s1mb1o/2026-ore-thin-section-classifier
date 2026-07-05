@@ -188,6 +188,11 @@ app should show a clear setup screen with the exact direct-input command.
 10. Press top-right `Save` to persist the current sample.
 11. Press top-right `Save & Next` to persist the current sample and move to the next
     sample in the queue, or press transparent `Next` to move without saving.
+12. Press top-right `Download` to export the current sample image with the enabled
+    background, class masks, display layers, comparison layer, and talc-cluster layer
+    as a full-resolution PNG.
+13. Copy the `/sample/<slug>` URL when a reviewer needs to reopen or share the
+    current image state.
 
 ## UX Requirements
 
@@ -292,14 +297,16 @@ Because the source folder `Оталькованные руды/Области о
 as a talcose source where confirmed talc should be at least `10%` of visible
 image pixels, the widget also shows live visible-pixel percentages for
 `Positive bag` and `Talc`, plus a compact target status. The top-right display
-layers widget shows the `Talc cluster areas` percentage. The target status is
-based on confirmed `Talc` pixels, not the rough `Positive bag`: below `10%` it
-shows how many percentage points are missing; at or above `10%` it reports the
-target as met.
+layers widget shows `Background`, `Blank White`, `Original blue lines`, `Talc
+cluster areas`, and `Sulfides`, including the `Talc cluster areas` percentage.
+`Blank White` is display-only and fills the canvas white only when `Background`
+is unchecked. The target status is based on confirmed `Talc` pixels, not the
+rough `Positive bag`: below `10%` it shows how many percentage points are
+missing; at or above `10%` it reports the target as met.
 
 ### Comparison Modes
 
-The right panel includes a `Comparison mode` selector with five modes:
+The right panel includes a `Comparison mode` selector with six modes:
 
 - `Current`: shows only the normal editable classes (`Positive bag`, `Talc`,
   `Not Talc`) plus display-only controls in the separate top-right
@@ -310,6 +317,8 @@ The right panel includes a `Comparison mode` selector with five modes:
   non-neural talc-zone mask.
 - `Current vs Neural Model`: overlays the current `Talc` class mask against the
   trained neural talc-model prediction.
+- `Heuristic vs Neural Model`: overlays the non-neural talc-zone mask against
+  the trained neural talc-model prediction.
 
 The heuristic mode can generate its own comparison source. Pressing
 `Run non-neural classifier` calls
@@ -329,7 +338,9 @@ The plain `Heuristic` mode shows the heuristic layer alone. `Current vs
 Heuristic` highlights `agreement`, `heuristic only`, `current only`, and
 `sulfide conflict`; the stats row reports the ore class, talc-zone fraction,
 ore-mask source, comparison percentages when applicable, and a link to the
-overlay artifact.
+overlay artifact. Heuristic-only pixels use the distinct fuchsia color
+`#ec4899`, not the orange/red/yellow colors already used by other classes or
+QA states.
 
 The neural mode is read-only and must not change masks. The app may load an
 optional trained talc-model prediction mask from `--talc-model-mask-dir`, from
@@ -339,6 +350,12 @@ well-known files in the sample directory such as `model_talc_mask.png` /
 highlights `agreement`, `neural only`, `current only`, and `sulfide conflict`.
 If no model mask is available, either neural mode shows an unavailable status
 instead of silently dropping the overlay.
+
+The `Neural Model` panel exposes an editable `ML talc probability threshold`
+numeric field. It defaults to the server-side `--talc-threshold` value (`0.50`
+unless overridden at launch), accepts `0.00..1.00`, and is passed to
+`POST /api/samples/{sample_id}/neural-model` so `Run model` writes the
+sample-level `model_talc_mask.png` using the same threshold shown in the UI.
 
 Additional display-only layer toggles:
 
@@ -364,7 +381,7 @@ Required controls:
 - A single top toolbar ordered icon-only Brush, Fill, Similar, Rectangle,
   Polygon, then SAM2, Undo, followed by active-tool parameters. The icon-only
   tool buttons expose the tool name through hover title and accessible labels.
-- Top-right Save, Save & Next, and transparent Next actions.
+- Top-right Save, Save & Next, transparent Next, and Download actions.
 - Toolbar controls may wrap at narrower viewer widths, but wrapped rows must
   increase the topbar height so controls are never hidden behind the viewer.
 - Zoom by mouse wheel/trackpad over the canvas, plus a bottom-left vertical
@@ -403,6 +420,9 @@ lose work. `Save` marks the current working mask as reviewed and writes the
 review patch; `Save & Next` does the same and navigates to the next queue row.
 `Next` navigates to the next visible queue row without saving and has no filled
 button background.
+`Download` writes a PNG of the current sample at image resolution, composited
+from the enabled persistent classes and display/comparison/cluster layers, with
+no UI widgets, brush cursor, draft handles, or transient tool previews.
 Live polygon/rectangle regions stay editable only while the current image is
 open; saving flattens them into the reviewed mask PNG.
 
@@ -782,7 +802,8 @@ and update it if a new persistent default is reserved.
   prediction layer.
 - The separate top-right `Display layers` widget has `Background` checked by
   default; unchecking it hides only the base image and still renders selected
-  mask/QA/cluster overlays.
+  mask/QA/cluster overlays. Checking `Blank White` while `Background` is
+  unchecked fills the otherwise empty canvas with white.
 - Heuristic comparison reports agreement, heuristic-only, current-only, and
   sulfide-conflict counts when a heuristic talc-zone mask is available.
 - Neural comparison reports agreement, neural-only, current-only, and
@@ -825,8 +846,9 @@ Required checks:
   positive talc seeds, can be constrained with negative seeds / `Not Talc`
   hard negatives, can be tightened with Strictness, and is non-destructive until
   `Apply Similar`, `Save`, or `Save & Next` is pressed.
-- Heuristic comparison overlay highlights heuristic-only, current-only,
-  agreement, and sulfide conflict without mutating masks.
+- Heuristic comparison overlay highlights heuristic-only in fuchsia
+  (`#ec4899`), current-only, agreement, and sulfide conflict without mutating
+  masks.
 - Neural comparison overlay highlights neural-only, current-only, agreement,
   and sulfide conflict without mutating masks.
 - Undo restores prior mask state.
@@ -842,6 +864,9 @@ Required checks:
 - `Save & Next` writes reviewed masks and patch JSON, then selects the next
   sample in the queue.
 - `Next` selects the next sample in the queue without writing reviewed outputs.
+- `Download` exports `<sample>_enabled_layers.png` at the sample image
+  resolution with enabled persistent classes and layers, and without viewer UI
+  chrome or transient edit previews.
 - SAM2 unavailable state does not block manual editing.
 
 ### Manual Acceptance
@@ -885,6 +910,8 @@ Required checks:
   filename.
 - The app can review all `42` talc samples after creating or reusing the
   conversion workspace.
+- Opening or selecting a sample updates the browser URL to `/sample/<slug>`,
+  and loading that URL directly selects the same sample.
 - The app edits class masks, not blue annotation strokes: Brush, Fill,
   Rectangle, and Polygon edit whichever class is selected in the over-image
   Segmentation classes widget; SAM2 edits `positive_bag`; Similar edits
@@ -932,7 +959,7 @@ Required checks:
 - Manual sulfide subtraction is available and autosaves the current working
   mask.
 - Undo is available for editing mistakes.
-- Top-right `Save` and `Save & Next` are both available.
+- Top-right `Save`, `Save & Next`, `Next`, and `Download` are all available.
 - SAM2 is available as a canvas tool and optional dependency.
 - SAM2 point mode supports idle hover preview plus explicit `Apply SAM2`.
 - Reviewed outputs are raster masks plus a machine-readable patch JSON.

@@ -758,7 +758,8 @@
               <div class="settings-field full"><span data-i18n="settingsTalcCheckpoint">Talc checkpoint</span><input id="settingsTalcCheckpoint" type="hidden"><div id="settingsTalcCheckpointDisplay" class="checkpoint-display"></div></div>
               <label class="settings-field"><span data-i18n="settingsGrainBackend">Grain classification backend</span><select id="settingsGrainBackend">
                 <option value="heuristic" data-i18n="settingsGrainBackendHeuristic">Ore Grain Heuristics</option>
-                <option value="ml" data-i18n="settingsGrainBackendMl">ML Ore Grain Classification</option>
+                <option value="ml" data-i18n="settingsGrainBackendMl">ML (Grade-CNN)</option>
+                <option value="grain_aggregate" disabled data-i18n="settingsGrainBackendGrainAgg">ML — по суммарной оценке зёрен (скоро)</option>
               </select></label>
             </div>
             <div class="settings-actions settings-runtime-actions">
@@ -1070,7 +1071,8 @@
           </select></label>
           <label class="metadata-field"><span data-i18n="configGrainBackend">Классификация зерен</span><select id="configGrainBackend">
             <option value="heuristic" data-i18n="configGrainHeuristic">Ore Grain Heuristics</option>
-            <option value="ml" data-i18n="configGrainMl">ML Ore Grain Classification</option>
+            <option value="ml" data-i18n="configGrainMl">ML (Grade-CNN)</option>
+            <option value="grain_aggregate" disabled data-i18n="configGrainGrainAgg">ML — по суммарной оценке зёрен (скоро)</option>
           </select></label>
           <div class="metadata-section-title" data-i18n="talcClusterization">Кластеризация талька</div>
           <label class="metadata-field"><span data-i18n="talcClusterRadius">Радиус, px</span><input id="configTalcClusterRadius" type="number" min="1" max="4096" step="1" value="64"></label>
@@ -1792,7 +1794,8 @@
         settingsTalcThresholdHintHeuristic: 'Не используется в эвристическом режиме талька.',
         settingsGrainBackend: 'Бэкенд классификации зерен',
         settingsGrainBackendHeuristic: 'эвристики зерен руды',
-        settingsGrainBackendMl: 'ML-классификация зерен руды',
+        settingsGrainBackendMl: 'ML (Grade-CNN)',
+        settingsGrainBackendGrainAgg: 'ML — по суммарной оценке зёрен (скоро)',
         settingsTalcClusterDefaults: 'Кластеризация талька по умолчанию',
         configurationRuntime: 'Runtime этапов',
         configSulfideBackend: 'Сегментация сульфидов',
@@ -1803,7 +1806,8 @@
         configTalcMl: 'ML Talc SegFormer-B0',
         configGrainBackend: 'Классификация зерен',
         configGrainHeuristic: 'Ore Grain Heuristics',
-        configGrainMl: 'ML Ore Grain Classification',
+        configGrainMl: 'ML (Grade-CNN)',
+        configGrainGrainAgg: 'ML — по суммарной оценке зёрен (скоро)',
         talcClusterization: 'Кластеризация талька',
         talcClusterRadius: 'Радиус, px',
         talcClusterMinLocal: 'Мин. локальный тальк, %',
@@ -2359,7 +2363,8 @@
         settingsTalcThresholdHintHeuristic: 'Not used in talc heuristic mode.',
         settingsGrainBackend: 'Grain classification backend',
         settingsGrainBackendHeuristic: 'Ore Grain Heuristics',
-        settingsGrainBackendMl: 'ML Ore Grain Classification',
+        settingsGrainBackendMl: 'ML (Grade-CNN)',
+        settingsGrainBackendGrainAgg: 'ML — grain-aggregate vote (soon)',
         settingsTalcClusterDefaults: 'Default talc clusterization',
         configurationRuntime: 'Stage runtime',
         configSulfideBackend: 'Sulfide segmentation',
@@ -2370,7 +2375,8 @@
         configTalcMl: 'ML Talc SegFormer-B0',
         configGrainBackend: 'Grain classification',
         configGrainHeuristic: 'Ore Grain Heuristics',
-        configGrainMl: 'ML Ore Grain Classification',
+        configGrainMl: 'ML (Grade-CNN)',
+        configGrainGrainAgg: 'ML — grain-aggregate vote (soon)',
         talcClusterization: 'Talc clusterization',
         talcClusterRadius: 'Radius, px',
         talcClusterMinLocal: 'Min local talc, %',

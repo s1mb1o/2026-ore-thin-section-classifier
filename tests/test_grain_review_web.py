@@ -180,10 +180,34 @@ class GrainReviewStoreTest(unittest.TestCase):
         self.assertEqual(valuable["items"][0]["grain_uid"], "run_1__c1")
         self.assertIn("близко к порогам", valuable["items"][0]["review_value"]["reasons"])
 
+    def test_small_fine_ordinary_shape_context_is_flagged(self) -> None:
+        self.store.grains[2].update(
+            {
+                "area_px": "100",
+                "dark_inside_ratio": "0.02",
+                "solidity": "0.88",
+                "compactness": "0.30",
+            }
+        )
+
+        page = self.store.page(offset=0, limit=4, grade="all", view="all", focus="run_2__c2")
+        item = next(item for item in page["items"] if item["grain_uid"] == "run_2__c2")
+
+        self.assertTrue(item["small_fine_context"]["matched"])
+        self.assertEqual(item["small_fine_context"]["threshold_px"], self.store.small_area_threshold_px)
+        self.assertIn("мелкое в тонких", item["review_value"]["reasons"])
+        self.assertGreaterEqual(item["review_value"]["small_context"], 20)
+
     def test_page_rejects_unknown_sort(self) -> None:
         with self.assertRaises(grain_review_web.ApiError) as ctx:
             self.store.page(offset=0, limit=1, grade="all", view="all", sort="nope")
         self.assertEqual(ctx.exception.status, HTTPStatus.BAD_REQUEST)
+
+    def test_page_focus_adjusts_offset_to_include_requested_grain(self) -> None:
+        page = self.store.page(offset=0, limit=2, grade="all", view="all", focus="run_2__c2")
+        self.assertEqual(page["offset"], 2)
+        self.assertTrue(page["focus_found"])
+        self.assertEqual(page["items"][0]["grain_uid"], "run_2__c2")
 
     def test_page_grade_filter(self) -> None:
         page = self.store.page(offset=0, limit=60, grade="fine_intergrowth", view="all")
@@ -267,6 +291,12 @@ class GrainReviewHTTPTest(unittest.TestCase):
         self.assertIn("Tinder mode", html)
         self.assertIn("← тонкое", html)
         self.assertIn("/api/annotate", html)
+
+    def test_tinder_slug_serves_review_page(self) -> None:
+        response, data = self.request("GET", "/tinder/run_2__c2")
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertIn("text/html", response.getheader("Content-Type"))
+        self.assertIn("Tinder mode", data.decode("utf-8"))
 
     def test_api_page_returns_items_and_stats(self) -> None:
         response, data = self.request("GET", "/api/page?offset=0&limit=2&grade=all&view=all")

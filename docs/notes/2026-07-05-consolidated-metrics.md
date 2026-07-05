@@ -21,7 +21,7 @@ they are **not** all the same ruler; read the notes.
 | SegFormer-B0 (5-fold) | mean talc IoU / F1 | **0.644 / 0.782** |
 | ResUNet (local) | val talc IoU | 0.527 |
 
-*GT = 42 blue-contour expert images, auto-converted. Competitors: nail U-Net IoU 0.12/Dice 0.19; opium Dice 0.49.*
+*GT = 42 blue-contour expert images, auto-converted.*
 
 ### Talc-fraction error (OOF, 42 annotated images) — proxy for the "±3%" criterion
 | denominator | mean abs | median abs | within ±3pp |
@@ -57,13 +57,21 @@ row/fine, and **on par with competitor A (0.880)** on a leak-free 345 split (the
 ≥90%" criterion is carried by the standalone 2-class Grade-CNN (0.93); inside the
 3-class fusion the talc branch's false-positives pull row/fine to ~0.865.
 
-### Grade-CNN 4-class benchmark (competitor A's schema)
+### Grade-CNN backbone sweep (2-class ord↔fine, raw recipe, held-out 230, leak-free)
+| backbone (torchvision) | held-out macro-F1 | ordinary | fine |
+| --- | ---: | ---: | ---: |
+| convnext_tiny | **0.939** | 0.941 | 0.937 |
+| efficientnet_b3 (deployed) | 0.930 | 0.933 | 0.927 |
+| resnet50 | 0.922 | 0.922 | 0.921 |
+
+*Architecture is not decisive at ~755 training images: all three ImageNet-pretrained CNNs land 0.92–0.94 (~2 pp spread), all ≥ 90%. efficientnet_b3 was chosen for data-efficiency + no new dep, and is confirmed competitive; convnext_tiny is a marginal upgrade (+0.009 raw, = our pp-aware efficientnet_b3). `models/grade_classifier/sweep_{convnext_tiny,resnet50}_20260705/`.*
+
+### Grade-CNN 4-class benchmark (schema variant)
 | run | model | img | val F1-macro | ordinary | thin | talc | refractory |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | effb3_4class (best) | efficientnet_b3 | 384 | **0.771** | 0.906 | 0.792 | 0.865 | 0.522 |
-| nail (reference) | efficientnet_b3 | 384 | 0.791 | 0.920 | 0.870 | 0.910 | 0.470 |
 
-*grouped-by-аншлиф val (train 926 / val 163), class-weighted CE. On par with A; better on the weak refractory (56 imgs total).*
+*grouped-by-аншлиф val (train 926 / val 163), class-weighted CE. Weak class is refractory (56 imgs total). This is a schema-match benchmark, not the deployed head.*
 
 ## 3. Grade-CNN robustness (held-out 230, macro-F1)
 
@@ -105,5 +113,5 @@ Honest framing for the jury: we hit F1 ≥ 90% on intergrowth type. The talc **�
 ## 6. Honesty
 
 - No expert pixel-level GT; grade GT = official grade folder per аншлиф. Segmentation metrics are weak-label.
-- Splits differ across rows (2-class held-out 230 vs 3-class 345 vs 4-class grouped 163 vs nail's 218) — comparisons indicative, not controlled.
+- Splits differ across rows (2-class held-out 230 vs 3-class 345 vs 4-class grouped 163) — comparisons indicative, not controlled.
 - Deployed grade branch = 2-class ord↔fine (0.93); talcose handled by segmentation/rule; 3-class full verdict pending the talc-branch fusion.

@@ -118,6 +118,8 @@ def sanitize_view_settings(payload: dict[str, Any]) -> dict[str, Any]:
             pass
     if "background_visible" in settings:
         sanitized["background_visible"] = bool(settings.get("background_visible"))
+    if "blank_white_visible" in settings:
+        sanitized["blank_white_visible"] = bool(settings.get("blank_white_visible"))
     for key in ("brightness_threshold_formula", "background_mode"):
         value = settings.get(key)
         if isinstance(value, str) and value:
@@ -481,7 +483,10 @@ class TalcReviewStore:
         raise ApiError(HTTPStatus.BAD_REQUEST, "sample has no image for neural talc model inference")
 
     def run_neural_talc_model(self, sample_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        del payload  # Reserved for future threshold/device overrides without changing the endpoint.
+        payload = dict(payload or {})
+        if "threshold" not in payload and "talc_threshold" in payload:
+            payload["threshold"] = payload["talc_threshold"]
+        run_threshold = self._payload_float(payload, "threshold", self.talc_threshold, 0.0, 1.0)
         sample = self.get_sample(sample_id)
         image_path = self._sample_model_image_path(sample)
         checkpoint = self._effective_talc_checkpoint()
@@ -509,7 +514,7 @@ class TalcReviewStore:
             "--device",
             self.talc_device,
             "--threshold",
-            str(self.talc_threshold),
+            str(run_threshold),
         ]
         if sulfide_path and sulfide_path.exists():
             cmd.extend(["--sulfide-mask", str(sulfide_path)])
@@ -546,7 +551,7 @@ class TalcReviewStore:
             "image_name": sample.image_name,
             "generated_at": utc_now_iso(),
             "checkpoint": str(checkpoint),
-            "threshold": self.talc_threshold,
+            "threshold": run_threshold,
             "summary": summary,
             "paths": {
                 "model_talc_mask": str(model_mask_path),
@@ -1253,7 +1258,7 @@ class TalcReviewHandler(BaseHTTPRequestHandler):
     def _handle_get(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if path == "/":
+        if path == "/" or path == "/sample" or path.startswith("/sample/"):
             self.send_html(render_html_page())
             return
         if path == "/api/manifest":
@@ -1445,6 +1450,10 @@ def render_html_page() -> str:
           <button type="button" id="saveBtn" class="primary-button">Save</button>
           <button type="button" id="saveNextBtn" class="primary-button">Save &amp; Next</button>
           <button type="button" id="nextBtn" class="plain-button" title="Go to next visible sample without saving">Next</button>
+          <button type="button" id="downloadViewBtn" class="plain-button icon-tool download-icon-button" aria-label="Download" title="Download current image with enabled classes and layers" data-tooltip="Download current image with enabled classes and layers">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>
+            <span class="visually-hidden">Download</span>
+          </button>
         </div>
       </div>
     </div>
@@ -1479,6 +1488,10 @@ def render_html_page() -> str:
           <label class="viewer-layer-row">
             <input type="checkbox" id="layerBackground" checked aria-label="Show background image">
             <span>Background</span>
+          </label>
+          <label class="viewer-layer-row">
+            <input type="checkbox" id="layerBlankWhite" aria-label="Show blank white background">
+            <span>Blank White</span>
           </label>
           <label class="viewer-layer-row">
             <input type="checkbox" id="layerLines" aria-label="Show Original blue lines">
@@ -1640,6 +1653,12 @@ def render_html_page() -> str:
           <span><span class="qa-swatch qa-model-only"></span>neural only</span>
           <span><span class="qa-swatch qa-human-only"></span>current only</span>
           <span><span class="qa-swatch qa-conflict"></span>sulfide conflict</span>
+        </div>
+        <div class="qa-param-grid">
+          <label>
+            <span class="field-label inline">ML talc probability threshold</span>
+            <input id="neuralTalcThreshold" type="number" min="0" max="1" step="0.01" value="0.50" aria-label="ML talc probability threshold">
+          </label>
         </div>
         <button type="button" id="runNeuralModelBtn" class="small-button full-width">Run model</button>
         <div id="modelQaStats" class="filter-hint">Neural comparison is off.</div>
@@ -1818,6 +1837,7 @@ button, input, select, textarea { font: inherit; }
 .primary-button, .danger-button, .plain-button { font-weight: 700; }
 .details-pane .primary-button, .details-pane .danger-button { width: 100%; margin-top: 8px; }
 .review-actions .primary-button, .review-actions .plain-button { width: auto; margin-top: 0; min-width: 64px; white-space: nowrap; }
+.review-actions .download-icon-button { width: 34px; min-width: 34px; height: 34px; padding: 0; }
 .primary-button { background: var(--accent); border-color: var(--accent); color: #ffffff; }
 .danger-button { background: var(--control-bg); border-color: var(--danger-border); color: var(--danger); }
 .plain-button { background: transparent; border-color: transparent; color: var(--accent); }
@@ -1975,7 +1995,7 @@ button, input, select, textarea { font: inherit; }
 .qa-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(15, 23, 42, 0.25); }
 .qa-swatch.qa-agreement { background: #22c55e; }
 .qa-swatch.qa-model-only { background: #8b5cf6; }
-.qa-swatch.qa-heuristic-only { background: #f97316; }
+.qa-swatch.qa-heuristic-only { background: #ec4899; }
 .qa-swatch.qa-human-only { background: #06b6d4; }
 .qa-swatch.qa-conflict { background: #ef4444; }
 .qa-swatch.qa-human-disagree { background: #f97316; }
@@ -2040,6 +2060,49 @@ const TALC_VISIBLE_THRESHOLD_FRACTION = 0.10;
 const MAX_SIMILAR_TALC_REGION_FRACTION = 0.35;
 const SIMILAR_TALC_SEED_PATCH_RADIUS = 5;
 const SIMILAR_TALC_POSITIVE_BAG_RADIUS = 70;
+
+function sampleUrlSlug(sample) {
+  const raw = sample && (sample.sample_id || sample.image_name) ? String(sample.sample_id || sample.image_name) : '';
+  const stem = raw.replace(/\.[^.]+$/, '').replace(/[хХ×]/g, 'x');
+  const slug = stem.normalize('NFKD')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+  return slug || encodeURIComponent(raw || 'sample');
+}
+
+function requestedSampleSlugFromLocation() {
+  const parts = window.location.pathname.split('/').filter(Boolean);
+  if (parts.length >= 2 && parts[0] === 'sample') {
+    return decodeURIComponent(parts.slice(1).join('/'));
+  }
+  return null;
+}
+
+function sampleFromUrlSlug(slug) {
+  if (!slug) return null;
+  const decoded = String(slug);
+  const normalized = decoded.toLowerCase();
+  return state.samples.find((sample) => sample.sample_id === decoded || sampleUrlSlug(sample) === normalized) || null;
+}
+
+function requestedSampleFromLocation() {
+  return sampleFromUrlSlug(requestedSampleSlugFromLocation());
+}
+
+function updateSampleUrl(sampleId, replace = true) {
+  const sample = state.samples.find((item) => item.sample_id === sampleId);
+  if (!sample || !window.history || !window.history.replaceState) return;
+  const path = `/sample/${encodeURIComponent(sampleUrlSlug(sample))}`;
+  if (window.location.pathname === path) return;
+  const statePayload = { sample_id: sample.sample_id, sample_slug: sampleUrlSlug(sample) };
+  if (replace || !window.history.pushState) {
+    window.history.replaceState(statePayload, '', path);
+  } else {
+    window.history.pushState(statePayload, '', path);
+  }
+}
 
 const state = {
   manifest: null,
@@ -2157,6 +2220,9 @@ const state = {
   }
 };
 
+const HEURISTIC_QA_RGB = [236, 72, 153];
+const HEURISTIC_QA_ALPHA = 150;
+
 const viewer = document.getElementById('viewerCanvas');
 const ctx = viewer.getContext('2d', { willReadFrequently: true });
 const maskCanvas = document.createElement('canvas');
@@ -2252,6 +2318,7 @@ const els = {
   heuristicNeuralComparisonLegend: document.getElementById('heuristicNeuralComparisonLegend'),
   neuralLayerLegend: document.getElementById('neuralLayerLegend'),
   neuralComparisonLegend: document.getElementById('neuralComparisonLegend'),
+  neuralTalcThreshold: document.getElementById('neuralTalcThreshold'),
   runNeuralModelBtn: document.getElementById('runNeuralModelBtn'),
   modelQaStats: document.getElementById('modelQaStats'),
   heuristicKThreshold: document.getElementById('heuristicKThreshold'),
@@ -2266,6 +2333,7 @@ const els = {
   saveBtn: document.getElementById('saveBtn'),
   saveNextBtn: document.getElementById('saveNextBtn'),
   nextBtn: document.getElementById('nextBtn'),
+  downloadViewBtn: document.getElementById('downloadViewBtn'),
   resetBtn: document.getElementById('resetBtn'),
   protectSulfides: document.getElementById('protectSulfides'),
   subtractSulfidesBtn: document.getElementById('subtractSulfidesBtn'),
@@ -2274,6 +2342,7 @@ const els = {
   sam2StatusBtn: document.getElementById('sam2StatusBtn'),
   layers: {
     background: document.getElementById('layerBackground'),
+    blankWhite: document.getElementById('layerBlankWhite'),
     sulfides: document.getElementById('layerSulfides'),
     current: document.getElementById('layerCurrent'),
     talcNode: document.getElementById('layerTalcNode'),
@@ -3387,6 +3456,25 @@ function clampNumber(value, fallback, minValue, maxValue) {
   return Math.max(minValue, Math.min(maxValue, numeric));
 }
 
+function neuralTalcThresholdDefault() {
+  const value = state.sample && state.sample.neural_model_runner ? Number(state.sample.neural_model_runner.threshold) : NaN;
+  return Number.isFinite(value) ? value : 0.50;
+}
+
+function currentNeuralTalcThreshold() {
+  return clampNumber(
+    els.neuralTalcThreshold ? els.neuralTalcThreshold.value : neuralTalcThresholdDefault(),
+    neuralTalcThresholdDefault(),
+    0,
+    1
+  );
+}
+
+function syncNeuralTalcThresholdFromSample() {
+  if (!els.neuralTalcThreshold) return;
+  els.neuralTalcThreshold.value = currentNeuralTalcThreshold().toFixed(2);
+}
+
 function readClusterSettingsFromControls() {
   return {
     enabled: Boolean(els.clusterOverlayToggle && els.clusterOverlayToggle.checked),
@@ -3528,7 +3616,8 @@ function viewSettingsPayload() {
       result: currentTalcoseHeuristicRecord()
     },
     background_mode: els.baseMode ? els.baseMode.value : null,
-    background_visible: !els.layers.background || els.layers.background.checked
+    background_visible: !els.layers.background || els.layers.background.checked,
+    blank_white_visible: Boolean(els.layers.blankWhite && els.layers.blankWhite.checked)
   };
 }
 
@@ -3735,10 +3824,10 @@ function clusterOverlayCanvasForCurrentSettings() {
   return canvas;
 }
 
-function drawClusterOverlay() {
+function drawClusterOverlay(targetCtx = ctx) {
   const overlay = clusterOverlayCanvasForCurrentSettings();
   if (!overlay) return;
-  ctx.drawImage(overlay, 0, 0);
+  targetCtx.drawImage(overlay, 0, 0);
 }
 
 function invalidateModelHumanQa() {
@@ -4004,23 +4093,23 @@ function updateModelHumanQaStats() {
   els.modelQaStats.textContent = parts.length ? parts.join(' · ') : 'QA layer has no comparable masks.';
 }
 
-function drawModelHumanQaOverlay() {
+function drawModelHumanQaOverlay(targetCtx = ctx) {
   const overlay = modelHumanQaCanvasForCurrentState();
   if (!overlay) {
     updateModelHumanQaStats();
     return;
   }
-  ctx.drawImage(overlay, 0, 0);
+  targetCtx.drawImage(overlay, 0, 0);
   updateModelHumanQaStats();
 }
 
-function drawModelStandaloneOverlay() {
+function drawModelStandaloneOverlay(targetCtx = ctx) {
   const overlay = modelStandaloneCanvasForCurrentState();
   if (!overlay) {
     updateModelHumanQaStats();
     return;
   }
-  ctx.drawImage(overlay, 0, 0);
+  targetCtx.drawImage(overlay, 0, 0);
   updateModelHumanQaStats();
 }
 
@@ -4051,7 +4140,7 @@ function heuristicStandaloneCanvasForCurrentState() {
   }
   const key = [state.sampleId, state.imageW, state.imageH, 'heuristic-layer'].join(':');
   if (state.heuristicStandalone.key === key && state.heuristicStandalone.canvas) return state.heuristicStandalone.canvas;
-  const canvas = buildTintFromCanvas(heuristicTalcCanvas, [249, 115, 22, 150]);
+  const canvas = buildTintFromCanvas(heuristicTalcCanvas, [...HEURISTIC_QA_RGB, HEURISTIC_QA_ALPHA]);
   state.heuristicStandalone.key = key;
   state.heuristicStandalone.canvas = canvas;
   state.heuristicStandalone.stats = {
@@ -4117,7 +4206,7 @@ function heuristicComparisonCanvasForCurrentState() {
       r = 34; g = 197; b = 94; alpha = 138;
     } else if (heuristicActive) {
       stats.heuristic_only += 1;
-      r = 249; g = 115; b = 22; alpha = 150;
+      [r, g, b] = HEURISTIC_QA_RGB; alpha = HEURISTIC_QA_ALPHA;
     } else if (currentActive) {
       stats.current_only += 1;
       r = 6; g = 182; b = 212; alpha = 150;
@@ -4195,7 +4284,7 @@ function heuristicNeuralComparisonCanvasForCurrentState() {
       r = 34; g = 197; b = 94; alpha = 138;
     } else if (heuristicActive) {
       stats.heuristic_only += 1;
-      r = 249; g = 115; b = 22; alpha = 150;
+      [r, g, b] = HEURISTIC_QA_RGB; alpha = HEURISTIC_QA_ALPHA;
     } else if (neuralActive) {
       stats.neural_only += 1;
       r = 139; g = 92; b = 246; alpha = 150;
@@ -4298,15 +4387,20 @@ async function runTalcoseHeuristicQa() {
 
 async function runNeuralModelQa() {
   if (!state.sampleId) return;
+  const threshold = currentNeuralTalcThreshold();
+  if (els.neuralTalcThreshold) els.neuralTalcThreshold.value = threshold.toFixed(2);
   state.neuralModelQa.running = true;
   updateModelHumanQaStats();
-  setStatus('Running neural talc model for this sample...');
+  setStatus(`Running neural talc model for this sample (threshold ${threshold.toFixed(2)})...`);
   try {
-    const result = await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/neural-model`, {});
+    const result = await apiPost(`/api/samples/${encodeURIComponent(state.sampleId)}/neural-model`, { threshold });
     state.neuralModelQa.result = result;
     if (state.sample) {
       state.sample.urls.model_talc_mask = result.urls ? result.urls.model_talc_mask : null;
       if (state.sample.metrics) state.sample.metrics.has_model_talc_mask = Boolean(state.sample.urls.model_talc_mask);
+      if (state.sample.neural_model_runner && Number.isFinite(Number(result.threshold))) {
+        state.sample.neural_model_runner.threshold = Number(result.threshold);
+      }
     }
     const modelImg = await loadImage(result.urls ? result.urls.model_talc_mask : null, result.urls && result.urls.model_talc_mask ? 'Neural model talc mask' : null);
     modelTalcCtx.clearRect(0, 0, state.imageW, state.imageH);
@@ -4314,7 +4408,8 @@ async function runNeuralModelQa() {
     if (modelImg) modelTalcCtx.drawImage(modelImg, 0, 0, state.imageW, state.imageH);
     invalidateModelHumanQa();
     const modelPixels = Number.isFinite(Number(result.model_talc_pixels)) ? Number(result.model_talc_pixels) : countMaskPixelsFromCtx(modelTalcCtx);
-    setStatus(`Neural model finished: ${formatInt(modelPixels)} talc px.`);
+    const resultThreshold = Number.isFinite(Number(result.threshold)) ? Number(result.threshold) : threshold;
+    setStatus(`Neural model finished at threshold ${resultThreshold.toFixed(2)}: ${formatInt(modelPixels)} talc px.`);
   } catch (err) {
     setStatus(`Neural model failed: ${err.message}`, true);
   } finally {
@@ -4324,97 +4419,106 @@ async function runNeuralModelQa() {
   }
 }
 
-function drawHeuristicComparisonOverlay() {
+function drawHeuristicComparisonOverlay(targetCtx = ctx) {
   const overlay = heuristicComparisonCanvasForCurrentState();
   if (!overlay) {
     updateHeuristicQaStats();
     return;
   }
-  ctx.drawImage(overlay, 0, 0);
+  targetCtx.drawImage(overlay, 0, 0);
   updateHeuristicQaStats();
 }
 
-function drawHeuristicStandaloneOverlay() {
+function drawHeuristicStandaloneOverlay(targetCtx = ctx) {
   const overlay = heuristicStandaloneCanvasForCurrentState();
   if (!overlay) {
     updateHeuristicQaStats();
     return;
   }
-  ctx.drawImage(overlay, 0, 0);
+  targetCtx.drawImage(overlay, 0, 0);
   updateHeuristicQaStats();
 }
 
-function drawHeuristicNeuralComparisonOverlay() {
+function drawHeuristicNeuralComparisonOverlay(targetCtx = ctx) {
   const overlay = heuristicNeuralComparisonCanvasForCurrentState();
   if (!overlay) {
     updateModelHumanQaStats();
     updateHeuristicQaStats();
     return;
   }
-  ctx.drawImage(overlay, 0, 0);
+  targetCtx.drawImage(overlay, 0, 0);
   updateModelHumanQaStats();
   updateHeuristicQaStats();
 }
 
-function drawComparisonOverlay() {
+function drawComparisonOverlay(targetCtx = ctx) {
   if (selectedComparisonMode() === 'neural_model') {
-    drawModelStandaloneOverlay();
+    drawModelStandaloneOverlay(targetCtx);
     return;
   }
   if (selectedComparisonMode() === 'current_vs_neural') {
-    drawModelHumanQaOverlay();
+    drawModelHumanQaOverlay(targetCtx);
     return;
   }
   if (selectedComparisonMode() === 'heuristic') {
-    drawHeuristicStandaloneOverlay();
+    drawHeuristicStandaloneOverlay(targetCtx);
     return;
   }
   if (selectedComparisonMode() === 'current_vs_heuristic') {
-    drawHeuristicComparisonOverlay();
+    drawHeuristicComparisonOverlay(targetCtx);
     return;
   }
   if (selectedComparisonMode() === 'heuristic_vs_neural') {
-    drawHeuristicNeuralComparisonOverlay();
+    drawHeuristicNeuralComparisonOverlay(targetCtx);
     return;
   }
   updateModelHumanQaStats();
   updateHeuristicQaStats();
 }
 
-function draw() {
-  ctx.clearRect(0, 0, viewer.width, viewer.height);
+function drawEnabledClassesAndLayers(targetCtx) {
+  targetCtx.clearRect(0, 0, targetCtx.canvas.width, targetCtx.canvas.height);
   if (!state.sample) return;
   const baseMode = els.baseMode.value;
   const showBackground = !els.layers.background || els.layers.background.checked;
+  const showBlankWhite = !showBackground && Boolean(els.layers.blankWhite && els.layers.blankWhite.checked);
   let base = state.images.original || state.images.annotated;
   if (baseMode === 'annotated') base = state.images.annotated || base;
   if (baseMode === 'qa') base = state.images.qa || base;
   if (!showBackground) {
     setBrightnessVisibleStats(null);
+    if (showBlankWhite) {
+      targetCtx.fillStyle = '#ffffff';
+      targetCtx.fillRect(0, 0, state.imageW, state.imageH);
+    }
   } else if (baseMode === 'mask') {
     setBrightnessVisibleStats(null);
-    ctx.fillStyle = cssVar('--mask-only-bg', '#0f172a');
-    ctx.fillRect(0, 0, state.imageW, state.imageH);
+    targetCtx.fillStyle = cssVar('--mask-only-bg', '#0f172a');
+    targetCtx.fillRect(0, 0, state.imageW, state.imageH);
   } else if (baseMode === 'sulfide') {
     setBrightnessVisibleStats(null);
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, state.imageW, state.imageH);
-    if (state.images.sulfideMask) ctx.drawImage(state.images.sulfideMask, 0, 0, state.imageW, state.imageH);
+    targetCtx.fillStyle = '#000000';
+    targetCtx.fillRect(0, 0, state.imageW, state.imageH);
+    if (state.images.sulfideMask) targetCtx.drawImage(state.images.sulfideMask, 0, 0, state.imageW, state.imageH);
   } else if (base) {
-    ctx.drawImage(brightnessFilteredBackground(base), 0, 0, state.imageW, state.imageH);
+    targetCtx.drawImage(brightnessFilteredBackground(base), 0, 0, state.imageW, state.imageH);
   } else {
     setBrightnessVisibleStats(null);
   }
-  if (els.layers.auto.checked && state.staticTints.auto) ctx.drawImage(state.staticTints.auto, 0, 0);
-  if (els.layers.lines.checked && state.staticTints.lines) ctx.drawImage(state.staticTints.lines, 0, 0);
-  if (els.layers.overlap.checked && state.staticTints.overlap) ctx.drawImage(state.staticTints.overlap, 0, 0);
-  if (els.layers.sulfides && els.layers.sulfides.checked && state.staticTints.sulfide) ctx.drawImage(state.staticTints.sulfide, 0, 0);
-  if (els.layers.ignore.checked && state.staticTints.ignore) ctx.drawImage(state.staticTints.ignore, 0, 0);
-  if (els.layers.current.checked) ctx.drawImage(currentTintCanvas, 0, 0);
-  if (els.layers.talcNode.checked) ctx.drawImage(talcNodeTintCanvas, 0, 0);
-  if (els.layers.notTalc.checked) ctx.drawImage(notTalcTintCanvas, 0, 0);
-  drawComparisonOverlay();
-  drawClusterOverlay();
+  if (els.layers.auto.checked && state.staticTints.auto) targetCtx.drawImage(state.staticTints.auto, 0, 0);
+  if (els.layers.lines.checked && state.staticTints.lines) targetCtx.drawImage(state.staticTints.lines, 0, 0);
+  if (els.layers.overlap.checked && state.staticTints.overlap) targetCtx.drawImage(state.staticTints.overlap, 0, 0);
+  if (els.layers.sulfides && els.layers.sulfides.checked && state.staticTints.sulfide) targetCtx.drawImage(state.staticTints.sulfide, 0, 0);
+  if (els.layers.ignore.checked && state.staticTints.ignore) targetCtx.drawImage(state.staticTints.ignore, 0, 0);
+  if (els.layers.current.checked) targetCtx.drawImage(currentTintCanvas, 0, 0);
+  if (els.layers.talcNode.checked) targetCtx.drawImage(talcNodeTintCanvas, 0, 0);
+  if (els.layers.notTalc.checked) targetCtx.drawImage(notTalcTintCanvas, 0, 0);
+  drawComparisonOverlay(targetCtx);
+  drawClusterOverlay(targetCtx);
+}
+
+function draw() {
+  drawEnabledClassesAndLayers(ctx);
   drawSimilarTalcPreview();
   drawSam2ResultPreview();
   drawShapeGuides();
@@ -4423,6 +4527,56 @@ function draw() {
   drawSamBoxDraft();
   drawSam2PromptPreview();
   drawBrushCursor();
+}
+
+function downloadFileStem() {
+  const imageName = state.sample && state.sample.image ? state.sample.image.name : state.sampleId;
+  const stem = String(imageName || state.sampleId || 'talc-review')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^\w.-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return stem || 'talc-review';
+}
+
+function triggerCanvasDownload(canvas) {
+  const downloadName = `${downloadFileStem()}_enabled_layers.png`;
+  const clickDownloadLink = (href, revoke = null) => {
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = downloadName;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    if (revoke) window.setTimeout(revoke, 1000);
+  };
+  if (canvas.toBlob) {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        setStatus('Download failed: could not encode PNG.', true);
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      clickDownloadLink(url, () => URL.revokeObjectURL(url));
+      setStatus(`Downloaded ${downloadName}.`);
+    }, 'image/png');
+  } else {
+    clickDownloadLink(canvas.toDataURL('image/png'));
+    setStatus(`Downloaded ${downloadName}.`);
+  }
+}
+
+function downloadCurrentImageWithLayers() {
+  if (!state.sample || !state.imageW || !state.imageH) {
+    setStatus('No sample image is loaded to download.', true);
+    return;
+  }
+  const exportCanvas = document.createElement('canvas');
+  exportCanvas.width = state.imageW;
+  exportCanvas.height = state.imageH;
+  const exportCtx = exportCanvas.getContext('2d', { willReadFrequently: true });
+  drawEnabledClassesAndLayers(exportCtx);
+  triggerCanvasDownload(exportCanvas);
 }
 
 function describeUnavailableBackground() {
@@ -6517,6 +6671,11 @@ if (els.runNeuralModelBtn) {
     runNeuralModelQa().catch((err) => setStatus(`Neural model failed: ${err.message}`, true));
   });
 }
+if (els.neuralTalcThreshold) {
+  els.neuralTalcThreshold.addEventListener('change', () => {
+    els.neuralTalcThreshold.value = currentNeuralTalcThreshold().toFixed(2);
+  });
+}
 els.sam2PromptMode.addEventListener('change', () => {
   clearSam2Preview({ redraw: false });
   updateSam2ApplyButton();
@@ -6534,6 +6693,11 @@ els.undoBtn.addEventListener('click', () => undo().catch((err) => setStatus(`Und
 els.saveBtn.addEventListener('click', () => saveReview(false).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
 els.saveNextBtn.addEventListener('click', () => saveReview(true).catch((err) => setStatus(`Save failed: ${err.message}`, true)));
 els.nextBtn.addEventListener('click', () => goToNextSample().catch((err) => setStatus(`Next failed: ${err.message}`, true)));
+els.downloadViewBtn.addEventListener('click', downloadCurrentImageWithLayers);
+window.addEventListener('popstate', () => {
+  const sample = requestedSampleFromLocation();
+  if (sample) loadSample(sample.sample_id, { force: true, updateUrl: false }).catch((err) => setStatus(`Sample load failed: ${err.message}`, true));
+});
 els.resetBtn.addEventListener('click', () => resetCurrent().catch((err) => setStatus(`Reset failed: ${err.message}`, true)));
 els.sam2ApplyBtn.addEventListener('click', () => {
   applySam2PointPreviewOrRun().catch((err) => setStatus(`SAM2 apply failed: ${err.message}`, true));
@@ -6590,7 +6754,8 @@ async function loadManifest(loadFirst) {
   state.manifest = await apiGet('/api/manifest');
   state.samples = state.manifest.samples || [];
   renderQueue();
-  if (loadFirst && state.samples.length > 0) await loadSample(state.samples[0].sample_id);
+  const initialSample = requestedSampleFromLocation() || state.samples[0];
+  if (loadFirst && initialSample) await loadSample(initialSample.sample_id);
 }
 
 async function loadSample(sampleId, options = {}) {
@@ -6601,6 +6766,7 @@ async function loadSample(sampleId, options = {}) {
   renderAssetWarnings();
   state.sample = await apiGet(`/api/samples/${encodeURIComponent(sampleId)}`);
   state.sampleId = sampleId;
+  if (options.updateUrl !== false) updateSampleUrl(sampleId);
   state.imageW = Number(state.sample.image.width);
   state.imageH = Number(state.sample.image.height);
   viewer.width = state.imageW;
@@ -6736,6 +6902,7 @@ async function loadSample(sampleId, options = {}) {
   state.talcoseHeuristicQa.running = false;
   state.neuralModelQa.result = null;
   state.neuralModelQa.running = false;
+  syncNeuralTalcThresholdFromSample();
   clearSam2Preview({ redraw: false });
   clearSimilarTalcPreview({ redraw: false });
   invalidateHeuristicComparison();

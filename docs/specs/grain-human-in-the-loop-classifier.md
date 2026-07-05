@@ -3,7 +3,7 @@
 - Status: implemented (v0.1, heuristic-bootstrap; awaiting human grain labels)
 - Date: 2026-07-04
 - Plan: `docs/plans/39_grain-human-in-the-loop-classifier.md`
-- Related: `docs/notes/2026-07-04-competitor-metrics-comparison.md`, `docs/specs/ore-pipeline-eval-harness.md`
+- Related: `docs/specs/ore-pipeline-eval-harness.md`
 - Sibling track: **path A** (`scripts/train_grade_classifier.py`, a whole-image efficientnet_b3 grade classifier) is built in a separate session. Path B here is the interpretable, segmentation-first track.
 
 ## 1. Idea and why it should work
@@ -17,8 +17,8 @@ clean supervision exactly where the deterministic rule is weakest
 (baseline rule per-class F1: fine 0.39, ordinary 0.17, talcose 0.00).
 
 Interpretability is the differentiator: the verdict is explainable as "N% of
-grains are fine intergrowths, here they are highlighted", which no competitor
-offers.
+grains are fine intergrowths, here they are highlighted", which a black-box
+whole-image classifier does not provide.
 
 ## 2. Scope and the talc caveat (critical)
 
@@ -103,8 +103,7 @@ to keep all photos of one аншлиф on one side of every CV fold.
    `talc_fraction ≥ τ_talc → talcose_ore; elif fine_fraction ≥ τ_fine →
    hard_to_process_ore; else row_ore`. Thresholds calibrated on train folds under
    the same GroupKFold; reports **image-level grade F1** on the 345 split,
-   directly comparable to the harness (rule 0.185 / feature-CV 0.747) and to
-   competitor A (0.88).
+   directly comparable to the harness (rule 0.185 / feature-CV 0.747).
 
 ## 6. Metrics reported
 

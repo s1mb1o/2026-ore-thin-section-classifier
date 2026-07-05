@@ -25,7 +25,7 @@
 - **The branch is robust.** Under strong acquisition perturbations (scratches,
   haze, pitting, color shift, blur+noise) macro-F1 stays ≈0.90 — a −0.02…−0.03
   drop from 0.930. Even the worst case (0.869) stays above the feature-CV ceiling
-  (~0.75) and above competitor A's per-class ordinary/refractory (0.90/0.91).
+  (~0.75).
 - **Largest sensitivity is our own preprocessing** (−0.062), not the acquisition
   noise. The CNN was trained on raw dataset images; applying the UI preprocessing
   (illumination normalization + CLAHE contrast + denoise) at inference is a
@@ -38,11 +38,11 @@
 - Color shift and surface artifacts cost about the same (~−0.03); blur+noise is
   the mildest (−0.022).
 
-## Differentiator
+## Robustness surface
 
-Neither competitor reports grade-classifier robustness to acquisition/preprocessing
-variation. This quantifies ours and gives a concrete hardening action
-(preprocessing-aware training or raw-input serving) before deployment.
+This quantifies grade-classifier robustness to acquisition/preprocessing
+variation and gives a concrete hardening action (preprocessing-aware training or
+raw-input serving) before deployment.
 
 ## Fix applied: preprocessing-aware training (2026-07-04)
 

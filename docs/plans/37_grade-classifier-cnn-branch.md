@@ -1,18 +1,16 @@
-# Plan 37 — Grade classifier CNN branch (analog of the competitor's variant)
+# Plan 37 — Grade classifier CNN branch
 
 - Date: 2026-07-04
 - Deliverable: `scripts/train_grade_classifier.py` + `scripts/evaluate_grade_branch.py`
-- Related: `docs/notes/2026-07-04-competitor-metrics-comparison.md`, `docs/specs/ore-pipeline-eval-harness.md`
+- Related: `docs/specs/ore-pipeline-eval-harness.md`
 
 ## Motivation
 
-Competitor `nail-rinatovich` reaches grade F1-macro 0.880 by training an
-end-to-end supervised CNN (`efficientnet_b3`) directly on the grade-folder
-labels — the right tool for grade classification. Our pipeline is
+An end-to-end supervised CNN (`efficientnet_b3`) trained directly on the
+grade-folder labels is the right tool for grade classification. Our pipeline is
 segmentation-first and gets 0.185 (deterministic rule) / 0.747 (feature-CV). We
-add a **parallel CNN grade branch** as an analog of their approach, alongside our
-interpretable segmentation branch (which stays for reports and per-grain
-intergrowth classification).
+add a **parallel CNN grade branch** alongside our interpretable segmentation
+branch (which stays for reports and per-grain intergrowth classification).
 
 ## Key data constraints (verified 2026-07-04)
 
@@ -40,10 +38,8 @@ gated on that future work.
   split paths, label-conflict paths, and any content whose sha256 matches an eval
   image; deduped by sha256. → clean held-out eval on the 345's ordinary/fine.
 - **Split**: grouped train/val (group = leading specimen-id regex, else sha256
-  fallback — DSCN camera names have no specimen id, matching nail's fallback),
-  ~15% val for model selection.
-- **Imbalance**: class-weighted CrossEntropy (inverse-frequency), matching nail's
-  "class-weighted CE" (they found focal/balanced-sampler did not help).
+  fallback — DSCN camera names have no specimen id), ~15% val for model selection.
+- **Imbalance**: class-weighted CrossEntropy (inverse-frequency).
 - **Optim/sched**: AdamW (lr 3e-4, wd 1e-4), linear warmup → cosine annealing.
 - **Aug** (torchvision): RandomResizedCrop(384, 0.7–1.0), H/V flip, rotation,
   ColorJitter, light blur; ImageNet normalize. Val: Resize+CenterCrop(384).
@@ -63,8 +59,8 @@ gated on that future work.
 
 - Run the trained model on the **230 ordinary/fine images of the 345 eval split**
   (held out from training) → binary macro-F1, per-class P/R/F1, confusion.
-- Compare with nail's ordinary 0.91 / refractory 0.90 and our feature-CV
-  (ordinary 0.72 / fine 0.72). Report as the CNN grade-branch result.
+- Compare with our feature-CV (ordinary 0.72 / fine 0.72). Report as the CNN
+  grade-branch result.
 - 3-class hybrid number is explicitly **pending talc-seg** (do not fabricate a
   talcose F1).
 
@@ -84,12 +80,11 @@ gated on that future work.
 - **Held-out test (230 ordinary/fine of the 345 split, excluded from training):**
   macro-F1 **0.9303**, accuracy 0.9304; ordinary F1 **0.9333** (P 0.896 / R 0.974),
   fine F1 **0.9273** (P 0.971 / R 0.887); confusion ordinary [112, 3], fine [13, 102].
-- Beats competitor A on the same two classes (ord 0.91 / refr 0.90); lifts our
-  learned ordinary/fine from feature-CV ~0.72 to ~0.93.
+- Lifts our learned ordinary/fine from feature-CV ~0.72 to ~0.93.
 - Artifacts: `models/grade_classifier/effb3_ordfine_20260704/` (`best.pt`,
   `metrics.json`, `heldout_eval.{json,md}`, `train_val_split.json`).
-- **Caveat:** 2-class only. A 3-class headline comparable to A's 0.880 waits on
-  the talcose branch (talc segmentation, deferred). Data gotcha fixed en route:
+- **Caveat:** 2-class only. A 3-class headline waits on the talcose branch (talc
+  segmentation, deferred). Data gotcha fixed en route:
   gx10 initially had only the 345 eval images synced — full dataset rsynced before
   the successful run; the script now skips missing files defensively.
 
@@ -110,6 +105,6 @@ python3 scripts/evaluate_grade_branch.py \
 ## Honesty notes
 
 - Residual leakage risk: same-аншлиф DSCN photos (no specimen id) may split across
-  train/eval; unavoidable from filenames, same limitation as the competitor.
+  train/eval; unavoidable from filenames.
 - The CNN branch is ordinary↔fine only; any 3-class headline must wait for the
   talc branch and must not reuse eval talcose for threshold fitting.

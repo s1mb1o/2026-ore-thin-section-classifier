@@ -246,6 +246,22 @@ def test_tinder_mode_arrow_actions_and_source_context(page, grain_server):
     assert page.console_errors == []
 
 
+def test_tinder_slug_direct_loads_and_updates_current_grain(page, grain_server):
+    base_url, dataset_dir = grain_server
+    page.goto(f"{base_url}/tinder/run_1__c1", wait_until="networkidle")
+    page.wait_for_selector(".tinder-stage")
+
+    assert page.locator("#mode").input_value() == "tinder"
+    assert page.locator(".zoom-panel h2").inner_text() == "Зерно · run_1__c1"
+    assert page.evaluate("window.location.pathname") == "/tinder/run_1__c1"
+
+    page.keyboard.press("ArrowUp")
+    page.wait_for_function("window.location.pathname === '/tinder/run_2__c2'")
+    assert "run_1__c1" not in read_labels(dataset_dir)
+    assert page.locator(".zoom-panel h2").inner_text() == "Зерно · run_2__c2"
+    assert page.console_errors == []
+
+
 def test_view_filter_hides_labeled_cards(page, grain_server):
     base_url, _ = grain_server
     page.goto(base_url, wait_until="networkidle")

@@ -62,6 +62,38 @@ Source dataset facts from the original repository handoff:
 - image-level class folders include ordinary/row, fine/hard-to-process, and talcose ore examples;
 - `Области оталькования` contains blue-line talc annotations and must be inspected before training the talc detector.
 
+## Submission Documentation Package (2026-07-05)
+
+The final reviewer-facing docs live at repo root, in **Russian** (jury language; repos are
+public per QA#4). Live URL + credentials are inlined by user decision:
+
+- `README.md` — rewritten skim-first entry (task → talc → `> 10%` rule + deployed URL + review
+  path in the first screen).
+- `SUBMISSION_README.md` — judge cover: access table (`https://nornickel-ai-hackathon.alola.ru/`,
+  reserve `https://nornickel-ai-hackathon.my.3simbio.ru/`; reviewer credentials are kept OUT of
+  the public repo — pointed to the presentation «Ссылки» slide),
+  ТЗ-requirements checklist, official-criteria compliance table.
+- `QUICKSTART.md` — three launch paths (deployed demo / Docker CPU `docker compose up --build`
+  :8080 + GPU `--profile gpu` :8210 / host Python) + checkpoint-availability caveat.
+- `CODE_REVIEW.md` — code map with real `file:line` anchors (rule at `component_analysis.py:134`;
+  Similar tool at `talc_review_web.py:5017/5079/5220`).
+- `EVALUATION.md`, `MODEL_CARD.md`, `DATA_CARD.md`, `LIMITATIONS.md` — source-tagged metrics,
+  per-model provenance (+ committed-vs-local checkpoint table), data provenance/splits, honest
+  limits. All numbers consolidated from `docs/notes/2026-07-05-consolidated-metrics.md`.
+
+**⚠️ Secret in git history (before making the repo public):** the reviewer basic-auth password
+was committed in `presentation/NOTES.md` (commit `7bb0751`, still present in `HEAD`). Deleting
+the file does **not** scrub history. Before opening the repo publicly, either **rotate the Caddy
+`reviewer` password** (simplest/robust) or rewrite history (git filter-repo/BFG). The submission
+docs no longer contain the credentials (they point to the presentation «Ссылки» slide).
+
+No new Dockerfile: docs reuse existing `docker/ore-pipeline-ui/Dockerfile[.gx10-ml]` via
+`compose.yaml`. All eight docs adversarially fact-checked (paths, metrics, forbidden-claims,
+cross-links) — clean except one anchor fix. Key facts held: committed-via-LFS = sulfide
+B0/B1/B2 + ResUNet + talc ResUNet; **not in clone** = deployed talc SegFormer-B0 (`outputs/`) and
+Grade-CNN → fresh clone falls back to heuristic for those stages (full ML stack only on the
+deployed demo / Docker with mounted models).
+
 ## Focused Docs
 
 - `presentation/`: **jury presentation package** (main scoring input). Content in `presentation_ru.md` (17-slide RU deck) and `features_ru.md`; separate look in `theme/deck.css`; `render_presentation.py` builds self-contained `presentation.html` + `features.html` (offline, images embedded); `capture_screens.py` re-shoots app screenshots via Playwright; see `presentation/README.md`. Note: SegFormer-B2 is ImageNet-pretrained (fine-tuned), not random-init; all metrics are tagged by source (weak-label/silver/proxy).
@@ -76,6 +108,7 @@ Source dataset facts from the original repository handoff:
 - `docs/ui/v2/ore-pipeline-ui-user-guide.md` and `docs/ui/v2/ore-pipeline-ui-customer-journeys.md`: user-facing v2 UI documentation. The guide explains how the Workspace, viewer, preprocessing/augmentation, immutable runs, grain table/outlines, Edit & Recalculate, exports, History, Series, Settings, Status, and API pages work; the journeys file captures lab-operator, expert-reviewer, supervisor, admin, API, and demo-presenter workflows. The top header displays the app version (`v2`) between History and the language selector. Settings now labels runtime defaults per stage: sulfide segmentation defaults to `ML Sulfide (SegFormer-B2)` when the B2 checkpoint is present, talc segmentation defaults to `ML model` when the SegFormer-B0 talc checkpoint is present, and grain classification defaults to `Ore Grain Heuristics`. Workspace `Configuration...` can override all three modes per run and the immutable run provenance records the selected paths.
 - `docs/ui/v2/notes/2026-07-03-ore-pipeline-ui-ux-qa-review.md`: live UI/UX QA review of the v2 ore pipeline app. The highest-priority findings have been implemented, and the follow-up live review now records remaining UI gaps: clipped result-layer chips, Edit & Recalculate statistics wrapping/collapsed labels, missing backend/readiness display, missing rule provenance, no evidence bundle, no review-candidate/source-disagreement surface, and confusing talc-review queue semantics.
 - `docs/ui/v2/notes/2026-07-04-ore-pipeline-ui-ux-smoke.md`: latest live UX smoke of the v2 ore pipeline UI on `127.0.0.1:63589`. Confirmed no browser console errors, final legend percentages/separators, talc-cluster default/color, Russian mouse hints, preprocessing popup fit, Status model spacing, splitter full-range behavior, and Edit & Recalculate brush/zoom controls. Remaining layout issues: Status page fixed-width overflow, Workspace viewer-option row wrapping, Edit & Recalculate statistics label wrapping, and Workspace mobile overflow.
+- `docs/ui/v2/notes/2026-07-05-ore-ui-e2e-default-backend-smoke.md`: latest local live E2E/default-backend smoke. It confirms the service must run on Python 3.10+ (Python 3.9 subprocess fails on `zip(..., strict=True)`), saved defaults are ML sulfide + ML talc + heuristic grain classification, Grade-CNN is not used by default, and per-run `grain_backend=ml` enables the fused Grade-CNN verdict path.
 - `docs/ui/v2/notes/2026-07-03-ore-pipeline-contextual-viewer-controls.md`: current v2 ore pipeline viewer-control contract: segmentation class checkboxes are hidden for image-only views, shown contextually for sulfide/final layers including side-by-side, and viewer-level tiling/contours/opacity controls sit in a separate row below the image canvas.
 - `apps/talc_review_web.py`: Talc Review browser app. The main viewer uses the compact v2-style bottom-left zoom overlay with Fit, Actual size, Zoom in, live percent, and Zoom out; rendered geometry was verified as `32 px` buttons, `18 px` icons, `11 px` percent text, and a `12 px` viewer offset. The top-left `Segmentation classes` and top-right `Display layers` widgets are fixed to the visible viewer viewport, refreshed after sample layout updates, hidden until the first viewer measurement, wrapped inside the measured viewer width, and clamped to the intersection of the viewer viewport, browser viewport, and center `.work-pane` so the top-right widget cannot run off-screen or overlap the side settings panel before or after sample image load. `Display layers` contains independent `Background`, `Blank White`, `Original blue lines`, `Talc cluster areas`, and `Sulfides` controls; `Blank White` fills the otherwise empty base white when `Background` is unchecked, `Original blue lines` shows the raw blue annotation strokes, and `Sulfides` tints the loaded sulfide mask without changing the selected background mode. The app serves `/sample/<slug>` URLs, updates the browser location to the selected current image slug, and direct slug links reopen that sample. The top toolbar uses compact icon buttons with explicit in-app hover/focus tooltips for Brush/Fill/Similar/Rectangle/Polygon, including delegated SVG-icon hover handling, followed by SAM2/Undo/active parameters; it no longer duplicates Fit/Zoom controls. The toolbar/review actions use a wrapping flex container that reserves full topbar height, so wrapped controls stay above the viewer at narrowed widths; the top-right icon-only `Download` action exports a full-resolution PNG composed from the currently enabled background, classes, display layers, comparison overlay, and cluster overlay without UI chrome. The neural comparison panel has `Run model` for the current sample, backed by the configured talc checkpoint and `scripts/infer_talc_segmentation.py`, plus an editable `ML talc probability threshold` initialized from `--talc-threshold` (`0.50` by default).
 - `docs/ui/v2/TODO_CANDIDATES.md`: refreshed ranked candidate backlog for the v2 ore pipeline and closely related browser UI work; use it to choose UI follow-ups without reopening the old broad OM/SEM/XRD surface.

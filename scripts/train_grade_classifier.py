@@ -356,7 +356,7 @@ def specimen_group(path: str) -> str:
     match = SPECIMEN_RE.match(name)
     if match:
         return f"spec:{match.group(1)}"
-    return f"file:{path}"  # DSCN camera names: no specimen id -> group is the file (nail's MD5 fallback analog)
+    return f"file:{path}"  # DSCN camera names: no specimen id -> group is the file
 
 
 def grouped_split(samples: list[dict[str, Any]], *, val_fraction: float, seed: int) -> tuple[list, list]:

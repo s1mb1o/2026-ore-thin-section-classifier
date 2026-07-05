@@ -38,8 +38,7 @@ talcose-grade images and is highly discriminative. The fix is simply to wire the
   or the geological >10%-by-area proxy). Near-perfect on this subset.
 - **ordinary ↔ fine** ← the grade CNN branch (held-out macro-F1 0.930; pp-aware 0.939).
 - Fuse: talcose gate first, else CNN. Rough projection puts a 3-class macro-F1 in
-  the ~0.90+ range — plausibly at/above competitor A's 0.880 (on our 345, not
-  their 218).
+  the ~0.90+ range (on our 345 split).
 
 ## Caveats before quoting a final 3-class number
 
@@ -55,4 +54,4 @@ talcose-grade images and is highly discriminative. The fix is simply to wire the
 
 Build the 3-class fusion (`talc-seg gate ⊕ ordinary/fine CNN`) and evaluate on the
 full 345 leak-aware, calibrating τ honestly. This is the concrete path to the
-3-class verdict comparable to nail's 0.880.
+3-class verdict.

@@ -159,12 +159,25 @@ def _classify_sulfide_components(
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(sulfide_mask, 8)
     components: list[dict[str, Any]] = []
     footprint_kernel = _ellipse_kernel(config.footprint_close_radius)
+    analyzed_bool = analyzed_mask.astype(bool)
+    height, width = sulfide_mask.shape
+    roi_pad = max(1, 2 * int(config.footprint_close_radius) + 2)
 
     for label_id in range(1, num_labels):
         area = int(stats[label_id, cv2.CC_STAT_AREA])
         if area <= 0:
             continue
-        component = labels == label_id
+        x = int(stats[label_id, cv2.CC_STAT_LEFT])
+        y = int(stats[label_id, cv2.CC_STAT_TOP])
+        w = int(stats[label_id, cv2.CC_STAT_WIDTH])
+        h = int(stats[label_id, cv2.CC_STAT_HEIGHT])
+        x0 = max(0, x - roi_pad)
+        y0 = max(0, y - roi_pad)
+        x1 = min(width, x + w + roi_pad)
+        y1 = min(height, y + h + roi_pad)
+
+        labels_roi = labels[y0:y1, x0:x1]
+        component = labels_roi == label_id
         contours, _ = cv2.findContours(component.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         perimeter = float(sum(cv2.arcLength(contour, True) for contour in contours))
         hull_area = _convex_hull_area(contours)
@@ -172,7 +185,8 @@ def _classify_sulfide_components(
         compactness = float(4.0 * np.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
 
         footprint = cv2.morphologyEx(component.astype(np.uint8), cv2.MORPH_CLOSE, footprint_kernel).astype(bool)
-        footprint &= analyzed_mask.astype(bool)
+        analyzed_roi = analyzed_bool[y0:y1, x0:x1]
+        footprint &= analyzed_roi
         footprint_area = int(footprint.sum())
         internal_dark_area = int(np.logical_and(footprint, ~component).sum())
         replacement_ratio = float(internal_dark_area / footprint_area) if footprint_area > 0 else 0.0
@@ -184,11 +198,8 @@ def _classify_sulfide_components(
             or compactness <= config.fine_max_compactness
         )
         class_id = CLASS_FINE_INTERGROWTH if is_fine else CLASS_ORDINARY_INTERGROWTH
-        class_mask[component] = class_id
-        x = int(stats[label_id, cv2.CC_STAT_LEFT])
-        y = int(stats[label_id, cv2.CC_STAT_TOP])
-        w = int(stats[label_id, cv2.CC_STAT_WIDTH])
-        h = int(stats[label_id, cv2.CC_STAT_HEIGHT])
+        class_roi = class_mask[y0:y1, x0:x1]
+        class_roi[component] = class_id
         components.append(
             {
                 "component_id": label_id,

@@ -17,6 +17,10 @@ Each bundle keeps the generation and review materials beside the video:
 `build_video.py`, `script_ru.md`, `subtitles_ru.srt`, `timeline.json`,
 `build_metadata.json`, `contact_sheet.jpg`, Whisper STT output under `stt/`,
 and `stt_verification_report.md`.
+The Talc bundle also includes `talc_annotation_script_ru.md`, a sample-specific
+director script for `/sample/2550382-1-10x` with screenshot capture points,
+required UI state, and Russian narration for re-recording the Talc annotation
+walkthrough.
 
 `manifest.sha256` records checksums for all MP4 files in this directory tree.
 `stt_refresh_verification_20260704.md` summarizes the fresh Whisper transcripts

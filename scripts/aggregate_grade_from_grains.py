@@ -19,7 +19,7 @@ Leak-free, grouped-by-specimen nested CV over the images of a completed batch:
 
 Because BOTH the grain model and the thresholds are fit on train images only, the
 resulting image-level grade macro-F1 is leak-free and directly comparable to the
-harness (rule 0.185 / feature-CV 0.747) and competitor A (0.88).
+harness (rule 0.185 / feature-CV 0.747).
 
 GT grade is the folder label (`expected_ore_class`) from the batch summary.csv.
 """
@@ -468,7 +468,7 @@ def render_md(summary: dict[str, Any]) -> str:
         "",
         f"Fold thresholds: {[{k: v for k, v in ft.items() if k in ('fold','tau_fine','tau_talc')} for ft in summary['fold_thresholds']]}",
         "",
-        "> Comparison: harness deterministic rule 0.185, feature-CV 0.747; competitor A (trained CNN) 0.880. "
+        "> Comparison: harness deterministic rule 0.185, feature-CV 0.747. "
         "This number is leak-free (grain model + thresholds fit per train fold).",
     ]
     if summary["training_is_bootstrap"]:

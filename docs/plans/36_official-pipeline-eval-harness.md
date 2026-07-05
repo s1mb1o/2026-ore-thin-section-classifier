@@ -41,9 +41,7 @@ UI perturb pixels identically.
    (deterministic), feature-CV (ExtraTrees) macro-F1 0.7467 / AUC 0.8834
    (~0.003 above the prior batch due to MPS inference non-determinism).
 5. **[done]** `COMMANDS.md`: run instructions + timing.
-6. **[done]** Comparison note vs competitor repos:
-   `docs/notes/2026-07-04-competitor-metrics-comparison.md`.
-7. **[done]** ChangeLog + session-sync update.
+6. **[done]** ChangeLog + session-sync update.
 
 ## Timing (this Mac, MPS, batch-size 1, tile 1024/768)
 

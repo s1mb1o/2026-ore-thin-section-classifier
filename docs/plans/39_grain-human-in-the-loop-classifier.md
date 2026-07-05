@@ -47,8 +47,8 @@ leak-free 345 split. Interpretable, segmentation-first alternative to path A.
 - **Area-weighted fine fraction** for aggregation (count fraction logged too).
 - **Talc stays separate** — grains cannot represent оталькование.
 - **Reported metric = image-level grade F1 on the 345 split**, grouped CV, so it
-  is directly comparable to the harness and competitor A. Grain accuracy is
-  intermediate and not independently validatable (we author its GT).
+  is directly comparable to the harness. Grain accuracy is intermediate and not
+  independently validatable (we author its GT).
 
 ## Results — v0.1 bootstrap (heuristic grain labels, no human labels yet)
 

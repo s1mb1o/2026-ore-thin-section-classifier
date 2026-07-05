@@ -5,9 +5,8 @@ Runs the EfficientNet-B3 grade classifier over the images of the deconflicted
 345 eval split whose labels are in the model's class set (ordinary/fine by
 default — the 230 held-out ordinary/fine images that were excluded from
 training), and reports binary macro-F1, per-class precision/recall/F1, and the
-confusion matrix. Prints a comparison against the competitor (nail: ordinary
-0.91 / refractory 0.90) and our feature-CV. Talcose is NOT scored here — it is
-deferred to the talc-segmentation branch (see docs/plans/37).
+confusion matrix. Prints a comparison against our feature-CV. Talcose is NOT
+scored here — it is deferred to the talc-segmentation branch (see docs/plans/37).
 
 Deps: torch + torchvision only. Intended to run where the checkpoint + dataset
 live (e.g. gx10 with the train-models venv).
@@ -196,7 +195,7 @@ def render_md(result: dict[str, Any]) -> str:
             f"{result['classes'][i]}=[{', '.join(str(x) for x in cm[i])}]" for i in range(len(cm))
         ),
         "",
-        "Reference: nail-rinatovich ordinary F1 0.91 / refractory 0.90; our feature-CV ordinary 0.72 / fine 0.72.",
+        "Reference: our feature-CV ordinary 0.72 / fine 0.72.",
         f"Note: {result['note']}",
         "",
     ]

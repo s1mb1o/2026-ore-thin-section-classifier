@@ -187,7 +187,7 @@ can say "grain replaced 47% by magnetite".
   under the *same* GroupKFold as path B, **with vs without** the phase-aware features.
   The claim is only credible if it beats the phase-blind feature-CV 0.747. Report both.
 - Interpretability artifact: per-grain "replaced X% by magnetite / Y% by non-ore" in the
-  overlay/report — a differentiator no competitor offers.
+  overlay/report — an interpretability differentiator over black-box classification.
 
 ## 7. Non-goals (v0.1)
 

@@ -233,6 +233,9 @@ python3 scripts/train_talc_segmentation.py \
   --max-steps-per-epoch 80
 ```
 
+To log this run to MLflow for debugging, add `--mlflow` (see "MLflow Experiment
+Tracking" below). Off by default; without it, behavior is unchanged.
+
 Run a pretrained SegFormer fold smoke with threshold calibration:
 
 ```bash
@@ -544,6 +547,9 @@ python3 scripts/train_grain_classifier.py \
   --out-dir models/grain_classifier/v0
 ```
 
+Add `--mlflow` to log params, CV metrics, and the model to MLflow for debugging
+(off by default; see "MLflow Experiment Tracking" below).
+
 4. Aggregate to image grade and evaluate leak-free (grain model + thresholds fit
 per train fold):
 
@@ -603,6 +609,45 @@ python3 heuristic_segmentation/run_heuristic_segmentation.py \
   --max-side 1600 \
   --overwrite
 ```
+
+## MLflow Experiment Tracking (debug, optional)
+
+All four training scripts (`train_grade_classifier.py`, `train_binary_sulfide.py`,
+`train_talc_segmentation.py`, `train_grain_classifier.py`) can log a run to MLflow.
+It is **off by default and debug-only** — without `--mlflow`, or if MLflow is not
+installed, tracking is a no-op and the usual `--out-dir` outputs (`metrics.json`,
+`train_log.csv`, checkpoints) are unchanged. MLflow is a dev-only dependency.
+
+```bash
+# One-time: install the dev deps (full mlflow, includes the `mlflow ui` server).
+pip install -r requirements-dev.txt
+
+# Enable tracking on any train run by adding --mlflow (+ optional overrides).
+python3 scripts/train_grade_classifier.py \
+  --out-dir models/grade_classifier/effb3_ordfine_dbg \
+  --epochs 5 \
+  --mlflow \
+  --mlflow-experiment grade-classifier \
+  --mlflow-run-name effb3-ordfine-dbg
+
+# Browse runs (metric curves, params, artifacts) from the repo root.
+mlflow ui   # then open http://127.0.0.1:5000
+```
+
+Shared flags (added by `src/ore_classifier/tracking.py`):
+
+- `--mlflow` — turn tracking on (otherwise everything is a no-op).
+- `--mlflow-experiment NAME` — experiment name (per-script default, e.g. `grade-classifier`).
+- `--mlflow-tracking-uri URI` — default is a local `./mlruns` file store (gitignored).
+- `--mlflow-run-name NAME` — optional run label.
+
+Notes:
+
+- The default `./mlruns` file store is in maintenance mode on mlflow>=3; the helper
+  sets `MLFLOW_ALLOW_FILE_STORE=true` so it keeps working without a database backend.
+- Logged per run: hyperparameters, per-epoch metrics (loss, IoU/accuracy/F1 as
+  applicable), the best-epoch metric, and the run's `metrics.json`/log/checkpoint
+  as artifacts. The sklearn grain classifier logs params + final CV metrics + model.
 
 ## Tests
 

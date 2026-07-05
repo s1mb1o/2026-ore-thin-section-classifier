@@ -1,239 +1,189 @@
-# Nornickel Hackathon v2: Official Ore Classifier
+# Nornickel AI Science Hack 2026 — Скажи мне, кто твой шлиф
 
-Clean workspace for the official `Скажи мне, кто твой шлиф` task.
+**Задача.** По панорамному OM-изображению полированного шлифа определить тип руды:
+`рядовая` / `труднообогатимая` / `оталькованная` — с проверяемой маской, долями фаз
+и текстовым заключением.
 
-## Repositories
+**Решение.** Интерпретируемый измерительный конвейер, а не «чёрный ящик»:
+`панорама → маска талька и его доля → класс руды`. Каждый процент прослеживается до
+маски, источника сигнала и параметров запуска.
 
-- **Main repo (GitHub)**: <https://github.com/s1mb1o/2026-ore-thin-section-classifier>
-- **Auto-sync mirror (SourceCraft)**: <https://sourcecraft.dev/s1mb1o/2026-ore-thin-section-classifier>
+**Судимый путь:** `изображение → доля талька → правило `> 10%` → класс руды`.
+Официальное правило простое и детерминированное: **`доля талька > 10%` → `оталькованная`**
+(строго `>`; ровно 10% — ещё не оталькованная).
 
-Push changes to the GitHub repo; the SourceCraft mirror is synchronized automatically.
+- **Развёрнутое решение (ничего ставить не нужно):** <https://nornickel-ai-hackathon.alola.ru/>
+  — доступ на слайде «Ссылки» презентации (резерв: <https://nornickel-ai-hackathon.my.3simbio.ru/>).
+- **Одна команда локально:** `python3 apps/ore_pipeline_web.py --host 127.0.0.1 --port 0`
+  (или `docker compose up --build` → `http://<host>:8080/workspace`).
+- **С чего начать ревью кода:** [`apps/ore_pipeline_web.py`](apps/ore_pipeline_web.py),
+  [`src/ore_classifier/resident_pipeline.py`](src/ore_classifier/resident_pipeline.py),
+  [`scripts/run_ore_pipeline.py`](scripts/run_ore_pipeline.py) — карта в [CODE_REVIEW.md](CODE_REVIEW.md).
+- **Артефакты запуска:** маска сульфидов, маска талька, `ore_summary.json`, `summary.csv`,
+  таблицы признаков зёрен, PDF-отчёт, `run.json` + `reports/runtime.json`.
 
-The goal is a narrow optical-microscopy pipeline:
+> Судейские документы: [SUBMISSION_README.md](SUBMISSION_README.md) · [QUICKSTART.md](QUICKSTART.md)
+> · [EVALUATION.md](EVALUATION.md) · [MODEL_CARD.md](MODEL_CARD.md) · [DATA_CARD.md](DATA_CARD.md)
+> · [LIMITATIONS.md](LIMITATIONS.md) · [CODE_REVIEW.md](CODE_REVIEW.md)
 
-```text
-panorama image
--> binary sulfide segmentation
--> component features
--> ordinary_intergrowth / fine_intergrowth classification
--> talc detection
--> official ore-class rule and report artifacts
-```
+---
 
-This v2 directory intentionally avoids the legacy broad QC assistant surface. New P0 implementation should live here.
+## Что делает система
 
-## Наши определения (методология классификации)
+1. **Сегментация сульфидов** (SegFormer-B2): бинарная маска `сульфид / не-сульфид`.
+2. **Детектор талька** (SegFormer-B0): тальк ищется **только в нерудной матрице**
+   (`анализируемая область − сульфиды − артефакты`).
+3. **Связные компоненты** сульфидов → отдельные зёрна с морфологией.
+4. **Тип срастания** `обычное / тонкое` — по морфологии зерна (не по яркости пикселя);
+   метку сорта даёт Grade-CNN (EfficientNet-B3), покомпонентное правило — объяснение.
+5. **Детерминированное правило класса руды** (из ТЗ) + доли, `decision margin` и предупреждения.
+6. **Маска, оверлеи, heatmap, метрики, отчёт** (PDF/CSV/ZIP), провенанс каждого запуска.
 
-На QA-сессии №4 организаторы подтвердили, что **экспертной «доли талька» не существует**
-и решения оцениваются **по определению, которое команда выписала явно** (порог 10%
-сохраняется). Ниже — операционные определения, по которым работает наше решение
-(источник: `docs/notes/2026-07-03-official-metrics-and-panorama-split.md`, QA #4).
+Четыре интерфейса — один движок: **WebUI**, **CLI**, **REST API + OpenAPI 3.1**,
+**MCP-сервер** для AI-агентов.
 
-- **Сульфид** — светлая рудная фаза. Определяется бинарной сегментацией
-  сульфид / не-сульфид (SegFormer-B2). Всё «серое» считаем не-сульфидом (нерудная
-  матрица / пустая порода).
-- **Тип срастания (обычное / тонкое)** — по **морфологии** восстановленного
-  сульфидного зерна, а не по яркости пикселя:
-  - крупное, компактное, слабо замещённое нерудной фазой → **обычное** срастание
-    (→ рядовая руда);
-  - ажурное / фрагментированное, сильно замещённое (высокий replacement-ratio,
-    низкие solidity и компактность) → **тонкое** срастание (→ труднообогатимая).
-  Метку сорта по срастаниям на уровне изображения даёт Grade-CNN (EfficientNet-B3);
-  покомпонентное правило по морфологии — интерпретируемое объяснение/фоллбэк.
-- **Тальк** — нерудная фаза; детектируется тальк-сегментатором (SegFormer-B0) в
-  пределах **не-сульфидной анализируемой области** (грубые зоны шлифовки/артефакты
-  исключены из знаменателя). **Доля талька = площадь талька / площадь анализируемой
-  области**; **> 10% → оталькованная руда** (строго `>`; ровно 10% — ещё не оталькованная).
-- **Итоговый сорт (фьюз):** если доля талька > 10% → **оталькованная**; иначе
-  Grade-CNN решает **рядовая ↔ труднообогатимая** по преобладающему типу срастаний.
-  Все проценты прослеживаются до маски, источника сигнала и параметров запуска.
-
-> Замечание о метриках: критерий «ошибка доли талька ≤ ±3%» не может быть
-> верифицирован — экспертной долевой разметки нет ни у кого (подтверждено QA #4).
-> Мы приводим честные прокси: сортовое решение «тальк > 10%» и IoU тальк-сегментации.
-> Сводка всех метрик — `docs/notes/2026-07-05-consolidated-metrics.md`.
-
-## Layout
+## Официальное правило классификации
 
 ```text
-AGENTS.md / CLAUDE.md
-ChangeLog.md
-ResearchLog.md
-SMOKE_TESTS.md
-docs/
-  official/   # official task page copy
-  plans/      # selected implementation plans
-  specs/      # official requirement mapping
-  notes/      # selected source/research notes
-  ui/v2/      # canonical v2 UI specs, plans, notes, and backlog
-apps/         # local browser/canvas and Streamlit QA tools
-scripts/      # dataset and training utilities
-src/ore_classifier/
-heuristic_segmentation/  # separate non-neural segmentation baseline
-outputs/      # generated artifacts, ignored by git
-models/       # local pointers/config only; HF cache stays outside repo
-dataset       # local copy of the verified official data
+если доля талька > 10%:                     -> оталькованная руда
+иначе Grade-CNN решает рядовая ↔ труднообогатимая
+    (фоллбэк-правило по морфологии: обычные >= тонкие -> рядовая, иначе труднообогатимая)
 ```
 
-## Current Data Source
+- `доля талька = площадь талька / площадь анализируемой области` (артефакты шлифовки
+  исключены из знаменателя; полнокадровая доля сохраняется как `*_fraction_image`);
+- строго `>`: ровно `10%` — **ещё не** оталькованная;
+- ноль сульфидов и зоны артефактов исключаются из расчёта.
 
-`dataset` is a local copy of the verified official data. The source manifest verifies `1236/1236` files and about `3.0 GB` of official data.
+### Наши операционные определения
 
-## Core Docs
+На QA-сессии №4 организаторы подтвердили: **экспертной «доли талька» не существует**, и
+решения оцениваются **по определению, которое команда выписала явно** (порог 10% сохраняется).
+Наши определения:
 
-- `docs/plans/25_standalone-ore-classifier-project.md`
-- `docs/plans/26_weak-supervision-sulfide-binary-model.md`
-- `docs/ui/v2/README.md`
-- `docs/ui/v2/plans/28_ore-pipeline-ui.md`
-- `docs/ui/v2/notes/talc-blue-line-conversion.md`
-- `docs/specs/official-tz-solution-map.ru.md`
-- `docs/official/Скажи мне кто твой шлиф.md`
-- `docs/cards/binary-sulfide-model-card.md`
-- `docs/cards/official-balanced-eval-dataset-card.md`
-- `docs/cards/demo-run-fact-sheet.md`
-- `SMOKE_TESTS.md`
+- **Сульфид** — светлая рудная фаза (бинарная сегментация SegFormer-B2). Всё «серое» —
+  не-сульфид (нерудная матрица / пустая порода).
+- **Тип срастания** — по **морфологии** восстановленного зерна: крупное, компактное,
+  слабо замещённое нерудной фазой → **обычное** (рядовая); ажурное/фрагментированное,
+  сильно замещённое (высокий replacement-ratio, низкие solidity/компактность) → **тонкое**
+  (труднообогатимая).
+- **Тальк** — нерудная фаза (SegFormer-B0) в пределах не-сульфидной анализируемой области.
+- **Итог (фьюз):** тальк-ветка решает `оталькованная`; иначе Grade-CNN — `рядовая ↔ труднообогатимая`.
 
-## Implemented Blocks
+Полная методология и дословные цитаты QA#4 — в
+[`docs/notes/2026-07-03-official-metrics-and-panorama-split.md`](docs/notes/2026-07-03-official-metrics-and-panorama-split.md)
+и слайде 8 презентации.
 
-### Ore Pipeline Browser UI
-
-The end-to-end local UI supports image upload, preprocessing previews, immutable
-runs, result visualization, edit-and-recalculate, CSV/PDF export, and history:
+## Попробовать
 
 ```bash
-python3 apps/ore_pipeline_web.py \
-  --host 127.0.0.1 \
-  --port 0
+# 1. Развёрнутое решение (Selectel Alize, 1×L4 24 ГБ) — ничего ставить не нужно
+#    https://nornickel-ai-hackathon.alola.ru/   (доступ — на слайде «Ссылки» презентации)
+
+# 2. Docker (CPU/эвристика по умолчанию)
+docker compose up --build          # -> http://<host>:8080/workspace
+docker compose --profile gpu up --build   # ML-бэкенд на NVIDIA GPU (порт 8210)
+
+# 3. Локально без Docker
+python3 -m pip install -r requirements.txt
+python3 apps/ore_pipeline_web.py --host 127.0.0.1 --port 0
 ```
 
-The default UI backend is heuristic for local smoke reliability. Use
-`--backend ml --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt`
-when the full ML environment is active.
+Подробные инструкции для жюри — [QUICKSTART.md](QUICKSTART.md).
 
-For the Nornickel VM GUI runtime, use the Docker/Compose wrapper:
+## Что на выходе (артефакты)
 
-```bash
-docker compose up --build
+Каждый запуск — неизменяемая (immutable) папка со следующими файлами:
+
+- `masks/sulfide_mask.png` — бинарная маска сульфидов (этап 1);
+- `masks/talc_mask.png`, `masks/talc_cluster_mask.png` — тальк (клипован по не-сульфиду);
+- confidence-heatmap и оверлеи сульфидов/срастаний для визуальной проверки;
+- `component_features.csv` — покомпонентные признаки зёрен (площадь, replacement-ratio, solidity…);
+- `ore_summary.json` — машиночитаемое решение, доли, `decision margin`, предупреждения;
+- `run.json` + `reports/runtime.json` — провенанс (бэкенд, чекпойнт, устройство, тайлы, пороги);
+- экспорт: PDF-отчёт, `metrics.csv`, ZIP, ГИС-экспорт (GeoJSON/Shapefile).
+
+## Карта репозитория
+
+```text
+apps/                     браузерные приложения (stdlib http.server, без Streamlit)
+  ore_pipeline_web.py     главный UI пайплайна (Рабочее место/Серии/История/Статус/API/Настройки)
+  talc_review_web.py      QA-инструмент ревью масок талька (производит silver-разметку)
+  grain_review_web.py     ревью зёрен (human-in-the-loop разметка обычное/тонкое)
+  ore_mcp_server.py       MCP-сервер: пайплайн как инструмент AI-агента
+src/ore_classifier/       ядро: resident_pipeline, model_io, component_analysis, tiling, ...
+scripts/                  CLI-утилиты: run_ore_pipeline, run_official_batch, train_*, evaluate_*
+heuristic_segmentation/   отдельный не-нейросетевой baseline (fallback без torch)
+docs/                     official/ · specs/ · plans/ · notes/ · benchmarks/ · cards/ · ui/v2/
+models/                   чекпойнты (Git LFS); HF-кэш живёт вне репозитория
+dataset/                  локальная копия официального датасета (в git не коммитится)
+outputs/                  генерируемые артефакты (в git не коммитится)
 ```
 
-Then open `http://<vm-host>:8080/workspace`. The image defaults to the
-heuristic backend and persists UI state under `outputs/ore_pipeline_ui`.
+## Быстрый локальный запуск (CLI)
 
-### Talc Blue-Line Conversion And QA
-
-The talc annotation path is implemented in the v2 layout:
-
-```bash
-python3 scripts/convert_talc_blue_lines.py \
-  --input "dataset/Фото руд по сортам. ч1/Оталькованные руды/Области оталькования" \
-  --output-dir outputs/talc_blue_line_conversion \
-  --summary-json outputs/talc_blue_line_conversion_summary.json
-```
-
-Review UI:
-
-```bash
-streamlit run apps/deprecated/streamlit/talc_review_streamlit.py -- \
-  --conversion-dir outputs/talc_blue_line_conversion
-```
-
-The current full run contains `42` samples with status counts:
-`31 candidate_ok`, `9 needs_manual_review`, and
-`2 sulfide_overlap_review_required`.
-
-### Heuristic Segmentation Baseline
-
-The separate `heuristic_segmentation/` subproject provides a non-neural
-baseline for sulfide/intergrowth segmentation and disagreement analysis:
-
-```bash
-python3 heuristic_segmentation/run_heuristic_segmentation.py \
-  --image "dataset/Фото руд по сортам. ч1/Рядовые руды/DSCN2176.JPG" \
-  --output-dir outputs/heuristic_segmentation_smoke \
-  --max-side 900 \
-  --overwrite
-```
-
-It writes a four-label `class_mask.png`, binary sulfide/talc-candidate masks,
-an overlay, component CSV, and JSON metrics. Treat `talc_candidate` and the
-ordinary/fine decision as heuristic QA signals, not expert ground truth.
-
-### Neural Binary Sulfide Pipeline
-
-Build a balanced official image-level evaluation split:
-
-```bash
-python3 scripts/build_official_balanced_eval_split.py \
-  --official-manifest outputs/official_manifest.json \
-  --out-json outputs/official_balanced_eval_split.json \
-  --out-csv outputs/official_balanced_eval_split.csv
-```
-
-Current split: `129` ordinary, `129` fine, `129` talcose images; panoramas are
-kept separately as `14` unlabelled stress/performance images.
-
-Evaluate a binary sulfide checkpoint with organizer-relevant segmentation
-metrics:
-
-```bash
-python3 scripts/evaluate_binary_sulfide.py \
-  --dataset-manifest outputs/binary_sulfide_dataset_v0/manifest.json \
-  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
-  --split val \
-  --batch-size 16 \
-  --hausdorff-max-items 512 \
-  --out-json outputs/evaluations/segformer_b0_best_eval_metrics.json
-```
-
-Run one image through the current end-to-end path:
+Один снимок через end-to-end путь:
 
 ```bash
 python3 scripts/run_ore_pipeline.py \
   --image "dataset/Фото руд по сортам. ч1/Рядовые руды/2539589-1.JPG" \
   --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
+  --talc-checkpoint outputs/talc_segformer_folds/segformer_b0_full_20260703/fold_00/segformer_b0/best.pt \
   --out-dir outputs/demo_ore_pipeline \
-  --tile-size 1024 \
-  --stride 768 \
-  --batch-size 4 \
-  --auto-talc-candidate
+  --tile-size 1024 --stride 768 --batch-size 4
 ```
 
-The pipeline writes:
+Для больших панорам используйте путь по файлу (path-based), а не base64-загрузку.
+Без чекпойнтов доступен объяснимый эвристический baseline
+(`heuristic_segmentation/run_heuristic_segmentation.py`).
 
-- binary sulfide mask;
-- confidence heatmap;
-- sulfide overlay preview;
-- automatic talc candidate mask/overlay/summary, or a provided `--talc-mask`;
-- component ordinary/fine CSV;
-- intergrowth overlay preview;
-- deterministic ore summary JSON.
+## API / пакетная обработка
 
-Run the full image-level balanced split and compute organizer-facing
-classification metrics:
+- **REST API + OpenAPI 3.1:** машиночитаемая спецификация — `GET /api/openapi.json`
+  (открыта даже при включённой парольной защите); интерактивная страница — `/api`.
+- **Серии / batch:** пакетная обработка партии снимков в UI (`Серии`) и в CLI
+  (`scripts/run_official_batch.py`).
+- **MCP:** `apps/ore_mcp_server.py` — инструменты `classify_thin_section` и `get_config`,
+  модель остаётся тёплой между вызовами.
 
-```bash
-python3 scripts/run_official_batch.py \
-  --split-json outputs/official_balanced_eval_split.json \
-  --dataset-root dataset \
-  --checkpoint models/binary_sulfide/segformer_b2_dataset_v0_zelda_20260703_overnight_safetensors/best.pt \
-  --out-dir outputs/evaluations/b2_official_balanced_auto_talc \
-  --tile-size 1024 \
-  --stride 768 \
-  --batch-size 1 \
-  --device auto \
-  --overwrite
-```
+## Провенанс моделей и данных
 
-```bash
-python3 scripts/evaluate_ore_classification.py \
-  --summary-csv outputs/evaluations/b2_official_balanced_auto_talc/summary.csv \
-  --out-json outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.json \
-  --out-md outputs/evaluations/b2_official_balanced_auto_talc/ore_classification_metrics.md
-```
+- **Модели:** SegFormer-B2 (сульфиды), SegFormer-B0 (тальк, 5-fold), EfficientNet-B3
+  (Grade-CNN, тип срастаний), ResUNet и эвристика как baseline/fallback. Все backbone
+  предобучены на ImageNet и дообучены на наших метках. Провенанс, метрики и статус
+  чекпойнтов — в [MODEL_CARD.md](MODEL_CARD.md).
+- **Данные:** официальный пакет Норникеля (1236 файлов, ~3.0 ГБ, SHA-256 сверен) с метками
+  **уровня папки** + 42 примера «синих линий» талька; публичный LumenStone S1/S2 как
+  proxy-претрен пиксельных масок. **Пиксельной экспертной GT нет** — вся тренировка это
+  слабый надзор. Подробно — [DATA_CARD.md](DATA_CARD.md).
 
-## Next Implementation Steps
+## Валидация и тесты
 
-1. Run the B2 official balanced batch and inspect `ore_classification_metrics.md`.
-2. Calibrate component-level ordinary/fine thresholds against the balanced labelled split.
-3. Compare SegFormer-B2/B1/B0 and heuristic segmentation outputs to build the first disagreement queue if time permits.
-4. Use accepted talc masks from `outputs/talc_blue_line_conversion` via `--talc-mask` when stronger talc claims are needed; otherwise keep `--auto-talc-candidate` framed as a conservative candidate.
+- **Метрики** (все размечены по источнику — weak-label / silver / proxy / folder-GT):
+  сульфид IoU `0.974` (weak-label); тальк IoU `0.644` / F1 `0.782` (silver, 5-fold);
+  Grade-CNN тип срастаний macro-F1 `0.930–0.939` (folder-GT, held-out 230) — критерий
+  ТЗ «≥ 90%» закрыт; фьюз-вердикт 3 класса macro-F1 `0.861` (leak-free 345). Сводка —
+  [EVALUATION.md](EVALUATION.md) и
+  [`docs/notes/2026-07-05-consolidated-metrics.md`](docs/notes/2026-07-05-consolidated-metrics.md).
+- **Производительность:** цель ТЗ ≤ 5 мин на 10000×10000 закрыта (панорама 126 Мп за
+  99.6–186.9 с на трёх машинах); крупнейшая панорама 574 Мп — 7:08 end-to-end на RTX 4090.
+- **Тесты:** 40 модулей unit/интеграционных тестов в `tests/` + браузерные Playwright-тесты
+  + формальная валидация OpenAPI. `python3 -m pytest tests/`.
+
+## Известные ограничения
+
+Кратко: нет экспертной пиксельной GT (сегментационные метрики weak-label/silver, завышены
+относительно геологической точности); критерий «ошибка доли талька ≤ ±3%» **не проверяем ни
+для кого** — организаторы (QA#4) подтвердили, что не располагают эталонными долями талька;
+ось `обычное↔тонкое` — слабое место детерминированного правила (её закрывает Grade-CNN);
+детектор талька обучен на 42 фото с общими условиями съёмки (silver-маски). Полный список —
+[LIMITATIONS.md](LIMITATIONS.md).
+
+## Ссылки
+
+- **GitHub (основной):** <https://github.com/s1mb1o/2026-ore-thin-section-classifier>
+- **SourceCraft (зеркало, auto-sync):** <https://sourcecraft.dev/s1mb1o/2026-ore-thin-section-classifier>
+- **Развёрнутое решение:** <https://nornickel-ai-hackathon.alola.ru/> (доступ — на слайде «Ссылки» презентации)
+- **Резерв:** <https://nornickel-ai-hackathon.my.3simbio.ru/> · <https://nornickel-backup.my.3simbio.ru/workspace>
+- **Презентация:** `presentation/` (RU-дек `presentation_ru.md`, рендер `presentation.html`)
+- **Постановка задачи:** [`docs/official/Скажи мне кто твой шлиф.md`](docs/official/Скажи%20мне%20кто%20твой%20шлиф.md)

@@ -4,7 +4,7 @@
 - Date: 2026-07-04
 - Owner: `src/ore_classifier/resident_pipeline.py`, `scripts/run_resident_batch.py`
 - Related: `docs/plans/38_resident-batch-inference.md`,
-  `scripts/evaluate_official_pipeline.py`, `docs/notes/2026-07-04-competitor-metrics-comparison.md`
+  `scripts/evaluate_official_pipeline.py`
 
 ## 1. Problem
 

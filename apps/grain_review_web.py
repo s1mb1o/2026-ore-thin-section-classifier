@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 GRAIN_CLASSES = ["ordinary_intergrowth", "fine_intergrowth", "uncertain"]
 MAX_POST_BYTES = 8 * 1024 * 1024
 SORT_VALUES = {"manifest", "review_value"}
+SMALL_AREA_QUANTILE = 0.20
 
 # Full morphology feature set carried per grain in grains_manifest.csv, surfaced
 # in the labeling UI so the annotator can decide ordinary vs fine from the same
@@ -91,6 +92,7 @@ class GrainReviewStore:
         self.lock = threading.RLock()
         self.dataset_summary = self._load_dataset_summary()
         self.grains: list[dict[str, str]] = self._load_manifest()
+        self.small_area_threshold_px = self._area_quantile(SMALL_AREA_QUANTILE)
         self.index_by_uid = {g["grain_uid"]: i for i, g in enumerate(self.grains)}
         self.labels: dict[str, dict[str, Any]] = self._load_annotations()
 
@@ -103,6 +105,13 @@ class GrainReviewStore:
             return {}
         payload = json.loads(self.summary_path.read_text(encoding="utf-8"))
         return payload if isinstance(payload, dict) else {}
+
+    def _area_quantile(self, fraction: float) -> float:
+        areas = sorted(area for g in self.grains if (area := _num(g.get("area_px"))) is not None and area > 0)
+        if not areas:
+            return 0.0
+        index = round((len(areas) - 1) * max(0.0, min(1.0, fraction)))
+        return float(areas[index])
 
     def _load_annotations(self) -> dict[str, dict[str, Any]]:
         if not self.annotations_path.exists():
@@ -130,13 +139,22 @@ class GrainReviewStore:
                 counts[label] += 1
         return {"total": len(self.grains), "labeled": len(self.labels), "counts": counts}
 
-    def page(self, *, offset: int, limit: int, grade: str, view: str, sort: str = "manifest") -> dict[str, Any]:
+    def page(
+        self, *, offset: int, limit: int, grade: str, view: str, sort: str = "manifest", focus: str = ""
+    ) -> dict[str, Any]:
         if sort not in SORT_VALUES:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"bad sort {sort}")
         with self.lock:
             filtered = self._filter(grade=grade, view=view)
             if sort == "review_value":
                 filtered = sorted(filtered, key=self._review_sort_key)
+            focus_found = False
+            if focus:
+                for pos, index in enumerate(filtered):
+                    if self.grains[index].get("grain_uid") == focus:
+                        offset = (pos // limit) * limit
+                        focus_found = True
+                        break
             window = filtered[offset : offset + limit]
             items = [self._item_payload(i) for i in window]
             return {
@@ -145,6 +163,8 @@ class GrainReviewStore:
                 "limit": limit,
                 "filtered_total": len(filtered),
                 "sort": sort,
+                "focus": focus,
+                "focus_found": focus_found,
                 "stats": self.stats(),
             }
 
@@ -182,8 +202,31 @@ class GrainReviewStore:
     def _review_sort_key(self, index: int) -> tuple[int, int]:
         g = self.grains[index]
         features, fine_signals, fine_vote_count, boundary_only_fine = self._fine_signal_state(g)
-        value = self._review_value_payload(g, features, fine_signals, fine_vote_count, boundary_only_fine)
+        small_fine_context = self._small_fine_context(g, features, fine_signals)
+        value = self._review_value_payload(
+            g, features, fine_signals, fine_vote_count, boundary_only_fine, small_fine_context
+        )
         return (-int(value["score"]), index)
+
+    def _small_fine_context(
+        self, g: dict[str, str], features: dict[str, float | None], fine_signals: dict[str, bool]
+    ) -> dict[str, Any]:
+        area = features.get("area_px") or 0.0
+        ordinary_shape = not fine_signals["solidity"] and not fine_signals["compactness"]
+        matched = (
+            g.get("grade_label") == "fine_intergrowth"
+            and self.small_area_threshold_px > 0
+            and area > 0
+            and area <= self.small_area_threshold_px
+            and ordinary_shape
+        )
+        return {
+            "matched": matched,
+            "area_px": area,
+            "threshold_px": self.small_area_threshold_px,
+            "ordinary_shape": ordinary_shape,
+            "quantile": SMALL_AREA_QUANTILE,
+        }
 
     def _review_value_payload(
         self,
@@ -192,6 +235,7 @@ class GrainReviewStore:
         fine_signals: dict[str, bool],
         fine_vote_count: int,
         boundary_only_fine: bool,
+        small_fine_context: dict[str, Any],
     ) -> dict[str, Any]:
         uid = g["grain_uid"]
         label = self.labels.get(uid, {}).get("label")
@@ -212,9 +256,18 @@ class GrainReviewStore:
         ]
         threshold_component = 20.0 * (sum(threshold_values) / len(threshold_values))
         boundary_component = 15.0 if boundary_only_fine else 0.0
+        small_context_component = 20.0 if small_fine_context.get("matched") else 0.0
         area = max(0.0, features.get("area_px") or 0.0)
         impact_component = 10.0 * min(1.0, math.log1p(area) / math.log1p(5000.0))
-        score = min(100.0, status_component + ambiguity_component + threshold_component + boundary_component + impact_component)
+        score = min(
+            100.0,
+            status_component
+            + ambiguity_component
+            + threshold_component
+            + boundary_component
+            + small_context_component
+            + impact_component,
+        )
 
         reasons = []
         if label is None:
@@ -225,10 +278,12 @@ class GrainReviewStore:
             reasons.append("спорные признаки")
         if boundary_only_fine:
             reasons.append("тонкое только по границе")
+        if small_fine_context.get("matched"):
+            reasons.append("мелкое в тонких")
         if threshold_component >= 10.0:
             reasons.append("близко к порогам")
         if impact_component >= 7.0:
-            reasons.append("крупное зерно")
+            reasons.append("заметная площадь")
         if not reasons:
             reasons.append("низкий приоритет")
         return {
@@ -237,6 +292,7 @@ class GrainReviewStore:
             "ambiguity": int(round(ambiguity_component)),
             "threshold": int(round(threshold_component)),
             "boundary": int(round(boundary_component)),
+            "small_context": int(round(small_context_component)),
             "impact": int(round(impact_component)),
             "reasons": reasons[:4],
         }
@@ -245,6 +301,7 @@ class GrainReviewStore:
         g = self.grains[index]
         uid = g["grain_uid"]
         features, fine_signals, fine_vote_count, boundary_only_fine = self._fine_signal_state(g)
+        small_fine_context = self._small_fine_context(g, features, fine_signals)
         bbox_values = {key: _num(g.get(key)) for key in BBOX_FIELDS}
         bbox = {
             "x": bbox_values["bbox_x"],
@@ -293,7 +350,9 @@ class GrainReviewStore:
         # compactness) while the interior shows no replacement (dark_inside_ratio
         # < threshold) — a massive homogeneous grain with a merely ragged contour,
         # which is likely NOT труднообогатимое. Flag it for the annotator.
-        review_value = self._review_value_payload(g, features, fine_signals, fine_vote_count, boundary_only_fine)
+        review_value = self._review_value_payload(
+            g, features, fine_signals, fine_vote_count, boundary_only_fine, small_fine_context
+        )
         return {
             "grain_uid": uid,
             "crop_url": "/crops/" + quote(g["crop_path"].split("crops/", 1)[-1]),
@@ -315,6 +374,7 @@ class GrainReviewStore:
                 "total_votes": total_votes,
             },
             "boundary_only_fine": boundary_only_fine,
+            "small_fine_context": small_fine_context,
             "review_value": review_value,
             "label": self.labels.get(uid, {}).get("label"),
         }
@@ -497,7 +557,7 @@ class GrainReviewHandler(BaseHTTPRequestHandler):
     def _handle_get(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
-        if path == "/":
+        if path == "/" or path == "/tinder" or path.startswith("/tinder/"):
             self.send_html(render_page())
             return
         if path == "/api/page":
@@ -508,6 +568,7 @@ class GrainReviewHandler(BaseHTTPRequestHandler):
                 grade=(q.get("grade", ["all"])[0]),
                 view=(q.get("view", ["all"])[0]),
                 sort=(q.get("sort", ["manifest"])[0]),
+                focus=(q.get("focus", [""])[0]),
             )
             self.send_json(payload)
             return
@@ -614,6 +675,7 @@ main{flex:1;min-width:0}
 .b-ord{background:rgba(31,162,90,.2);color:#7fe0a8}.b-fine{background:rgba(216,63,69,.2);color:#f2969a}
 .b-warn{background:rgba(230,160,30,.22);color:#f0c264}
 .b-value{background:rgba(58,160,164,.2);color:#87dadd}
+.b-small{background:rgba(175,116,255,.22);color:#c7a8ff}
 .warn{background:rgba(230,160,30,.15);border:1px solid rgba(230,160,30,.45);color:#f0c264;padding:6px 8px;border-radius:8px;font-size:12px;margin:8px 0;line-height:1.35}
 .card.warn-edge{outline:1px solid rgba(230,160,30,.5)}
 .row{display:flex;margin-top:auto}.row button{flex:1;border-radius:0;border:0;border-top:1px solid var(--line);font-size:12px;padding:5px 0}
@@ -690,13 +752,25 @@ aside img{width:100%;max-height:300px;object-fit:contain;background:#0c0e12;bord
 const state={offset:0,limit:60,grade:'all',view:'all',sort:'manifest',mode:'grid',items:[],sel:0,filteredTotal:0,showContour:false,showBackground:true};
 const $=s=>document.querySelector(s);
 const CLASS_RU={ordinary_intergrowth:'рядовое',fine_intergrowth:'тонкое',uncertain:'неясно'};
+function initialRoute(){
+  const parts=window.location.pathname.split('/').filter(Boolean);
+  if(parts[0]==='tinder'&&parts[1])return {mode:'tinder',focusUid:decodeURIComponent(parts.slice(1).join('/'))};
+  return {mode:'grid',focusUid:null};
+}
+const route=initialRoute();state.mode=route.mode;state.focusUid=route.focusUid;
 function fmt(x,d){const n=parseFloat(x);return (x===null||isNaN(n))?'—':n.toFixed(d===undefined?2:d);}
 function statsText(s){return `размечено ${s.labeled}/${s.total} · рядовых ${s.counts.ordinary_intergrowth} · тонких ${s.counts.fine_intergrowth} · неясно ${s.counts.uncertain}`;}
 function selectedItem(){return state.items[state.sel];}
 async function load(){
   const q=new URLSearchParams({offset:state.offset,limit:state.limit,grade:state.grade,view:state.view,sort:state.sort});
+  if(state.focusUid)q.set('focus',state.focusUid);
   const r=await fetch('/api/page?'+q);const d=await r.json();
-  state.items=d.items;state.sel=0;state.filteredTotal=d.filtered_total;
+  const focusUid=state.focusUid;state.focusUid=null;
+  state.items=d.items;state.offset=d.offset;state.sel=0;state.filteredTotal=d.filtered_total;
+  if(focusUid){
+    const focusIndex=state.items.findIndex(it=>it.grain_uid===focusUid);
+    if(focusIndex>=0)state.sel=focusIndex;
+  }
   $('#prog').textContent=statsText(d.stats);
   $('#pageinfo').textContent=`${d.filtered_total?d.offset+1:0}–${Math.min(d.offset+d.limit,d.filtered_total)} из ${d.filtered_total}`;
   render();
@@ -707,16 +781,17 @@ function render(){
   $('#gridWrap').classList.toggle('hidden',!gridMode);
   $('#tinder').classList.toggle('hidden',gridMode);
   $('#keyhint').textContent=gridMode?'O=рядовое · F=тонкое · U=неясно · ←/→ навигация':'← тонкое · → рядовое · ↑ отложить · ↓ не уверен';
-  if(!gridMode){renderTinder();return;}
+  if(!gridMode){renderTinder();updateRoute();return;}
   const g=$('#grid');g.innerHTML='';
   state.items.forEach((it,i)=>{
     const c=document.createElement('div');c.className='card'+(i===state.sel?' sel':'')+(it.boundary_only_fine?' warn-edge':'');
     const f=it.features,sg=it.fine_signals;
     const badge=it.heuristic_label==='fine_intergrowth'?'<span class="badge b-fine">эвр: тонкое</span>':'<span class="badge b-ord">эвр: рядовое</span>';
     const warn=it.boundary_only_fine?'<span class="badge b-warn" title="«тонкое» только из-за рваной границы, замещение низкое">⚠ край</span>':'';
+    const small=it.small_fine_context&&it.small_fine_context.matched?`<span class="badge b-small" title="Мелкое зерно из тонких: площадь ${fmt(it.small_fine_context.area_px,0)} ≤ ${fmt(it.small_fine_context.threshold_px,0)} px, форма рядовая">мелк</span>`:'';
     const value=it.review_value?`<span class="badge b-value" title="${it.review_value.reasons.join(' · ')}">ценн ${it.review_value.score}</span>`:'';
     c.innerHTML=`<img loading="lazy" src="${it.crop_url}">
-    <div class="meta"><span>${badge}${warn}${value}</span><span>a=${fmt(f.area_px,0)}</span></div>
+    <div class="meta"><span>${badge}${warn}${small}${value}</span><span>a=${fmt(f.area_px,0)}</span></div>
     <div class="chips">${chip('d',f.dark_inside_ratio,sg.dark_inside_ratio,2)}${chip('s',f.solidity,sg.solidity,2)}${chip('c',f.compactness,sg.compactness,3)}</div>
     <div class="row">
       <button class="a-fine ${it.label==='fine_intergrowth'?'on':''}" data-l="fine_intergrowth">тонкое</button>
@@ -728,8 +803,14 @@ function render(){
     g.appendChild(c);
   });
   renderDetail();
+  updateRoute();
 }
-function highlight(){document.querySelectorAll('.card').forEach((c,i)=>c.classList.toggle('sel',i===state.sel));renderDetail();}
+function updateRoute(){
+  const it=selectedItem();
+  const path=state.mode==='tinder'&&it?`/tinder/${encodeURIComponent(it.grain_uid)}`:'/';
+  if(window.location.pathname!==path)history.replaceState({mode:state.mode,grain_uid:it?it.grain_uid:null},'',path);
+}
+function highlight(){document.querySelectorAll('.card').forEach((c,i)=>c.classList.toggle('sel',i===state.sel));renderDetail();updateRoute();}
 function frow(label,val,d,isFine){return `<tr class="${isFine?'fs':''}"><td>${label}</td><td>${fmt(val,d)}</td></tr>`;}
 function heuristicScoreText(it){
   const s=it.heuristic_scores||{ordinary:0,fine:0,fine_votes:0,total_votes:3};
@@ -739,6 +820,11 @@ function reviewValueText(it){
   const v=it.review_value;if(!v)return '';
   const reasons=(v.reasons||[]).join(' · ');
   return `Ценность проверки: ${v.score}/100${reasons?' · '+reasons:''}`;
+}
+function smallFineText(it){
+  const s=it.small_fine_context;
+  if(!s||!s.matched)return '';
+  return `Мелкое зерно в тонких: площадь ${fmt(s.area_px,0)} px ≤ ${fmt(s.threshold_px,0)} px, форма по solidity/compactness выглядит рядовой`;
 }
 function heuristicTable(it){
   const rows=it.heuristic_rows||[];
@@ -784,7 +870,7 @@ function renderDetail(){
     : '';
   a.innerHTML=`<h2>Отчёт по зерну · ${it.grade_label}</h2>
   ${cropViewer(it)}
-  <div class="verdict">Эвристика: ${verdict}${heuristicTable(it)}<span class="dhint">Счёт эвристики: ${heuristicScoreText(it)}</span><br><span class="dhint">${reviewValueText(it)}</span><br><span class="dhint">${cur}</span></div>
+  <div class="verdict">Эвристика: ${verdict}${heuristicTable(it)}<span class="dhint">Счёт эвристики: ${heuristicScoreText(it)}</span><br><span class="dhint">${reviewValueText(it)}</span>${smallFineText(it)?'<br><span class="dhint">'+smallFineText(it)+'</span>':''}<br><span class="dhint">${cur}</span></div>
   ${warnBox}
   <table class="ftab">
     ${frow('Доля тёмного (замещение)',f.dark_inside_ratio,2,sg.dark_inside_ratio)}
@@ -835,7 +921,7 @@ function renderTinder(){
       <h2>Зерно · ${it.grain_uid}</h2>
       ${cropViewer(it)}
       <div class="tinder-body">
-        <div class="tinder-verdict">Эвристика: ${verdict}${heuristicTable(it)}<span class="dhint">Счёт эвристики: ${heuristicScoreText(it)}</span><br><span class="dhint">${reviewValueText(it)}</span><br><span class="dhint">${cur}</span></div>
+        <div class="tinder-verdict">Эвристика: ${verdict}${heuristicTable(it)}<span class="dhint">Счёт эвристики: ${heuristicScoreText(it)}</span><br><span class="dhint">${reviewValueText(it)}</span>${smallFineText(it)?'<br><span class="dhint">'+smallFineText(it)+'</span>':''}<br><span class="dhint">${cur}</span></div>
         ${it.boundary_only_fine?'<div class="warn">«тонкое» только из-за границы; если зерно однородное, лучше отправить вправо как рядовое.</div>':''}
         ${detailTable(it)}
         <div class="swipe-actions">
@@ -907,6 +993,7 @@ $('#view').onchange=e=>{state.view=e.target.value;state.offset=0;load();};
 $('#sort').onchange=e=>{state.sort=e.target.value;state.offset=0;load();};
 $('#prev').onclick=()=>{state.offset=Math.max(0,state.offset-state.limit);load();};
 $('#next').onclick=()=>{state.offset+=state.limit;load();};
+$('#mode').value=state.mode;
 load();
 </script></body></html>"""
 

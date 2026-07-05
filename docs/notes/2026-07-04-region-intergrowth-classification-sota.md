@@ -116,8 +116,8 @@ from an unfalsifiable overlay into a measured metric.
 ### Parallel headline (medium): whole-image EfficientNet-B3 for the judged metric
 Already scaffolded: `scripts/train_grade_classifier.py` (EfficientNet-B3, ImageNet init,
 specimen-grouped split, sha256 dedup, inverse-freq class weights), `scripts/evaluate_grade_branch.py`.
-Sidesteps the no-region-GT problem entirely; image macro-F1 toward **~0.85+**
-(competitor whole-image CNN ≈ 0.88). **No region attribution** — keep it separate from the
+Sidesteps the no-region-GT problem entirely; image macro-F1 toward **~0.85+**.
+**No region attribution** — keep it separate from the
 interpretable region pipeline; optionally ensemble its probability with the Tier-1 tabular
 classifier. Trap: shortcut/confound learning (magnification/illumination/JPEG/folder) —
 grouped CV + a ч1→ч2 cross-batch check mandatory.
