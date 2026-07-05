@@ -1,0 +1,33 @@
+{
+  "schema_version": "talc-annotation-sample-video-v0.1",
+  "source_script": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/talc_annotation_script_ru.md",
+  "validation": {
+    "path": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/nornikel_talc_annotation_sample_2550382_1080p_ru.mp4",
+    "duration": 252.0,
+    "video_codec": "h264",
+    "width": 1920,
+    "height": 1080,
+    "audio_codec": "aac",
+    "subtitles": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/subtitles_talc_annotation_sample_2550382_ru.srt",
+    "timeline": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/timeline_talc_annotation_sample_2550382.json",
+    "contact_sheet": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/contact_sheet_talc_annotation_sample_2550382.jpg"
+  },
+  "stt": {
+    "status": "ok",
+    "transcript": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/stt_talc_annotation_sample_2550382/nornikel_talc_annotation_sample_2550382_1080p_ru.txt",
+    "report": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/stt_talc_annotation_sample_2550382_report.md",
+    "keyword_hits": {
+      "датасета хакатона": false,
+      "синие линии": false,
+      "областью-кандидатом": false,
+      "порог пятьдесят": false,
+      "кисть": true,
+      "сохранить": true,
+      "эвристический": false,
+      "нейросетевую модель": false
+    }
+  },
+  "screenshots_dir": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_talc_ui_20260704/screenshots/sample_2550382_1_10x",
+  "voice": "ru-RU-DmitryNeural",
+  "tts_rate": "-5%"
+}

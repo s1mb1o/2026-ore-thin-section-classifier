@@ -42,7 +42,7 @@ official panorama image
 - Out of scope by default: SEM, XRD, defect/product platform UI, old generic QC dashboard, broad mineral ontology.
 - Pseudo-labels are weak supervision, not expert geological ground truth.
 - Non-expert QA may fix visually obvious mask errors, mark uncertain/excluded areas, and produce training patches.
-- Submission hygiene (2026-07-05): the v2 repo carries **no references to other teams' hackathon projects** (`nail-rinatovich` / `OpiumProger` / `AlexUser97`). Competitor-analysis material and the private working scratchpad live only in the legacy repo `/2026_Nornikel_Hackaton/docs/notes/`. Keep it that way — do not reintroduce competitor names/comparisons; our own Grade-CNN and external datasets (LumenStone/Petroscope) are unaffected. See the 2026-07-05 ChangeLog entry.
+- Submission hygiene (2026-07-05): the v2 repo carries **no references to other teams' hackathon projects**. External-comparison material and the private working scratchpad live only in the legacy repo `/2026_Nornikel_Hackaton/docs/notes/`. Keep it that way — do not reintroduce third-party names/comparisons; our own Grade-CNN and external datasets (LumenStone/Petroscope) are unaffected. See the 2026-07-05 ChangeLog entry.
 
 ## Dataset
 
