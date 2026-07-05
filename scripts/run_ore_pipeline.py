@@ -63,6 +63,11 @@ def main() -> int:
         default=None,
         help="Learned per-component grade classifier (model.joblib) used instead of the shape rule for ordinary/fine.",
     )
+    parser.add_argument(
+        "--magnetite-prep",
+        action="store_true",
+        help="Two-pass adaptive magnetite darkening before sulfide analysis (ore_classifier.magnetite_prep).",
+    )
     args = parser.parse_args()
 
     talc_source_count = sum(1 for enabled in (args.talc_mask is not None, args.auto_talc_candidate, args.talc_checkpoint is not None) if enabled)
@@ -99,6 +104,30 @@ def main() -> int:
     if args.progress_json is not None:
         inference_cmd.extend(["--progress-json", str(args.progress_json)])
     run(inference_cmd)
+
+    magnetite_prep_info: dict | None = None
+    if args.magnetite_prep:
+        # Two-pass magnetite darkening (mirrors ResidentSulfidePipeline; see magnetite_prep).
+        from ore_classifier.magnetite_prep import (  # noqa: E402
+            MagnetitePrepConfig, decide, darken, giant_only_postfilter, luma_of, slabs_region,
+        )
+
+        prep_cfg = MagnetitePrepConfig()
+        rgb_arr = np.asarray(Image.open(args.image).convert("RGB"))
+        mask1 = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L"))
+        decision = decide(rgb_arr, mask1, prep_cfg)
+        magnetite_prep_info = decision.to_dict()
+        if decision.applied:
+            (inference_dir / "sulfide_mask_pass1.png").write_bytes((inference_dir / "sulfide_mask.png").read_bytes())
+            region = slabs_region(mask1, prep_cfg)
+            dark_path = inference_dir / "magnetite_prep_input.jpg"
+            Image.fromarray(darken(rgb_arr, decision.threshold, region, prep_cfg, t1=decision.t1)).save(dark_path, quality=97)
+            pass2_cmd = list(inference_cmd)
+            pass2_cmd[pass2_cmd.index("--image") + 1] = str(dark_path)
+            run(pass2_cmd)
+            mask2 = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L")) > 0
+            filtered = giant_only_postfilter(mask2, luma_of(rgb_arr), decision.threshold, prep_cfg)
+            Image.fromarray((filtered * 255).astype(np.uint8), mode="L").save(inference_dir / "sulfide_mask.png")
 
     talc_mask_path: Path | None = None
     talc_paths: dict[str, str] = {}
@@ -207,6 +236,7 @@ def main() -> int:
         "grade_checkpoint": str(args.grade_checkpoint) if args.grade_checkpoint is not None else None,
         "grade_branch": grade_branch,
         "component_model": str(args.component_model) if args.component_model is not None else None,
+        "magnetite_prep": magnetite_prep_info,
         "rule_config": rule_config,
         "paths": {
             "binary_sulfide_summary": str(inference_dir / "summary.json"),

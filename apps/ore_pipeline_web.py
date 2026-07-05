@@ -1637,6 +1637,7 @@ class OrePipelineStore:
         grain_backend: str = DEFAULT_GRAIN_BACKEND,
         grade_checkpoint: Path | None = None,
         component_model: Path | None = None,
+        magnetite_prep: bool = False,
     ) -> None:
         self.workspace_dir = resolve_path(workspace_dir)
         self.uploads_dir = self.workspace_dir / "uploads"
@@ -1658,6 +1659,7 @@ class OrePipelineStore:
         self._grade_model_checkpoint: Path | None = None
         self.component_model_path = resolve_path(component_model) if component_model else None
         self._component_grade_model: Any = None
+        self.magnetite_prep = bool(magnetite_prep)
         self.processing_max_side = int(processing_max_side)
         self.panorama_max_side = int(panorama_max_side)
         self.preview_max_sides = preview_max_sides
@@ -4350,6 +4352,8 @@ print(json.dumps({
         checkpoints = runtime.get("checkpoints") if isinstance(runtime.get("checkpoints"), dict) else {}
         talc_checkpoint = checkpoints.get("talc") or (str(self.talc_checkpoint) if self.talc_checkpoint else None)
         talc_threshold = normalized_float(runtime.get("talc_threshold"), self.talc_threshold, 0.01, 0.99)
+        if self.magnetite_prep:
+            cmd.append("--magnetite-prep")
         if talc_backend == "ml":
             cmd.extend(
                 [
@@ -7251,6 +7255,12 @@ def main() -> int:
         default=str(DEFAULT_COMPONENT_MODEL) if DEFAULT_COMPONENT_MODEL.exists() else None,
         help="Learned per-component grade classifier (model.joblib) replacing the ordinary/fine shape rule. Pass 'none' to force the rule.",
     )
+    parser.add_argument(
+        "--magnetite-prep",
+        choices=["on", "off"],
+        default="on",
+        help="Two-pass adaptive magnetite darkening in the ML backend (default on).",
+    )
     parser.add_argument("--processing-max-side", type=int, default=2600)
     parser.add_argument("--panorama-max-side", type=int, default=1800)
     parser.add_argument("--preview-max-sides", default="1024,2048,4096")
@@ -7269,6 +7279,7 @@ def main() -> int:
         grain_backend=args.grain_backend,
         grade_checkpoint=args.grade_checkpoint,
         component_model=None if (args.component_model in (None, "", "none", "rule")) else Path(args.component_model),
+        magnetite_prep=args.magnetite_prep == "on",
     )
     server = OrePipelineHTTPServer((args.host, args.port), store)
     host, port = server.server_address[:2]
