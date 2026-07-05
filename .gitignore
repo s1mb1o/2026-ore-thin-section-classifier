@@ -21,6 +21,7 @@ models/*
 !models/component_grade/
 models/component_grade/*
 !models/component_grade/hgb_weak100_20260704/
+!models/component_grade/hgb_weak100_nomag_20260705/
 
 # The official dataset is linked from the original project.
 dataset

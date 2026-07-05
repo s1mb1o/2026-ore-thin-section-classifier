@@ -24,7 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ore_classifier.component_analysis import ComponentFeatures
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_COMPONENT_MODEL_PATH = ROOT / "models/component_grade/hgb_weak100_20260704/model.joblib"
+DEFAULT_COMPONENT_MODEL_PATH = ROOT / "models/component_grade/hgb_weak100_nomag_20260705/model.joblib"
 
 FEATURE_FIELDS = (
     "area_px",
@@ -55,7 +55,11 @@ def parse_magnification(image_name: str | None) -> str:
     return mag if mag in MAGNIFICATIONS else "cam"
 
 
-def feature_vector(component: "ComponentFeatures", magnification: str) -> list[float]:
+def feature_vector(component: "ComponentFeatures", magnification: str = "cam") -> list[float]:
+    # NOTE: magnification one-hots were removed 2026-07-05 — in the weak-label
+    # training set the 10x/20x scanner frames were 91-94% fine, so the model
+    # learned "scanner frame => fine" (sampling bias, not geology) and stamped
+    # every component of 10x frames fine regardless of shape (2550382-1 case).
     bw = float(component.bbox_w)
     bh = float(component.bbox_h)
     area = float(component.area_px)
@@ -63,7 +67,6 @@ def feature_vector(component: "ComponentFeatures", magnification: str) -> list[f
     row.append(float(np.log1p(area)))
     row.append(area / max(bw * bh, 1.0))
     row.append(bw / max(bh, 1.0))
-    row.extend(1.0 if magnification == m else 0.0 for m in MAGNIFICATIONS)
     return row
 
 
@@ -92,15 +95,18 @@ class ComponentGradeModel:
         return cls(model=model, meta=meta, path=path)
 
     def labeler(self, image_name: str | None = None) -> ComponentClassifier:
-        """Classifier callable for one image (magnification parsed from its name)."""
+        """Classifier callable for one image."""
         magnification = parse_magnification(image_name)
+        # Calibrated component threshold: weak labels are ~3:1 fine-heavy, which
+        # inflates P(fine) globally; the artifact carries its own cutoff.
+        threshold = float(self.meta.get("component_threshold", 0.5))
 
         def classify(components: Sequence["ComponentFeatures"]) -> list[str]:
             if not components:
                 return []
             X = np.array([feature_vector(c, magnification) for c in components])
             proba_fine = self.model.predict_proba(X)[:, 1]
-            return [FINE_LABEL if p >= 0.5 else ORDINARY_LABEL for p in proba_fine]
+            return [FINE_LABEL if p >= threshold else ORDINARY_LABEL for p in proba_fine]
 
         return classify
 

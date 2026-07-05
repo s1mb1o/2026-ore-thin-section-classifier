@@ -40,14 +40,14 @@ def weak_label(image_path: str) -> int | None:
     return None
 
 
-def row_vector(row: dict, magnification: str) -> list[float]:
+def row_vector(row: dict, magnification: str = "cam") -> list[float]:
+    # magnification one-hots removed 2026-07-05: sampling-bias shortcut (see component_grade_model)
     bw, bh = float(row["bbox_w"]), float(row["bbox_h"])
     area = float(row["area_px"])
     vec = [float(row[f]) for f in FEATURE_FIELDS]
     vec.append(float(np.log1p(area)))
     vec.append(area / max(bw * bh, 1.0))
     vec.append(bw / max(bh, 1.0))
-    vec.extend(1.0 if magnification == m else 0.0 for m in MAGNIFICATIONS)
     return vec
 
 
@@ -135,7 +135,7 @@ def main() -> int:
         "labels": {"0": "ordinary_intergrowth", "1": "fine_intergrowth"},
         "feature_fields": list(FEATURE_FIELDS),
         "derived_features": ["log1p_area", "bbox_fill", "aspect"],
-        "magnifications": list(MAGNIFICATIONS),
+        "magnifications": [],
         "weak_labels": "class folder (Рядовые/Труднообогатимые)",
         "cv": cv,
     }
