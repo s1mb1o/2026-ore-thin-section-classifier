@@ -56,3 +56,6 @@ mlruns/
 *.wav
 *.mp3
 *.mp4
+
+# Build/source-package artifacts (large tarballs, not for git)
+dist/source_packages/

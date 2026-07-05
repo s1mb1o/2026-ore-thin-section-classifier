@@ -204,8 +204,8 @@ DEFAULT_APP_SETTINGS = {
         "talc_threshold": DEFAULT_TALC_THRESHOLD,
         "grain_backend": DEFAULT_GRAIN_BACKEND,
         "grade_checkpoint": str(DEFAULT_GRADE_CHECKPOINT.resolve()) if DEFAULT_GRADE_CHECKPOINT.exists() else "",
-        "component_model": str(DEFAULT_COMPONENT_MODEL.resolve()) if DEFAULT_COMPONENT_MODEL.exists() else "",
-        "magnetite_prep": True,
+        "component_model": "",
+        "magnetite_prep": False,
     },
     "preprocess": {
         "preprocessing_enabled": False,
@@ -7467,18 +7467,19 @@ def main() -> int:
     )
     parser.add_argument(
         "--component-model",
-        default=str(DEFAULT_COMPONENT_MODEL) if DEFAULT_COMPONENT_MODEL.exists() else None,
+        default=None,
         help=(
-            "Learned per-component grade classifier (model.joblib) replacing the "
-            "ordinary/fine shape rule. Defaults to the shipped HGB model when present; "
-            "pass 'none' to fall back to the main shape rule."
+            "Opt-in learned per-component grade classifier (model.joblib) replacing the "
+            "ordinary/fine shape rule for the per-grain overlay. Off by default — the "
+            "shipped HGB over-predicts 'fine' per component (image verdict is unaffected: "
+            "the ordinary/fine sort comes from the Grade-CNN fusion). Pass a model.joblib to enable."
         ),
     )
     parser.add_argument(
         "--magnetite-prep",
         choices=["on", "off"],
-        default="on",
-        help="Two-pass adaptive magnetite darkening in the ML backend (default on).",
+        default="off",
+        help="Opt-in two-pass adaptive magnetite darkening before sulfide segmentation (default off; net-neutral/slightly negative on the eval split).",
     )
     parser.add_argument("--processing-max-side", type=int, default=2600)
     parser.add_argument("--panorama-max-side", type=int, default=1800)

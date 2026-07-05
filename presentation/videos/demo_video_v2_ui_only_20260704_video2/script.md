@@ -116,6 +116,7 @@ Each scene uses this markup:
 ```screen
 route: browser path to open
 capture_file_placeholder: screenshot shown in the video
+viewport: 1920x1080 browser viewport; screenshot file must also be 1920x1080
 navigation:
   - exact actions to reach the state
 ui_state:
@@ -130,6 +131,11 @@ All reference screenshots are stored in:
 
 `presentation/videos/demo_video_v2_ui_only_20260704_video2/screenshots/`
 
+Every referenced PNG is a one-to-one HD1080 video frame: browser viewport
+`1920x1080`, device scale factor `1`, and output PNG size `1920x1080`.
+`all_screenshots_review_sheet.png` is only a review contact sheet; do not use it
+as a video source frame.
+
 ## 00. Preflight [00:00-00:20]
 
 ```screen
@@ -137,6 +143,7 @@ route: /workspace
 capture_filename: no screenshot
 navigation:
   - start the app with the command above
+  - set the browser viewport to exactly `1920x1080`
   - switch Language to English for the recording
   - use the isolated workspace `outputs/ore_pipeline_ui_video2_20260705`
   - keep browser chrome out of the final crop

@@ -1,0 +1,16 @@
+{
+  "final_mp4": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704_video2/nornikel_v2_ui_video2_1080p_ru.mp4",
+  "duration_seconds": 480.083333,
+  "width": 1920,
+  "height": 1080,
+  "fps": 24,
+  "tts_backend": "edge_tts",
+  "voice": "ru-RU-DmitryNeural",
+  "tts_rate": "-12%",
+  "language": "ru",
+  "audio": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704_video2/narration_480s_ru.wav",
+  "subtitles": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704_video2/subtitles_ru.srt",
+  "script": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704_video2/script.md",
+  "timeline": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704_video2/timeline_ru.json",
+  "contact_sheet": "/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2/presentation/videos/demo_video_v2_ui_only_20260704_video2/contact_sheet_ru.jpg"
+}

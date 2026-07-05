@@ -42,6 +42,8 @@ Deconflicted split = sha256 conflict+duplicate content excluded (115/class).
 | **Rule (B2 + B0-talc)** ⭐ | 3 | 345 | **0.508** | row 0.207 / fine 0.464 / **talc 0.851** |
 | Feature-CV (B2 + auto-talc) | 3 | 345 (5-fold) | 0.747 | row 0.719 / fine 0.721 / talc 0.800 |
 | **Feature-CV (B2 + B0-talc)** | 3 | 345 (5-fold) | **0.770** | row 0.719 / fine 0.744 / talc 0.847 |
+| **Rule (B2 + B0-talc + HGB component-model + magnetite-prep)** ⭐ | 3 | 345 | **0.759** | row 0.684 / fine 0.743 / talc 0.851 |
+| **Feature-CV (component-model + magnetite batch)** | 3 | 345 (5-fold) | **0.802** | random_forest, AUC 0.921 |
 | Path B grains (bootstrap) | 3 | 345 (grouped CV) | 0.190 | row 0.086 / fine 0.483 / talc 0.000 |
 | Path B grains + B0-talc | 3 | 345 (grouped CV) | 0.513 | row 0.143 / fine 0.575 / **talc 0.821** |
 | **Grade-CNN ord↔fine (raw)** | 2 | 230 held-out | **0.930** | ord 0.933 / fine 0.927 |

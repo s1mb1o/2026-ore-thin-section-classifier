@@ -1,5 +1,6 @@
 # Project Agent Instructions
 
+- **Check `AGENTS.local.md` first (if present).** It holds local, gitignored overrides (machine/session-specific rules) that take precedence over this file. Read it before doing anything else, then continue with the instructions below.
 - This repository is the clean v2 workspace for the official 2026 Nornickel hackathon task `Скажи мне, кто твой шлиф`.
 - We are working on the v2 iteration. The canonical active workdir is `/Volumes/T7_2TB/Projects-T7_2TB/2026_Nornikel_Hackaton_v2`; start new local work there, not in the legacy broad checkout unless explicitly requested.
 - Always check `~/.claude/CLAUDE.md`, then this file or `CLAUDE.md`, then `docs/session-activity.md` (live coordination), then `docs/session-sync.md` before meaningful work.

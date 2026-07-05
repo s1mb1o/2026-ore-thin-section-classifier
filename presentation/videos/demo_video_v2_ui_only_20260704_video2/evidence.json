@@ -3,6 +3,57 @@
   "workspace_dir": "outputs/ore_pipeline_ui_video2_20260705",
   "server_url": "http://127.0.0.1:57314",
   "created_at_local_msk": "2026-07-05T04:33:29+0300",
+  "screenshot_capture": {
+    "captured_at_local_msk": "2026-07-05T05:53:00+0300",
+    "server_url": "http://127.0.0.1:55667",
+    "tool": "python-playwright chromium",
+    "browser_viewport_px": [
+      1920,
+      1080
+    ],
+    "device_scale_factor": 1,
+    "source_frame_size_px": [
+      1920,
+      1080
+    ],
+    "review_sheet": "all_screenshots_review_sheet.png"
+  },
+  "video_render": {
+    "rendered_at_local_msk": "2026-07-05T06:30:43+0300",
+    "tool": "build_video.py + edge_tts + ffmpeg",
+    "language": "ru",
+    "tts_backend": "edge_tts",
+    "voice": "ru-RU-DmitryNeural",
+    "tts_rate": "-12%",
+    "final_mp4": "nornikel_v2_ui_video2_1080p_ru.mp4",
+    "duration_seconds": 480.083333,
+    "video_stream": {
+      "codec": "h264",
+      "width": 1920,
+      "height": 1080,
+      "fps": 24,
+      "frames": 11522
+    },
+    "audio_stream": {
+      "codec": "aac",
+      "duration_seconds": 480.0,
+      "sample_rate_hz": 48000,
+      "channels": 2
+    },
+    "subtitles": "subtitles_ru.srt",
+    "timeline": "timeline_ru.json",
+    "build_metadata": "build_metadata_ru.json",
+    "contact_sheet": "contact_sheet_ru.jpg",
+    "min_effective_audio_margin_seconds": 0.1,
+    "tempo_adjusted_segments": [
+      {
+        "index": 18,
+        "segment_tempo": 1.2180904522613065,
+        "raw_audio_seconds": 24.24,
+        "duration_seconds": 20.0
+      }
+    ]
+  },
   "parent_run": {
     "upload_id": "20260705_013329_005691000_907d7e3319",
     "run_id": "run_20260705_013329_516251000_1643dd89",

@@ -68,6 +68,32 @@ This supersedes the original Mac and gx10 heuristic-only failures for current
 code. It does not supersede the zelda heuristic-only failure: zelda completed,
 but above the 5-minute target.
 
+## Current Pipeline Refresh
+
+The current full-resolution CLI pipeline was rerun after the component-grade
+and magnetite-prep integration. These runs used the same `13.jpg` panorama and
+the same tiled SegFormer-B2 sulfide / SegFormer-B0 talc settings, with:
+
+- `--component-model models/component_grade/hgb_weak100_nomag_20260705/model.joblib`
+- `--magnetite-prep`
+- `--grade-checkpoint models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt`
+
+On this panorama, magnetite prep was enabled but did not trigger a second
+sulfide pass (`no_giant(5%/127026px)` or `127027px` on zelda). The component
+model and Grade-CNN branch were loaded and recorded in `pipeline_summary.json`.
+
+| Machine | Load state for refresh | Heuristic sulfides + heuristic talc, no ML (ROI current) | Current ML sulfides + heuristic talc | Current ML sulfides + ML talc | Verdict |
+| --- | --- | ---: | ---: | ---: | --- |
+| MacBook Pro 2023, Apple M2 Max | No ore jobs active; rerun pinned to Homebrew Python 3.14 after Xcode Python 3.9 rejected `zip(..., strict=True)` | `130.71 s` | `88.80 s` | `166.02 s` | Current ML paths pass. |
+| gx10, NVIDIA GB10 | Waited for a separate resident batch to finish; benchmark started after GPU utilization returned to `0%` | `294.074 s` | `50.96 s` | `76.36 s` | All current rows pass; heuristic-only has narrow margin. |
+| zelda, RTX 4090 | Compute idle; root disk still full, so staged under `/dev/shm`; scratch cleaned after run | `569.43 s` | `73.57 s` | `116.50 s` | Current ML paths pass; heuristic-only still fails. |
+
+Evidence for the refresh is under:
+
+```text
+outputs/benchmarks/panorama_performance_20260705_current/{mac,gx10,zelda}/
+```
+
 ## Detailed Timings
 
 | Machine | Mode | Wall, s | Main sulfide tiled inference, s | Talc model inference, s | Device | Tiles |
@@ -75,12 +101,18 @@ but above the 5-minute target.
 | Mac M2 Max | heuristic-only | `>300.1` timeout | n/a | n/a | CPU | n/a |
 | Mac M2 Max | ML sulfide + heuristic talc | `122.9` | `100.0` | n/a | MPS | `234` |
 | Mac M2 Max | ML sulfide + ML talc | `186.9` | `107.9` | `46.2` | MPS | `234` |
+| Mac M2 Max | current ML sulfide + heuristic talc + component/grade | `88.80` | `69.293` | n/a | MPS | `234` |
+| Mac M2 Max | current ML sulfide + ML talc + component/grade | `166.02` | `110.297` | `37.776` | MPS | `234` |
 | gx10 GB10 | heuristic-only | `834.9`, killed | n/a | n/a | CPU | n/a |
 | gx10 GB10 | ML sulfide + heuristic talc | `55.1` | `41.8` | n/a | CUDA | `234` |
 | gx10 GB10 | ML sulfide + ML talc | `99.6` | `47.9` | `41.1` | CUDA | `234` |
+| gx10 GB10 | current ML sulfide + heuristic talc + component/grade | `50.96` | `33.352` | n/a | CUDA | `234` |
+| gx10 GB10 | current ML sulfide + ML talc + component/grade | `76.36` | `32.899` | `28.551` | CUDA | `234` |
 | zelda RTX 4090 | heuristic-only | `835.2`, killed | n/a | n/a | CPU | n/a |
 | zelda RTX 4090 | ML sulfide + heuristic talc | `61.6` | `31.6` | n/a | CUDA | `234` |
 | zelda RTX 4090 | ML sulfide + ML talc | `104.3` | `31.8` | `52.3` | CUDA | `234` |
+| zelda RTX 4090 | current ML sulfide + heuristic talc + component/grade | `73.57` | `31.105` | n/a | CUDA | `234` |
+| zelda RTX 4090 | current ML sulfide + ML talc + component/grade | `116.50` | `31.342` | `52.149` | CUDA | `234` |
 
 Observed classification side effect on this unlabelled panorama:
 
@@ -104,6 +136,7 @@ The classification is not a ground-truth claim for the panorama; this run is per
 - gx10: initial preflight at 00:24 MSK showed low load and idle GPU, but a separate resident batch job appeared at 00:41 MSK and overlapped the ML measurements. Keep gx10 numbers as load-contended pass evidence, not as a clean peak-performance number.
 - zelda: compute was idle and GPU had no running processes, but root disk was already almost full. All benchmark scratch data was kept in RAM disk. The root disk should be cleaned before using zelda for more runs.
 - VM 102: Proxmox confirms VMID `102` is running with `agent: 1`, but `qm agent 102 ping` returns `QEMU guest agent is not running`. The bridge FDB sees MAC `BC:24:11:FD:4D:BF`, but only a link-local IPv6 neighbor is visible; no usable SSH/IP path was found.
+- Current refresh: Mac was rerun with `/opt/homebrew/bin/python3` (`3.14.4`) because `bash -lc python3` resolved to Xcode Python `3.9.6`; the first wrapper failed before any valid timing with `TypeError: zip() takes no keyword arguments`. gx10 was checked repeatedly and the current refresh was delayed until the concurrent `run_resident_batch.py` finished (`345` rows, `0` failures) and GPU utilization returned to `0%`. zelda was staged in `/dev/shm` because root remained `100%` full; the scratch directory was removed after evidence copy-back.
 
 ## Artifacts
 
@@ -111,6 +144,7 @@ Raw evidence is under:
 
 ```text
 outputs/benchmarks/panorama_performance_20260705/raw/
+outputs/benchmarks/panorama_performance_20260705_current/
 ```
 
 Important files:
@@ -121,14 +155,17 @@ Important files:
 - `raw/zelda/results_heuristic_timeout.json`
 - `raw/zelda/results_ml.json`
 - `raw/machine_probes/{mac,gx10,zelda,vm102}.txt`
+- `panorama_performance_20260705_current/{mac,gx10,zelda}/ml_sulfide_heuristic_talc_current_timing.txt`
+- `panorama_performance_20260705_current/{mac,gx10,zelda}/ml_sulfide_ml_talc_current_timing.txt`
+- `panorama_performance_20260705_current/{mac,gx10,zelda}/*_pipeline_summary.json`
 
 ## Answer To Requirement
 
 The current judged/default ML processing path satisfies the 5-minute panorama-performance target on the measured CPU/GPU workstations for the selected `13330 x 9489` panorama:
 
-- Mac M2 Max: `186.9 s` for the full ML sulfide + ML talc path.
-- gx10 GB10: `99.6 s` under contention.
-- zelda RTX 4090: `104.3 s`.
+- Mac M2 Max: `166.02 s` for the refreshed current ML sulfide + ML talc path with component model, magnetite prep enabled, and Grade-CNN branch.
+- gx10 GB10: `76.36 s` for the same refreshed current path after waiting for GPU load to clear.
+- zelda RTX 4090: `116.50 s` for the same refreshed current path.
 
 After ROI component classification, the full-resolution heuristic-only CLI also
 passes on Mac (`130.71 s`) and gx10 (`294.074 s`), but fails on zelda

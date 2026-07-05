@@ -9,11 +9,15 @@ The old `outputs/demo_video_*` paths are compatibility symlinks only.
   - `nornikel_talc_ui_demo_1080p_ru.mp4`: 5:00 Talc UI-only Russian demo, male TTS, burned-in subtitles, corner time marks.
   - `gx10_silero/nornikel_talc_ui_demo_1080p_ru.mp4`: gx10-local Silero `aidar` Russian male voice variant.
 - `demo_video_v2_ui_only_20260704/`
-  - `nornikel_v2_ui_only_demo_1080p_ru.mp4`: 5:00 main v2 ore-pipeline UI-only Russian demo.
+  - `nornikel_1_ui_only_demo_1080p_ru-draft.mp4`: 5:00 main v2 ore-pipeline UI-only Russian demo.
 - `demo_video_v2_ui_only_20260704_video2/`
-  - `script.md`: VIDEO #2 director script for the main v2 ore-pipeline UI,
-    using sample `2550382-1-10x`, disabled augmentation/preprocessing, screenshot
-    markup, and reference captures under `screenshots/`.
+  - `nornikel_v2_ui_video2_1080p_ru.mp4`: 8:00 VIDEO #2 Russian HD1080
+    walkthrough for the main v2 ore-pipeline UI, using sample `2550382-1-10x`,
+    disabled augmentation/preprocessing, burned-in Russian subtitles, and
+    Edge TTS `ru-RU-DmitryNeural` narration at rate `-12%`.
+  - `script.md`: director script with screenshot/navigation markup, exact run ids,
+    HD1080 reference captures under `screenshots/`, and
+    `all_screenshots_review_sheet.png` for quick review.
 - `demo_video_v2_ui_20260704/`
   - `nornikel_v2_ui_demo_1080p_ru.mp4`: 5:00 broader v2 UI demo with talc-review context.
 
@@ -25,9 +29,11 @@ The Talc bundle also includes `talc_annotation_script_ru.md`, a sample-specific
 director script for `/sample/2550382-1-10x` with screenshot capture points,
 required UI state, and Russian narration for re-recording the Talc annotation
 walkthrough.
-The VIDEO #2 bundle is script-first rather than a rendered MP4 bundle: it stores
-the exact UI navigation, screenshot filenames, and run ids needed to re-record
-the requested `apps/ore_pipeline_web.py` walkthrough.
+The VIDEO #2 bundle is rendered from exact `1920x1080` browser source frames.
+It keeps the exact UI navigation, screenshot filenames, run ids, Russian
+subtitles, Edge TTS narration settings, timeline, build metadata, and contact
+sheets needed to audit or regenerate the requested `apps/ore_pipeline_web.py`
+walkthrough.
 
 `manifest.sha256` records checksums for all MP4 files in this directory tree.
 `stt_refresh_verification_20260704.md` summarizes the fresh Whisper transcripts

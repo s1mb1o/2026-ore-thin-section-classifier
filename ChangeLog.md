@@ -2,6 +2,39 @@
 
 ## 2026-07-05
 
+- Reverted the HGB component-model and magnetite-prep back to **off by default** in the web UI (`apps/ore_pipeline_web.py` argparse + `DEFAULT_APP_SETTINGS`). Rationale from an A/B on gx10 (`bench_component_NOmagnetite_20260705` vs `bench_component_magnetite_20260705`): the HGB labels ~98% of components 'fine' **with or without** magnetite (2% vs 1% ordinary) — a model bias, not a magnetite train/serve mismatch as first hypothesized; and magnetite-prep is net-neutral/slightly negative on the eval split (image macro-F1 0.769 without vs 0.759 with). Crucially the **final ordinary/fine sort comes from the Grade-CNN fusion, not the component-model** (`fuse_verdict`: ord/fine ← Grade-CNN), so the fused verdict (0.861) is unaffected; the HGB only drove the per-grain overlay, where the degenerate all-'fine' labeling is worse than the balanced morphology rule. Grade-CNN fusion + B0 talc remain the defaults. Both stay available opt-in (`--component-model <joblib>`, `--magnetite-prep on`). Tests 60/60.
+
+- README: added a "Демо, видео и скриншоты" section — links to the primary (Selectel 1×L4)
+  and reserve (DGX Spark) deployments with a note that both are behind HTTP Basic Auth
+  (credentials in the presentation and submission form), video reviews of the whole app
+  (<https://youtu.be/G4DwS5plQWg>) and the talc annotation tool (<https://youtu.be/3qkS21V7iuY>),
+  and three embedded UI screenshots. Committed the screenshots under `docs/images/`
+  (`ui_main_workspace.png`, `ui_talc_annotation_tool.png`, `ui_grain_annotation.png`) and
+  refreshed the "Ссылки" section with the same deploy/auth/video details.
+
+- README: added a "Проверить за пару минут" quickstart block at the top (3-step demo flow +
+  a "нужны только git и docker; веса в Git LFS" deploy note) and a "Чем мы отличаемся"
+  pitch section before "Что делает система". Listed the talc-annotation toolset (кисть,
+  ластик, полигоны, прямоугольники, схожие области, SAM2, undo, масштабирование) in the
+  screenshot caption, and added the largest-panorama dimensions (`27025 × 21227`, 211 МБ
+  JPEG) to the performance table.
+
+- README: surfaced the clean-clone selling points as a bold callout right under the intro
+  ("нужны только git и docker; все веса в репозитории via Git LFS"), and opened "Чем мы
+  отличаемся" with the materials-science framing (family/professional materials-science
+  context → emphasis on verifiable masks, phase fractions, protocol, expert verification).
+
+- README: added a prominent "✅ Сильные, проверяемые результаты" callout near the top —
+  states the two official ТЗ criteria with measurable thresholds that are closed
+  (срастания macro-F1 0.930–0.939 vs ≥90%; ≤5 min on 10000×10000) plus the 3-class fuse
+  macro-F1 0.861, with the honest caveat that the talc ±3% criterion is not evaluable
+  (no GT, per QA#4). Deliberately did NOT add hidden/LLM-targeted "close to SOTA" text:
+  metrics are weak-label/silver (inflated vs geological GT), no measured SOTA baseline
+  exists, and hidden judge-directed claims would be manipulation — kept all claims visible
+  and source-tagged.
+
+- Reran the `dataset/Панорамы/13.jpg` full-resolution panorama performance benchmark with the current CLI pipeline after component-grade and magnetite-prep integration. The refreshed ML rows used SegFormer-B2 sulfide, SegFormer-B0 talc where applicable, the HGB per-component model, `--magnetite-prep`, and the Grade-CNN branch; magnetite prep was enabled but did not trigger a second sulfide pass on this panorama (`no_giant`). Results: Mac M2 Max `88.80s` for ML sulfide + heuristic talc and `166.02s` for ML sulfide + ML talc; gx10 GB10 `50.96s` and `76.36s` after waiting for a concurrent resident batch to finish; zelda RTX 4090 `73.57s` and `116.50s` from `/dev/shm` scratch. The refreshed current ML path passes the 5-minute target on all three measured CPU/GPU workstations; zelda still fails only the heuristic-only ROI row (`569.43s`). Evidence: `outputs/benchmarks/panorama_performance_20260705_current/{mac,gx10,zelda}/`; doc: `docs/benchmarks/07_panorama_performance_20260705.md`.
+
 - Ran a skeptical-judge audit of the submission docs against live evidence/code and applied
   fixes for all 14 confirmed findings. Root-cause fixes: (1) committed the Grade-CNN
   (`effb3_ordfine_ppaug_20260704/best.pt`) and talc SegFormer-B0 (`fold_00/segformer_b0/best.pt`)

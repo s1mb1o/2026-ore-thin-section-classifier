@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import queue
+import threading
 from pathlib import Path
 
 import pytest
@@ -24,9 +26,28 @@ def _load_module():
     return module
 
 
+def _run_async(factory):
+    """Run an async call in a fresh thread so full-suite event-loop state cannot leak in."""
+    result = queue.Queue(maxsize=1)
+
+    def runner():
+        try:
+            result.put((True, asyncio.run(factory())))
+        except BaseException as exc:  # pragma: no cover - re-raised in the test thread
+            result.put((False, exc))
+
+    thread = threading.Thread(target=runner, name="mcp-test-async-runner")
+    thread.start()
+    thread.join()
+    ok, value = result.get()
+    if not ok:
+        raise value
+    return value
+
+
 def test_tools_are_registered():
     module = _load_module()
-    tools = asyncio.run(module.mcp.list_tools())
+    tools = _run_async(module.mcp.list_tools)
     names = {t.name for t in tools}
     assert {"classify_thin_section", "get_config"} <= names
     classify = next(t for t in tools if t.name == "classify_thin_section")
