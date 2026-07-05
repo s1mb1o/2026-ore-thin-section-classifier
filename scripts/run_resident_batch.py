@@ -73,6 +73,17 @@ def main() -> int:
     parser.add_argument("--talc-checkpoint", type=Path, default=None, help="Optional trained talc segmentation checkpoint.")
     parser.add_argument("--talc-threshold", type=float, default=0.5)
     parser.add_argument("--talc-min-area-px", type=int, default=320)
+    parser.add_argument(
+        "--component-model",
+        type=Path,
+        default=None,
+        help="Learned per-component grade classifier (model.joblib) used instead of the shape rule.",
+    )
+    parser.add_argument(
+        "--magnetite-prep",
+        action="store_true",
+        help="Two-pass adaptive magnetite darkening before sulfide segmentation.",
+    )
     parser.add_argument("--preview-max-side", type=int, default=1800)
     parser.add_argument("--no-auto-talc-candidate", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -114,10 +125,14 @@ def main() -> int:
         talc_checkpoint=args.talc_checkpoint,
         talc_threshold=args.talc_threshold,
         preview_max_side=args.preview_max_side,
+        component_model=args.component_model,
+        magnetite_prep=args.magnetite_prep,
     )
     print(
         f"[resident] model loaded once on {pipeline.device}: sulfide={pipeline.checkpoint_meta.get('model')} "
-        f"talc={pipeline.talc_checkpoint_meta.get('model') if pipeline.talc_checkpoint_meta else 'none'}",
+        f"talc={pipeline.talc_checkpoint_meta.get('model') if pipeline.talc_checkpoint_meta else 'none'} "
+        f"component_grade={'model' if pipeline.component_model is not None else 'rule'} "
+        f"magnetite_prep={'on' if pipeline.magnetite_prep else 'off'}",
         flush=True,
     )
 

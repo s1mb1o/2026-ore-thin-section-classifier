@@ -2,6 +2,10 @@
 
 ## 2026-07-05
 
+- Corrected the reviewer-facing backup workspace URL in `README.md` and `SUBMISSION_README.md`: removed stale `https://nornickel-backup.my.3simbio.ru/workspace` and normalized it to the verified protected gx10 route `https://nornickel-ai-hackathon.my.3simbio.ru/workspace` (`401` unauthenticated, as expected).
+
+- Ran a Nornickel-reviewer-style app check against the v2 submission docs and recorded it in `docs/ui/v2/notes/2026-07-05-nornickel-reviewer-app-check.md`. Verified the `QUICKSTART.md` host-Python heuristic path at `127.0.0.1:60623`, local HTTP pages, OpenAPI `3.1.0` (`33` paths), real upload/run/export on `dataset/Фото руд по сортам. ч1/Рядовые руды/2539589-1.JPG`, browser UI pages with no console errors, production unauthenticated auth gate (`401`), `py_compile`, `docker compose config --quiet`, and focused `test_ore_pipeline_web.py` (`60` passed, `1` dev-validator skip). No blocking reviewer-smoke defects found.
+
 - Cleaned the v2 troubleshooting handoff so stale source-package launch snippets
   from older repos are no longer presented as runnable instructions. The root
   reviewer docs now launch through `apps/ore_pipeline_web.py`; older plan/spec

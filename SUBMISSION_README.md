@@ -23,7 +23,7 @@
 | Развёрнутый UI (основной) | <https://nornickel-ai-hackathon.alola.ru/> | на слайде «Ссылки» презентации |
 | То же по IP | <http://111.88.124.80/> | на слайде «Ссылки» презентации |
 | Резерв (DGX Spark / gx10) | <https://nornickel-ai-hackathon.my.3simbio.ru/> | на слайде «Ссылки» презентации |
-| Резерв (workspace) | <https://nornickel-backup.my.3simbio.ru/workspace> | на слайде «Ссылки» презентации |
+| Резерв (workspace) | <https://nornickel-ai-hackathon.my.3simbio.ru/workspace> | на слайде «Ссылки» презентации |
 
 Загрузите снимок шлифа → нажмите запуск → получите цветную маску, доли фаз, текстовое
 заключение и экспортируемый отчёт. Пошаговый локальный/Docker-запуск — [QUICKSTART.md](QUICKSTART.md).

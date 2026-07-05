@@ -18,6 +18,7 @@ from ore_classifier.component_analysis import (  # noqa: E402
     save_component_outputs,
 )
 from ore_classifier.analyzed_area import build_analyzed_mask  # noqa: E402
+from ore_classifier.component_grade_model import resolve_component_model  # noqa: E402
 from ore_classifier.rule_config_io import add_rule_config_arguments, resolve_rule_config_from_args  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None
@@ -34,6 +35,12 @@ def main() -> int:
     parser.add_argument("--close-kernel-px", type=int, default=15)
     add_rule_config_arguments(parser)
     parser.add_argument("--preview-max-side", type=int, default=1800)
+    parser.add_argument(
+        "--component-model",
+        type=Path,
+        default=None,
+        help="Learned per-component grade classifier (model.joblib); omit or pass 'none' to use the rule.",
+    )
     args = parser.parse_args()
 
     image = None if args.image is None else np.asarray(Image.open(args.image).convert("RGB"))
@@ -54,11 +61,16 @@ def main() -> int:
         fine_compactness_max=rule_config["fine_compactness_max"],
         talc_fraction_threshold=rule_config["talc_fraction_threshold"],
     )
+    grade_model = resolve_component_model(args.component_model)
+    component_classifier = None
+    if grade_model is not None:
+        component_classifier = grade_model.labeler(args.image.name if args.image is not None else None)
     summary, components, classified = analyze_components(
         sulfide_mask=sulfide_mask,
         talc_mask=talc_mask,
         analyzed_mask=analyzed_mask,
         config=cfg,
+        component_classifier=component_classifier,
     )
     paths = save_component_outputs(
         out_dir=args.out_dir,

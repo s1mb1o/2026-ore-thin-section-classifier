@@ -735,6 +735,8 @@ class OrePipelineWebTest(unittest.TestCase):
         checkpoint.write_bytes(b"fake")
         talc_checkpoint = self.root / "talc_best.pt"
         talc_checkpoint.write_bytes(b"fake talc")
+        component_model = self.root / "component_model.joblib"
+        component_model.write_bytes(b"fake component model")
         run_dir = self.store.runs_dir / "runtime_probe"
         (run_dir / "ml_pipeline/binary_sulfide").mkdir(parents=True)
         (run_dir / "ml_pipeline/talc_model").mkdir(parents=True)
@@ -784,6 +786,8 @@ class OrePipelineWebTest(unittest.TestCase):
                     "talc_source": "ml_model",
                     "talc_checkpoint": str(talc_checkpoint),
                     "talc_threshold": 0.42,
+                    "component_model": str(component_model),
+                    "magnetite_prep": {"applied": True, "reason": "apply", "threshold": 87.0},
                     "rule_config": {"ordinary_component_max_area_px": 1000},
                 }
             ),
@@ -807,7 +811,11 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(runtime["models"]["talc"]["backend"], "ml_model")
         self.assertEqual(runtime["models"]["talc"]["checkpoint_meta"]["model"], "segformer_b0")
         self.assertEqual(runtime["models"]["talc"]["threshold"], 0.42)
-        self.assertEqual(runtime["models"]["final_segmentation"]["backend"], "component_rules")
+        self.assertEqual(runtime["component_model"], str(component_model.resolve()))
+        self.assertEqual(runtime["magnetite_prep"]["reason"], "apply")
+        self.assertEqual(runtime["checkpoints"]["final_segmentation"], str(component_model.resolve()))
+        self.assertEqual(runtime["models"]["final_segmentation"]["backend"], "component_grade_model")
+        self.assertEqual(runtime["models"]["final_segmentation"]["checkpoint"], str(component_model.resolve()))
         self.assertEqual(metadata["reports"]["runtime_json"], str(run_dir / "reports/runtime.json"))
         self.assertTrue((run_dir / "reports/runtime.json").exists())
 
@@ -2111,6 +2119,10 @@ class OrePipelineWebTest(unittest.TestCase):
         binary_checkpoint.write_bytes(b"binary")
         talc_checkpoint = self.root / "talc.pt"
         talc_checkpoint.write_bytes(b"talc")
+        component_model = self.root / "component_model.joblib"
+        component_model.write_bytes(b"component")
+        self.store.component_model_path = component_model.resolve()
+        self.store.magnetite_prep = True
         upload = self.store.register_upload_from_path(self.image_path)
         prepared = self.store.prepare_upload(upload["upload_id"], {"panorama_scaling": False})
         run_id = "run_talc_command_test"
@@ -2162,6 +2174,9 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--talc-checkpoint") + 1], str(talc_checkpoint.resolve()))
         self.assertIn("--talc-threshold", cmd)
         self.assertEqual(cmd[cmd.index("--talc-threshold") + 1], "0.42")
+        self.assertIn("--component-model", cmd)
+        self.assertEqual(cmd[cmd.index("--component-model") + 1], str(component_model.resolve()))
+        self.assertIn("--magnetite-prep", cmd)
         self.assertNotIn("--auto-talc-candidate", cmd)
 
     def test_list_runs_overlays_active_job_progress(self) -> None:

@@ -86,6 +86,7 @@ DEFAULT_SULFIDE_BACKEND = "ml" if DEFAULT_CHECKPOINT.exists() else "heuristic"
 DEFAULT_TALC_BACKEND = "ml" if DEFAULT_TALC_CHECKPOINT.exists() else "heuristic"
 DEFAULT_GRADE_CHECKPOINT = ROOT / "models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt"
 DEFAULT_GRAIN_BACKEND = "heuristic"
+DEFAULT_COMPONENT_MODEL = ROOT / "models/component_grade/hgb_weak100_nomag_20260705/model.joblib"
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_JSON_BYTES = 220 * 1024 * 1024
 # Decode-bomb heuristics. A small compressed file can decode to a huge in-memory
@@ -1686,6 +1687,8 @@ class OrePipelineStore:
         talc_threshold: float = DEFAULT_TALC_THRESHOLD,
         grain_backend: str = DEFAULT_GRAIN_BACKEND,
         grade_checkpoint: Path | None = None,
+        component_model: Path | None = None,
+        magnetite_prep: bool = False,
     ) -> None:
         self.workspace_dir = resolve_path(workspace_dir)
         self.uploads_dir = self.workspace_dir / "uploads"
@@ -1705,6 +1708,9 @@ class OrePipelineStore:
         self.grade_checkpoint = resolve_path(grade_checkpoint) if grade_checkpoint else None
         self._grade_model: Any = None
         self._grade_model_checkpoint: Path | None = None
+        self.component_model_path = resolve_path(component_model) if component_model else None
+        self._component_grade_model: Any = None
+        self.magnetite_prep = bool(magnetite_prep)
         self.processing_max_side = int(processing_max_side)
         self.panorama_max_side = int(panorama_max_side)
         self.preview_max_sides = preview_max_sides
@@ -1734,6 +1740,8 @@ class OrePipelineStore:
             talc_threshold=self.talc_threshold,
             grain_backend=self.grain_backend,
             grade_checkpoint=str(self.grade_checkpoint) if self.grade_checkpoint else None,
+            component_model=str(self.component_model_path) if self.component_model_path else None,
+            magnetite_prep=self.magnetite_prep,
         )
 
     def record_system_event(self, level: str, message: str, **fields: Any) -> None:
@@ -1873,6 +1881,8 @@ class OrePipelineStore:
         talc_threshold: float | None = None,
         grain_backend: str | None = None,
         grade_checkpoint: str | Path | None = None,
+        component_model: str | Path | None = None,
+        magnetite_prep: bool | None = None,
     ) -> dict[str, Any]:
         backend_value = str(backend or self.backend or "heuristic").lower()
         checkpoint_path = self._runtime_checkpoint_path(checkpoint if checkpoint is not None else self.checkpoint)
@@ -1897,19 +1907,23 @@ class OrePipelineStore:
             grain_backend_value = "heuristic"
         grade_checkpoint_path = self._runtime_checkpoint_path(grade_checkpoint if grade_checkpoint is not None else self.grade_checkpoint)
         grade_checkpoint_path = grade_checkpoint_path if grain_backend_value == "ml" else None
+        component_model_path = self._runtime_checkpoint_path(component_model if component_model is not None else self.component_model_path)
+        magnetite_prep_value = self.magnetite_prep if magnetite_prep is None else bool(magnetite_prep)
         return {
             "schema_version": RUNTIME_PROVENANCE_SCHEMA_VERSION,
             "backend": backend_value,
             "talc_backend": talc_backend_value,
             "talc_threshold": talc_threshold_value,
             "grain_backend": grain_backend_value,
+            "component_model": component_model_path,
+            "magnetite_prep": magnetite_prep_value,
             "recorded_at": utc_now_iso(),
             "python_executable": sys.executable,
             "checkpoints": {
                 "binary_sulfide": binary_checkpoint,
                 "talc": talc_checkpoint_path,
                 "grain_classification": grade_checkpoint_path,
-                "final_segmentation": None,
+                "final_segmentation": component_model_path,
             },
             "models": {
                 "binary_sulfide": {
@@ -1925,10 +1939,11 @@ class OrePipelineStore:
                     "role": "talc detection",
                 },
                 "final_segmentation": {
-                    "backend": "component_rules",
-                    "checkpoint": None,
+                    "backend": "component_grade_model" if component_model_path else "component_rules",
+                    "checkpoint": component_model_path,
                     "role": "ordinary/fine intergrowth and final class metrics",
                     "rule_config": json_safe_value(DEFAULT_RULE_CONFIG),
+                    "source": "learned per-component model" if component_model_path else "component feature rules",
                 },
                 "grain_classification": {
                     "backend": "ml" if grain_backend_value == "ml" else "ore_grain_heuristics",
@@ -2070,14 +2085,20 @@ class OrePipelineStore:
                 "tiles": binary_summary.get("tiles"),
             }
         if pipeline_summary:
+            pipeline_component_model = self._runtime_checkpoint_path(pipeline_summary.get("component_model"))
             runtime["pipeline"] = {
                 "schema_version": pipeline_summary.get("schema_version"),
                 "image": pipeline_summary.get("image"),
                 "talc_source": pipeline_summary.get("talc_source"),
                 "talc_checkpoint": pipeline_summary.get("talc_checkpoint"),
                 "talc_threshold": pipeline_summary.get("talc_threshold"),
+                "component_model": pipeline_component_model,
+                "magnetite_prep": json_safe_value(pipeline_summary.get("magnetite_prep")),
                 "rule_config": json_safe_value(pipeline_summary.get("rule_config") or {}),
             }
+            runtime["component_model"] = pipeline_component_model
+            runtime["magnetite_prep"] = json_safe_value(pipeline_summary.get("magnetite_prep"))
+            runtime["checkpoints"]["final_segmentation"] = pipeline_component_model
             pipeline_talc_checkpoint = self._runtime_checkpoint_path(pipeline_summary.get("talc_checkpoint"))
             if pipeline_talc_checkpoint:
                 runtime["checkpoints"]["talc"] = pipeline_talc_checkpoint
@@ -2092,9 +2113,10 @@ class OrePipelineStore:
             }
             runtime["models"]["final_segmentation"] = {
                 **runtime["models"].get("final_segmentation", {}),
-                "backend": "component_rules",
-                "checkpoint": None,
+                "backend": "component_grade_model" if pipeline_component_model else "component_rules",
+                "checkpoint": pipeline_component_model,
                 "rule_config": json_safe_value(pipeline_summary.get("rule_config") or DEFAULT_RULE_CONFIG),
+                "source": "learned per-component model" if pipeline_component_model else "component feature rules",
             }
         if talc_summary:
             checkpoint = self._runtime_checkpoint_path(talc_summary.get("checkpoint") or runtime["checkpoints"].get("talc"))
@@ -2796,6 +2818,12 @@ class OrePipelineStore:
             checks.append({"key": "grade_checkpoint", "status": "ok", "message": str(self.grade_checkpoint)})
         else:
             checks.append({"key": "grain_backend", "status": "ok", "message": self.grain_backend})
+        if self.component_model_path and not self.component_model_path.exists():
+            checks.append({"key": "component_model", "status": "error", "message": str(self.component_model_path)})
+        elif self.component_model_path:
+            checks.append({"key": "component_model", "status": "ok", "message": str(self.component_model_path)})
+        else:
+            checks.append({"key": "component_model", "status": "ok", "message": "component_rules"})
         if disk["free_percent"] < 3:
             checks.append({"key": "flash_free", "status": "error", "message": f"{disk['free_percent']:.1f}%"})
         elif disk["free_percent"] < 10:
@@ -2855,6 +2883,13 @@ class OrePipelineStore:
             "checkpoint_exists": bool(self.grade_checkpoint and self.grade_checkpoint.exists()),
             "role": "ordinary/fine grain classification",
         }
+        final_model = {
+            "backend": "component_grade_model" if self.component_model_path else "component_rules",
+            "checkpoint": str(self.component_model_path) if self.component_model_path else None,
+            "checkpoint_exists": bool(self.component_model_path and self.component_model_path.exists()),
+            "magnetite_prep": self.magnetite_prep,
+            "role": "ordinary/fine intergrowth and final class metrics",
+        }
         return {
             "schema_version": "ore-pipeline-status-v0.1",
             "generated_at": utc_now_iso(),
@@ -2872,9 +2907,13 @@ class OrePipelineStore:
                 "grain_backend": self.grain_backend,
                 "grade_checkpoint": str(self.grade_checkpoint) if self.grade_checkpoint else None,
                 "grade_checkpoint_exists": bool(self.grade_checkpoint and self.grade_checkpoint.exists()),
+                "component_model": str(self.component_model_path) if self.component_model_path else None,
+                "component_model_exists": bool(self.component_model_path and self.component_model_path.exists()),
+                "magnetite_prep": self.magnetite_prep,
                 "models": {
                     "binary_sulfide": binary_model,
                     "talc": talc_model,
+                    "final_segmentation": final_model,
                     "grain_classification": grain_model,
                 },
                 "workspace_dir": str(self.workspace_dir),
@@ -4363,6 +4402,7 @@ print(json.dumps({
             talc_mask=talc_mask,
             analyzed_mask=analyzed_mask,
             config=ComponentRuleConfig(),
+            component_classifier=self._component_classifier_for(run_dir),
         )
         final_mask = final_mask_from_classified(classified, talc_mask)
         self._write_run_outputs(
@@ -4414,6 +4454,8 @@ print(json.dumps({
         checkpoints = runtime.get("checkpoints") if isinstance(runtime.get("checkpoints"), dict) else {}
         talc_checkpoint = checkpoints.get("talc") or (str(self.talc_checkpoint) if self.talc_checkpoint else None)
         talc_threshold = normalized_float(runtime.get("talc_threshold"), self.talc_threshold, 0.01, 0.99)
+        if self.magnetite_prep:
+            cmd.append("--magnetite-prep")
         if talc_backend == "ml":
             cmd.extend(
                 [
@@ -4425,6 +4467,8 @@ print(json.dumps({
             )
         else:
             cmd.append("--auto-talc-candidate")
+        if self.component_model_path is not None:
+            cmd.extend(["--component-model", str(self.component_model_path)])
         log_path = run_dir / "ml_pipeline.log"
         with log_path.open("w", encoding="utf-8") as log:
             process = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
@@ -4464,6 +4508,7 @@ print(json.dumps({
             talc_mask=talc_mask,
             analyzed_mask=analyzed_mask,
             config=ComponentRuleConfig(),
+            component_classifier=self._component_classifier_for(run_dir),
         )
         final_mask = final_mask_from_classified(classified, talc_mask)
         self._write_run_outputs(
@@ -4540,6 +4585,7 @@ print(json.dumps({
             talc_mask=talc_mask,
             analyzed_mask=analyzed_mask,
             config=ComponentRuleConfig(),
+            component_classifier=self._component_classifier_for(run_dir),
         )
         final_mask = final_mask_from_classified(classified, talc_mask)
         self._write_run_outputs(
@@ -4926,6 +4972,23 @@ print(json.dumps({
         metadata.setdefault("reports", {})["final_classes_geojson"] = str(geojson_path)
         if shapefile_metadata:
             metadata["reports"]["final_classes_shapefile_zip"] = str(shapefile_zip_path)
+
+    def _component_classifier_for(self, run_dir: Path) -> Any:
+        if self.component_model_path is None:
+            return None
+        if self._component_grade_model is None:
+            from ore_classifier.component_grade_model import ComponentGradeModel
+
+            self._component_grade_model = ComponentGradeModel.load(self.component_model_path)
+        image_name = None
+        try:
+            metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            input_payload = metadata.get("input") if isinstance(metadata.get("input"), dict) else {}
+            raw = input_payload.get("original_name") or input_payload.get("original_artifact_path")
+            image_name = Path(raw).name if raw else None
+        except Exception:  # noqa: BLE001 - image-name hint only
+            image_name = None
+        return self._component_grade_model.labeler(image_name)
 
     def _maybe_predict_grade(self, run_dir: Path, runtime: dict[str, Any] | None = None) -> dict[str, Any] | None:
         # Optional parallel learned grade opinion (efficientnet_b3, ordinary vs fine).
@@ -7307,6 +7370,17 @@ def main() -> int:
         default=DEFAULT_GRADE_CHECKPOINT if DEFAULT_GRADE_CHECKPOINT.exists() else None,
         help="Grade-classifier CNN checkpoint (efficientnet_b3). Adds a parallel learned ordinary/fine grade opinion to each run.",
     )
+    parser.add_argument(
+        "--component-model",
+        default=str(DEFAULT_COMPONENT_MODEL) if DEFAULT_COMPONENT_MODEL.exists() else None,
+        help="Learned per-component grade classifier (model.joblib) replacing the ordinary/fine shape rule. Pass 'none' to force the rule.",
+    )
+    parser.add_argument(
+        "--magnetite-prep",
+        choices=["on", "off"],
+        default="on",
+        help="Two-pass adaptive magnetite darkening in the ML backend (default on).",
+    )
     parser.add_argument("--processing-max-side", type=int, default=2600)
     parser.add_argument("--panorama-max-side", type=int, default=1800)
     parser.add_argument("--preview-max-sides", default="1024,2048,4096")
@@ -7324,6 +7398,8 @@ def main() -> int:
         talc_threshold=args.talc_threshold,
         grain_backend=args.grain_backend,
         grade_checkpoint=args.grade_checkpoint,
+        component_model=None if args.component_model in (None, "", "none", "rule") else Path(args.component_model),
+        magnetite_prep=args.magnetite_prep == "on",
     )
     server = OrePipelineHTTPServer((args.host, args.port), store)
     host, port = server.server_address[:2]

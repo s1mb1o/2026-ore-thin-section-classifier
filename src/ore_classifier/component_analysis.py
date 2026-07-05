@@ -5,7 +5,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -80,6 +80,7 @@ def analyze_components(
     talc_mask: np.ndarray | None = None,
     analyzed_mask: np.ndarray | None = None,
     config: ComponentRuleConfig | None = None,
+    component_classifier: Callable[[list[ComponentFeatures]], list[str]] | None = None,
 ) -> tuple[OreSummary, list[ComponentFeatures], np.ndarray]:
     cfg = config or ComponentRuleConfig()
     sulfide_raw = (sulfide_mask > 0).astype(np.uint8)
@@ -111,10 +112,21 @@ def analyze_components(
         component_crop, sulfide_crop = crop_component(labels, sulfide, component_id, stats[component_id], cfg.close_kernel_px)
         features = component_features(component_id, component_crop, sulfide_crop, stats[component_id], centroids[component_id], cfg)
         components.append(features)
-        x = int(stats[component_id, cv2.CC_STAT_LEFT])
-        y = int(stats[component_id, cv2.CC_STAT_TOP])
-        w = int(stats[component_id, cv2.CC_STAT_WIDTH])
-        h = int(stats[component_id, cv2.CC_STAT_HEIGHT])
+
+    if component_classifier is not None and components:
+        predicted_labels = component_classifier(components)
+        if len(predicted_labels) != len(components):
+            raise ValueError("component_classifier must return one label per component")
+        for features, label in zip(components, predicted_labels, strict=True):
+            features.label = label
+
+    for features in components:
+        component_id = features.component_id
+        area = features.area_px
+        x = features.bbox_x
+        y = features.bbox_y
+        w = features.bbox_w
+        h = features.bbox_h
         component_pixels = labels[y : y + h, x : x + w] == component_id
         classified_crop = classified[y : y + h, x : x + w]
         if features.label == "fine_intergrowth":

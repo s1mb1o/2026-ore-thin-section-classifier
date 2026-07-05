@@ -66,6 +66,8 @@ class ResidentSulfidePipeline:
         talc_checkpoint: str | Path | None = None,
         talc_threshold: float = 0.5,
         preview_max_side: int = 1800,
+        component_model: str | Path | None = None,
+        magnetite_prep: bool = False,
     ) -> None:
         if stride > tile_size:
             raise ValueError("stride must be <= tile_size")
@@ -86,6 +88,15 @@ class ResidentSulfidePipeline:
         self.threshold = threshold
         self.talc_threshold = talc_threshold
         self.preview_max_side = preview_max_side
+        self.magnetite_prep = bool(magnetite_prep)
+        self.component_model_path: str | None = None
+        self.component_model = None
+        if component_model is not None:
+            from ore_classifier.component_grade_model import resolve_component_model
+
+            self.component_model = resolve_component_model(component_model)
+            if self.component_model is not None:
+                self.component_model_path = str(component_model)
         self._weight = _tile_weight(tile_size)
 
     # -- sulfide inference (mirrors scripts/infer_binary_sulfide.py main()) --
@@ -321,6 +332,35 @@ class ResidentSulfidePipeline:
         run_degradations: list[dict[str, Any]] = list(sulfide_summary.get("degradations", []))
 
         sulfide_arr = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L"))
+        magnetite_prep_info: dict[str, Any] | None = None
+        if self.magnetite_prep:
+            from ore_classifier.magnetite_prep import (
+                MagnetitePrepConfig,
+                darken,
+                decide,
+                giant_only_postfilter,
+                luma_of,
+                slabs_region,
+            )
+
+            prep_cfg = MagnetitePrepConfig()
+            decision = decide(image_arr, sulfide_arr, prep_cfg)
+            magnetite_prep_info = decision.to_dict()
+            if decision.applied:
+                (inference_dir / "sulfide_mask_pass1.png").write_bytes(
+                    (inference_dir / "sulfide_mask.png").read_bytes()
+                )
+                region = slabs_region(sulfide_arr, prep_cfg)
+                darkened = darken(image_arr, float(decision.threshold), region, prep_cfg, t1=decision.t1)
+                dark_image = Image.fromarray(darkened)
+                dark_path = inference_dir / "magnetite_prep_input.jpg"
+                dark_image.save(dark_path, quality=97)
+                sulfide_summary = self.infer_sulfide(dark_image, inference_dir, image_path=str(dark_path))
+                run_degradations = list(sulfide_summary.get("degradations", []))
+                mask2 = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L")) > 0
+                filtered = giant_only_postfilter(mask2, luma_of(image_arr), float(decision.threshold), prep_cfg)
+                save_gray(inference_dir / "sulfide_mask.png", filtered.astype(np.uint8) * 255)
+                sulfide_arr = np.asarray(Image.open(inference_dir / "sulfide_mask.png").convert("L"))
         talc_mask_path: Path | None = None
         talc_paths: dict[str, str] = {}
         talc_summary: dict[str, Any] = {}
@@ -379,11 +419,15 @@ class ResidentSulfidePipeline:
             fine_compactness_max=rule_config["fine_compactness_max"],
             talc_fraction_threshold=rule_config["talc_fraction_threshold"],
         )
+        component_classifier = None
+        if self.component_model is not None:
+            component_classifier = self.component_model.labeler(Path(image_path).name)
         summary, components, classified = analyze_components(
             sulfide_mask=sulfide_arr,
             talc_mask=talc_mask,
             analyzed_mask=analyzed_mask,
             config=component_cfg,
+            component_classifier=component_classifier,
         )
         save_component_outputs(
             out_dir=analysis_dir,
@@ -406,6 +450,8 @@ class ResidentSulfidePipeline:
             "talc_checkpoint": self.talc_checkpoint,
             "talc_threshold": self.talc_threshold if self.talc_checkpoint is not None else None,
             "talc_checkpoint_meta": talc_summary.get("checkpoint_meta") if talc_summary else None,
+            "component_model": self.component_model_path,
+            "magnetite_prep": magnetite_prep_info,
             "rule_config": rule_config,
             "paths": {
                 "binary_sulfide_summary": str(inference_dir / "summary.json"),

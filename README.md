@@ -187,6 +187,6 @@ python3 scripts/run_ore_pipeline.py \
 - **GitHub (основной):** <https://github.com/s1mb1o/2026-ore-thin-section-classifier>
 - **SourceCraft (зеркало, auto-sync):** <https://sourcecraft.dev/s1mb1o/2026-ore-thin-section-classifier>
 - **Развёрнутое решение:** <https://nornickel-ai-hackathon.alola.ru/> (доступ — на слайде «Ссылки» презентации)
-- **Резерв:** <https://nornickel-ai-hackathon.my.3simbio.ru/> · <https://nornickel-backup.my.3simbio.ru/workspace>
+- **Резерв:** <https://nornickel-ai-hackathon.my.3simbio.ru/> · <https://nornickel-ai-hackathon.my.3simbio.ru/workspace>
 - **Презентация:** `presentation/` (RU-дек `presentation_ru.md`, рендер `presentation.html`)
 - **Постановка задачи:** [`docs/official/Скажи мне кто твой шлиф.md`](docs/official/Скажи мне кто твой шлиф.md)

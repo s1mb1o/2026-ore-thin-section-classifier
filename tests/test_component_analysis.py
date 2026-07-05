@@ -41,6 +41,33 @@ class ComponentAnalysisTest(unittest.TestCase):
         self.assertEqual(summary.ore_class, "hard_to_process_ore")
         self.assertGreater(int((classified == 2).sum()), 0)
 
+    def test_component_classifier_relabels_components_before_aggregation(self) -> None:
+        mask = np.zeros((100, 100), dtype=np.uint8)
+        cv2.rectangle(mask, (10, 10), (30, 30), 255, thickness=-1)
+        cv2.rectangle(mask, (60, 60), (82, 82), 255, thickness=-1)
+
+        summary, components, classified = analyze_components(
+            mask,
+            config=ComponentRuleConfig(min_component_area_px=10),
+            component_classifier=lambda found: ["fine_intergrowth" for _ in found],
+        )
+
+        self.assertEqual(summary.ore_class, "hard_to_process_ore")
+        self.assertEqual({component.label for component in components}, {"fine_intergrowth"})
+        self.assertEqual(int((classified == 1).sum()), 0)
+        self.assertEqual(int((classified == 2).sum()), int((mask > 0).sum()))
+
+    def test_component_classifier_must_return_one_label_per_component(self) -> None:
+        mask = np.zeros((50, 50), dtype=np.uint8)
+        cv2.rectangle(mask, (10, 10), (30, 30), 255, thickness=-1)
+
+        with self.assertRaises(ValueError):
+            analyze_components(
+                mask,
+                config=ComponentRuleConfig(min_component_area_px=10),
+                component_classifier=lambda found: [],
+            )
+
     def test_talc_fraction_overrides_ore_class(self) -> None:
         sulfide = np.zeros((100, 100), dtype=np.uint8)
         cv2.rectangle(sulfide, (20, 20), (40, 40), 255, thickness=-1)
