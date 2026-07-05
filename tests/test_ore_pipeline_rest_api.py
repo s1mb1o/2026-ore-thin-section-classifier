@@ -53,6 +53,13 @@ class OrePipelineRestApiTest(unittest.TestCase):
             processing_max_side=256,
             panorama_max_side=128,
             preview_max_sides=(128, 256),
+            # Pin heuristic backends so the API-contract tests do not depend on the
+            # ML talc default (DEFAULT_TALC_BACKEND is "ml" whenever the SegFormer-B0
+            # checkpoint is present). Loading/running SegFormer takes ~20s+ on CPU/MPS,
+            # far longer than the 10s client timeouts here, causing false failures.
+            # This mirrors OrePipelineWebTest, which pins talc_backend="heuristic".
+            talc_backend="heuristic",
+            grain_backend="heuristic",
         )
         self.server = OrePipelineHTTPServer(("127.0.0.1", 0), self.store)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
