@@ -34,9 +34,9 @@
 | Порядок | Файл | Зачем |
 | --- | --- | --- |
 | 1 | [`src/ore_classifier/component_analysis.py`](src/ore_classifier/component_analysis.py) | **Ядро правила руды** — компактный, читается за 10 минут |
-| 2 | [`src/ore_classifier/resident_pipeline.py`](src/ore_classifier/resident_pipeline.py) (582 стр.) | Оркестрация: `run_image()` на строке 299 |
+| 2 | [`src/ore_classifier/resident_pipeline.py`](src/ore_classifier/resident_pipeline.py) (628 стр.) | Оркестрация: `run_image()` на строке 310 |
 | 3 | [`scripts/run_ore_pipeline.py`](scripts/run_ore_pipeline.py) | Тонкий CLI-враппер поверх движка |
-| 4 | [`apps/ore_pipeline_web.py`](apps/ore_pipeline_web.py) (7341 стр.) | UI/HTTP/REST/безопасность — большой, но модульный |
+| 4 | [`apps/ore_pipeline_web.py`](apps/ore_pipeline_web.py) (~7500 стр.) | UI/HTTP/REST/безопасность — большой, но модульный. Файл активно меняется; строки ниже — снимок на момент ревью, при расхождении ищите по имени функции |
 
 ## 3. Официальное правило — где именно оно в коде
 
@@ -44,18 +44,18 @@
 ([`component_analysis.py`](src/ore_classifier/component_analysis.py)):
 
 - `component_analysis.py:69` — порог `talc_fraction_threshold: float = 0.10`;
-- `component_analysis.py:131` — `talc_fraction = talc_area / max(analysis_area, 1)`
+- `component_analysis.py:143` — `talc_fraction = talc_area / max(analysis_area, 1)`
   (знаменатель = анализируемая область, артефакты исключены);
-- `component_analysis.py:134` — `if talc_fraction > cfg.talc_fraction_threshold:` → `talcose_ore`
+- `component_analysis.py:146` — `if talc_fraction > cfg.talc_fraction_threshold:` → `talcose_ore`
   (строго `>`, ровно 10% — не оталькованная);
-- `component_analysis.py:143` — `talc_margin` (decision margin для предупреждений);
-- `component_analysis.py:300` — `rule_text_ru()` формирует человекочитаемое заключение;
-- `component_analysis.py:312` — `summary_warnings()` помечает граничные случаи
+- `component_analysis.py:155` — `talc_margin` (decision margin для предупреждений);
+- `component_analysis.py:312` — `rule_text_ru()` формирует человекочитаемое заключение;
+- `component_analysis.py:324` — `summary_warnings()` помечает граничные случаи
   (`talc_fraction_near_threshold` и т. п.).
 
 Тип срастания по морфологии зерна: `analyze_components()` (`:78`),
-`reconstructed_footprint()` (`:266`, замыкание контура), `component_solidity()` (`:285`),
-`component_features()` (`:201`, replacement-ratio/компактность). LLM в решении **нет**.
+`reconstructed_footprint()` (`:278`, замыкание контура), `component_solidity()` (`:297`),
+`component_features()` (`:213`, replacement-ratio/компактность). LLM в решении **нет**.
 
 ## 4. Два бэкенда (надёжность)
 
@@ -71,8 +71,8 @@
 
 ## 5. Большие панорамы
 
-`resident_pipeline.py`: `run_image()` (`:299`) режет панораму на перекрывающиеся тайлы,
-инференс батчами, взвешенная сшивка Hann (`_tile_weight()`, `:532`) в memmap, затем
+`resident_pipeline.py`: `run_image()` (`:310`) режет панораму на перекрывающиеся тайлы,
+инференс батчами, взвешенная сшивка Hann (`_tile_weight()`, `:578`) в memmap, затем
 глобальный connected-component postprocess. Панорама **не ресайзится** — морфология зёрен
 сохраняется; пик GPU-памяти не растёт с размером панорамы (тайлы + memmap). Замеры —
 [`docs/benchmarks/07_...`](docs/benchmarks/07_panorama_performance_20260705.md),
@@ -82,9 +82,9 @@
 
 В [`apps/ore_pipeline_web.py`](apps/ore_pipeline_web.py):
 
-- **Детектор декомпрессионных бомб** — `describe_decode_bomb()` (`:344`), пороги
-  `DECODE_BOMB_MAX_MEGAPIXELS = 1000` / `..._EXPANSION_RATIO = 300` (`:100`), проверка **до**
-  полного декодирования в `_register_upload_file()` (`:2188`); отказ `HTTP 413` с
+- **Детектор декомпрессионных бомб** — `describe_decode_bomb()` (`:347`), пороги
+  `DECODE_BOMB_MAX_MEGAPIXELS = 1000` / `..._EXPANSION_RATIO = 300` (`:101`/`:102`), проверка
+  **до** полного декодирования в `_register_upload_file()`; отказ `HTTP 413` с
   `code: "decode_bomb"`. Порог 1000 МП калиброван по всему датасету (0/1236 ложных; крупнейшая
   реальная панорама 574 МП проходит).
   - **Осознанный компромисс:** `Image.MAX_IMAGE_PIXELS = None` (`:78`) отключает встроенный
@@ -94,11 +94,11 @@
 - **Валидация путей** — централизованная защита от `..`-traversal на upload/run.
 - **Потоковая отдача файлов** — chunked + HTTP byte-range (`206`/`416`, `Accept-Ranges`), чтобы
   крупные артефакты не поднимали RAM.
-- **Кэш `/api/status`** (`status_payload()`, `:2744`/`:7251`) с TTL 1 с — снимает
+- **Кэш `/api/status`** (`status_payload()`) с TTL 1 с — снимает
   GIL-сериализацию на постоянно опрашиваемом эндпоинте.
 - **Опциональная парольная защита** — PBKDF2-SHA256, HttpOnly-сессия; `/api/openapi.json`
   остаётся открытым.
-- **OpenAPI 3.1** — `build_openapi_document()` (`:6170`), проходит формальную валидацию
+- **OpenAPI 3.1** — `build_openapi_document()`, проходит формальную валидацию
   `openapi-spec-validator`; guard синхронизирует таблицу маршрутов с хендлерами.
 
 ## 7. QA-инструменты (human-in-the-loop, не инференс)
@@ -125,7 +125,7 @@ python3 -m pytest tests/ -q
 
 ## 9. Честные замечания к коду
 
-- `apps/ore_pipeline_web.py` крупный (7341 стр.) — это осознанный выбор в пользу
+- `apps/ore_pipeline_web.py` крупный (~7500 стр., растёт) — это осознанный выбор в пользу
   zero-dependency `http.server` без веб-фреймворка; логика сгруппирована по разделам,
   но файл монолитный.
 - Часть возможностей (правка маски, Серии, ГИС-экспорт, MCP) наросла в ходе хакатона — см.

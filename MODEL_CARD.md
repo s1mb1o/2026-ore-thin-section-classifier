@@ -63,15 +63,19 @@
   во фьюзе решает не-оталькованные случаи.
 - **Архитектура:** EfficientNet-B3 (torchvision, ImageNet), img 384, class-weighted CE,
   preproc-aware аугментации. `scripts/train_grade_classifier.py`.
-- **Данные/сплит:** ~755 обучающих изображений, leak-free held-out 230, GroupKFold по аншлифу.
+- **Данные/сплит:** ~755 обучающих изображений (единый group-aware сплит train/val 85/15 по
+  аншлифу, `scripts/train_grade_classifier.py:grouped_split`, без k-fold), leak-free held-out 230
+  (фиксированный тестовый набор, не используется при подборе модели).
 - **Метрики (folder-GT, held-out 230):** macro-F1 **0.930** (raw) / **0.939** (preproc-aware);
   устойчивость к сложным изображениям — EVALUATION §3.
-- **Sweep архитектур:** convnext_tiny 0.939 · efficientnet_b3 0.930 · resnet50 0.922 —
-  архитектура не решает при ~755 изображениях; effb3 выбран за data-efficiency и отсутствие
-  новой зависимости.
+- **Sweep архитектур:** не выполнялся — `convnext_tiny`/`resnet50` заскаффолжены в
+  `BACKBONES` (`scripts/train_grade_classifier.py`), но не обучены, чекпойнтов/eval-артефактов
+  нет (см. EVALUATION §2 «sweep архитектур — не выполнялся»); effb3 выбран за data-efficiency
+  и отсутствие новой зависимости, не по результатам сравнения.
 - **Чекпойнт:** `models/grade_classifier/effb3_ordfine_ppaug_20260704/best.pt`
-  — **не в клоне** (крупный/локальный). Есть также 4-классовый бенчмарк-вариант
-  `effb3_4class_20260704` (val F1-macro 0.771, 4-классовая схема ordinary/thin/talc/refractory).
+  — в git (LFS), доступен после `git lfs pull` на свежем клоне. Есть также 4-классовый
+  бенчмарк-вариант `effb3_4class_20260704` (val F1-macro 0.771, 4-классовая схема
+  ordinary/thin/talc/refractory, не в git — только на развёрнутом демо).
 - **Ограничения:** image-level (не покомпонентная); GT — метка папки на аншлиф, не пиксельная.
 
 ## 4. Эвристический бэкенд (fallback, без torch)
@@ -98,17 +102,20 @@ SegFormer-B0/B1/B3, Mask2Former-Swin-T, ResUNet — обучены для сра
 | Сульфид SegFormer-B2 (default) | ✅ | ✅ (`git lfs pull`) | ✅ |
 | Сульфид SegFormer-B0/B1, ResUNet | ✅ | ✅ | ✅ |
 | Тальк ResUNet (local) | ✅ | ✅ | — |
-| **Тальк SegFormer-B0 (развёрнутый)** | ❌ (под `outputs/`) | ❌ | ✅ |
-| **Grade-CNN EfficientNet-B3** | ❌ | ❌ | ✅ |
+| **Тальк SegFormer-B0 (развёрнутый, default)** | ✅ (`fold_00` only) | ✅ (`git lfs pull`) | ✅ |
+| **Grade-CNN EfficientNet-B3 (`ppaug`, default)** | ✅ | ✅ (`git lfs pull`) | ✅ |
+| Grade-CNN, другие варианты (raw/4class/ppaug07+acq) | ❌ | ❌ | частично (только если явно передан чекпойнт) |
+| Тальк SegFormer-B0, folds 1–4 + smoke (не дефолт) | ❌ | ❌ | — |
 | Grain-классификатор | ❌ | ❌ | частично |
 
 **Практический вывод:**
 
-- После `git lfs pull` сульфидная модель B2 работает сразу.
-- Тальк-`SegFormer-B0` и Grade-CNN в клоне отсутствуют → приложение **автоматически
-  откатывается к эвристике** для этих этапов. Полный ML-стек гарантированно доступен на
-  **развёрнутом демо** ([QUICKSTART.md](QUICKSTART.md), способ 1) и в Docker-образах с
-  примонтированными моделями.
+- После `git lfs pull` сульфидная модель B2, тальк-`SegFormer-B0` (fold_00) и Grade-CNN
+  (`ppaug`) — все три дефолтных чекпойнта — работают сразу на свежем клоне; `DEFAULT_*_BACKEND`
+  в `apps/ore_pipeline_web.py` автовыбирает `ml`, когда чекпойнт присутствует.
+- Только вспомогательные варианты (другие Grade-CNN рецепты, талька folds 1-4/smoke)
+  не входят в git — они нужны лишь для сравнения архитектур/рецептов в EVALUATION.md, не для
+  дефолтного пути приложения.
 - Все веса Hugging Face резолвятся из общего кэша `~/.cache/huggingface/`, а не из репозитория.
 
 ## Назначение и не-назначение

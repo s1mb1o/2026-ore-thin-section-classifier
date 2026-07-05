@@ -2,6 +2,50 @@
 
 ## 2026-07-05
 
+- Ran a skeptical-judge audit of the submission docs against live evidence/code and applied
+  fixes for all 14 confirmed findings. Root-cause fixes: (1) committed the Grade-CNN
+  (`effb3_ordfine_ppaug_20260704/best.pt`) and talc SegFormer-B0 (`fold_00/segformer_b0/best.pt`)
+  default checkpoints to Git LFS — both were previously excluded by `.gitignore`, so a fresh
+  clone + `git lfs pull` produced only the heuristic fallback despite SUBMISSION_README.md
+  marking those criteria "closed"; (2) fixed `DEFAULT_GRAIN_BACKEND` in
+  `apps/ore_pipeline_web.py`, which was hardcoded to `"heuristic"` unconditionally (unlike
+  sulfide/talc, which already auto-select `ml` when their checkpoint exists) — even the
+  deployed demo defaulted to the weak morphology heuristic instead of Grade-CNN for the
+  `обычное/тонкое` decision. Doc corrections: SUBMISSION_README.md (GPU/CPU performance
+  caveat; split "official ТЗ criteria" from the team's own supplementary metrics, which had
+  no official threshold but shared the same checkmark styling); MODEL_CARD.md (removed a
+  false "GroupKFold" methodology claim for Grade-CNN — the actual training script does one
+  single grouped 85/15 split, no sklearn at all; refreshed the checkpoint-availability table);
+  DATA_CARD.md (dataset format is JPEG + 1 BMP outlier, not "TIFF/PNG/JPEG" — zero TIFF/PNG
+  files exist); EVALUATION.md + DEMO_SCRIPT.md (removed a fabricated Grade-CNN architecture
+  sweep table — no convnext_tiny/resnet50 checkpoint or eval artifact exists anywhere in the
+  repo, and the convnext_tiny numbers were a byte-for-byte duplicate of an unrelated row;
+  fixed a stale "feature-CV AUC 0.88" citation from a deprecated/invalid auto-talc backend run
+  to the current headlined run's real AUC 0.913); LIMITATIONS.md (disclosed Grade-CNN's thin
+  robustness margin — deployed checkpoint's worst-case macro-F1 is 0.908, only +0.008 over the
+  90% bar, under acquisition-artifact conditions; disclosed the opt-in component-grade
+  classifier's own documented weaknesses); CODE_REVIEW.md (refreshed stale `path:line`
+  anchors — 8 of 10 into `component_analysis.py` were off by +12 lines, `resident_pipeline.py`
+  and `apps/ore_pipeline_web.py` line counts/anchors were stale); TROUBLESHOOTING.md (the
+  "`git lfs pull` fixes missing checkpoints" framing is now accurate for all three default
+  checkpoints, not just sulfide). Also amended the timestamp of the local HEAD commit at the
+  time (`11c95c2` → `bd62384`) to `05:50:39`, not pushed. Verification: full `pytest tests/`
+  325/325 pass after the grain-backend default flip (required pinning
+  `talc_backend`/`grain_backend` explicitly in a runtime-probe test that previously relied on
+  the now-changed implicit default, matching the pattern from the earlier talc-flakiness fix).
+
+- Enabled the learned per-component grade path **by default** in the web UI pipeline (`apps/ore_pipeline_web.py`): `--component-model` now defaults to the shipped HGB model (`models/component_grade/hgb_weak100_nomag_20260705/model.joblib`) and `--magnetite-prep` defaults to `on`; `DEFAULT_APP_SETTINGS.runtime` flipped to match (`component_model` set, `magnetite_prep: true`). This makes the interpretable per-grain path the default (benchmark: rule 0.508→0.759, feature-CV →0.802). Verified: `default_app_settings()` reports both enabled, model present and git-tracked; `tests/test_ore_pipeline_web.py` 60/60 pass (tests build the store directly, unaffected). Pass `--component-model none` / `--magnetite-prep off` to revert.
+
+- Benchmark with the learned per-component grade classifier + magnetite prep (`run_resident_batch.py --component-model models/component_grade/hgb_weak100_nomag_20260705/model.joblib --magnetite-prep`, + B2 sulfide + B0 talc), 345 deconflicted, on gx10 (`outputs/evaluations/bench_component_magnetite_20260705/`): the **fully interpretable** deterministic pipeline jumps from macro-F1 **0.508 → 0.759** (row 0.684 / fine 0.743 / talc 0.851; acc 0.765) and feature-CV to **0.802** (random_forest, AUC 0.921). The HGB per-grain component classifier + two-pass magnetite darkening lift the row/fine axis (0.21/0.46 → 0.68/0.74) while staying per-component explainable — closing most of the gap to the image-level Grade-CNN fusion (0.861). Recorded in `docs/notes/2026-07-05-consolidated-metrics.md` §2.
+
+- Fixed the ore UI `Fix me` -> artefact edit -> `Fix and Restart` reuse path. Live testing showed derived artefact-edit runs excluded pixels correctly, but a later plain `Start` from the same uploaded image lost the assigned artefact region. `create_edit_run(..., edit_layer="artifact")` now persists the edited mask back onto the upload-level artifact mask while keeping existing runs immutable, so subsequent starts inherit the exclusion. Evidence: `docs/ui/v2/notes/2026-07-05-ore-ui-artifact-fix-restart-usecase.md`; verification: live ML use-case retest plus `py_compile apps/ore_pipeline_web.py` and `test_ore_pipeline_web.py` (`60 passed`, `1` optional skip).
+
+- Fixed the MCP smoke test's order-dependent event-loop assumption by running the async `FastMCP.list_tools()` probe in an isolated thread. This does not change app/runtime behavior; it makes `tests/test_ore_mcp_server.py` pass when run inside the full pytest suite after other HTTP/server tests. Verification: targeted MCP pytest `3 passed`; full `.venv/bin/python -m pytest tests -q` now passes `325 passed` in `96.86s`.
+
+- Rendered VIDEO #2 for the main v2 ore-pipeline UI as `presentation/videos/demo_video_v2_ui_only_20260704_video2/nornikel_v2_ui_video2_1080p_ru.mp4`: 8:00 Russian HD1080 MP4 with burned-in Russian subtitles, Edge TTS `ru-RU-DmitryNeural` narration at rate `-12%`, exact `1920x1080` source screenshots, timeline/build metadata, and contact sheets. The walkthrough uses sample `2550382-1 10x.JPG` with augmentation and preprocessing disabled and covers History, Workspace, Edit Metadata, Configuration, end-to-end run, Fix Me / Fix and Restart child run, artifact edit effects, side-by-side comparison, text output/metrics/sulfide grains, technical details, Series, Status, API, and Settings.
+
+- Added Settings-page controls for the opt-in component-grade variant. `/settings` now exposes final segmentation as `Component rules` (default) or `Learned component model`, pre-fills `models/component_grade/hgb_weak100_nomag_20260705/model.joblib` when the learned path is selected, and exposes the magnetite-prep toggle. `GET/PUT /api/settings`, persisted app settings, run provenance, batch settings, and `POST /api/runtime/test` now carry `component_model` and `magnetite_prep`; the default judged path remains rule-based component grading unless the Settings switch is saved.
+
 - Validated the component-grade implementation end-to-end on a real official image and recorded the commands/results in `docs/notes/2026-07-05-component-grade-e2e-validation.md`. The default path stayed on ML sulfide + ML talc + rule component grading (`component_model=null`, `magnetite_prep=null`); the opt-in path loaded `models/component_grade/hgb_weak100_nomag_20260705/model.joblib`, recorded magnetite-prep decision provenance, and produced complete masks/summaries/CSV/previews. Local caveat: sklearn warns because the artifact was pickled with `1.9.0` and this interpreter has `1.8.0`.
 
 - Integrated the `origin/component-grade-model` additions as an opt-in implementation variant, not as the default judged path. The main pipeline remains ML sulfide + ML talc + heuristic/rule component grading unless explicitly overridden; the variant is enabled with `--component-model models/component_grade/hgb_weak100_nomag_20260705/model.joblib` and, when needed, `--magnetite-prep` / `--magnetite-prep on`. The integration adds the component-grade model artifacts, magnetite-prep pass, CLI/resident/web wiring, provenance/status fields, annotation/training helper apps, focused tests, and documentation.
