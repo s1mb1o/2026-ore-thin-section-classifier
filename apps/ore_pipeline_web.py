@@ -7372,14 +7372,17 @@ def main() -> int:
     )
     parser.add_argument(
         "--component-model",
-        default=str(DEFAULT_COMPONENT_MODEL) if DEFAULT_COMPONENT_MODEL.exists() else None,
-        help="Learned per-component grade classifier (model.joblib) replacing the ordinary/fine shape rule. Pass 'none' to force the rule.",
+        default=None,
+        help=(
+            "Opt-in learned per-component grade classifier (model.joblib) replacing "
+            "the ordinary/fine shape rule. Omit or pass 'none' to use the main rule path."
+        ),
     )
     parser.add_argument(
         "--magnetite-prep",
         choices=["on", "off"],
-        default="on",
-        help="Two-pass adaptive magnetite darkening in the ML backend (default on).",
+        default="off",
+        help="Opt-in two-pass adaptive magnetite darkening in the ML backend (default off).",
     )
     parser.add_argument("--processing-max-side", type=int, default=2600)
     parser.add_argument("--panorama-max-side", type=int, default=1800)

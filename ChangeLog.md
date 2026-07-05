@@ -2,6 +2,10 @@
 
 ## 2026-07-05
 
+- Validated the component-grade implementation end-to-end on a real official image and recorded the commands/results in `docs/notes/2026-07-05-component-grade-e2e-validation.md`. The default path stayed on ML sulfide + ML talc + rule component grading (`component_model=null`, `magnetite_prep=null`); the opt-in path loaded `models/component_grade/hgb_weak100_nomag_20260705/model.joblib`, recorded magnetite-prep decision provenance, and produced complete masks/summaries/CSV/previews. Local caveat: sklearn warns because the artifact was pickled with `1.9.0` and this interpreter has `1.8.0`.
+
+- Integrated the `origin/component-grade-model` additions as an opt-in implementation variant, not as the default judged path. The main pipeline remains ML sulfide + ML talc + heuristic/rule component grading unless explicitly overridden; the variant is enabled with `--component-model models/component_grade/hgb_weak100_nomag_20260705/model.joblib` and, when needed, `--magnetite-prep` / `--magnetite-prep on`. The integration adds the component-grade model artifacts, magnetite-prep pass, CLI/resident/web wiring, provenance/status fields, annotation/training helper apps, focused tests, and documentation.
+
 - Corrected the reviewer-facing backup workspace URL in `README.md` and `SUBMISSION_README.md`: removed stale `https://nornickel-backup.my.3simbio.ru/workspace` and normalized it to the verified protected gx10 route `https://nornickel-ai-hackathon.my.3simbio.ru/workspace` (`401` unauthenticated, as expected).
 
 - Ran a Nornickel-reviewer-style app check against the v2 submission docs and recorded it in `docs/ui/v2/notes/2026-07-05-nornickel-reviewer-app-check.md`. Verified the `QUICKSTART.md` host-Python heuristic path at `127.0.0.1:60623`, local HTTP pages, OpenAPI `3.1.0` (`33` paths), real upload/run/export on `dataset/Фото руд по сортам. ч1/Рядовые руды/2539589-1.JPG`, browser UI pages with no console errors, production unauthenticated auth gate (`401`), `py_compile`, `docker compose config --quiet`, and focused `test_ore_pipeline_web.py` (`60` passed, `1` dev-validator skip). No blocking reviewer-smoke defects found.

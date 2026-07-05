@@ -2,9 +2,9 @@
 
 Provides an optional replacement for the hand-tuned OR-rule in
 ``component_analysis``: a HistGradientBoosting model trained on per-component
-shape features with weak folder-level labels. The shipped default is the
-2026-07-05 no-magnification artifact, which avoids a scanner-frame shortcut and
-uses a calibrated fine threshold from its ``meta.json``.
+shape features with weak folder-level labels. The shipped opt-in artifact is
+the 2026-07-05 no-magnification model, which avoids a scanner-frame shortcut
+and uses a calibrated fine threshold from its ``meta.json``.
 
 The model consumes the same ``ComponentFeatures`` the pipeline already
 computes, so integration only relabels components before the area-weighted

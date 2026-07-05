@@ -1238,8 +1238,12 @@ class OrePipelineWebTest(unittest.TestCase):
         self.assertEqual(payload["history"]["run_status_counts"].get(run["status"]), 1)
         self.assertEqual(payload["app"]["backend"], "heuristic")
         self.assertEqual(payload["app"]["talc_backend"], "heuristic")
+        self.assertIsNone(payload["app"]["component_model"])
+        self.assertFalse(payload["app"]["component_model_exists"])
+        self.assertFalse(payload["app"]["magnetite_prep"])
         self.assertEqual(payload["app"]["models"]["binary_sulfide"]["backend"], "heuristic")
         self.assertEqual(payload["app"]["models"]["talc"]["backend"], "heuristic_candidate")
+        self.assertEqual(payload["app"]["models"]["final_segmentation"]["backend"], "component_rules")
         self.assertIn("logs", payload)
         self.assertGreaterEqual(len(payload["logs"]["system"]), 1)
 
