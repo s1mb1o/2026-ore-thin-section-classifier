@@ -29,7 +29,14 @@ import torch.nn as nn
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from torchvision.models import EfficientNet_B3_Weights, efficientnet_b3
+from torchvision.models import (
+    ConvNeXt_Tiny_Weights,
+    EfficientNet_B3_Weights,
+    ResNet50_Weights,
+    convnext_tiny,
+    efficientnet_b3,
+    resnet50,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -75,6 +82,7 @@ def main() -> int:
     parser.add_argument("--dataset-root", type=Path, default=ROOT / "dataset")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--classes", nargs="+", default=["ordinary_intergrowth", "fine_intergrowth"])
+    parser.add_argument("--backbone", default="efficientnet_b3", choices=list(BACKBONES))
     parser.add_argument("--img-size", type=int, default=384)
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -172,7 +180,7 @@ def main() -> int:
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=False, pin_memory=(device.type == "cuda"))
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=(device.type == "cuda"))
 
-    model = build_model(len(args.classes)).to(device)
+    model = build_model(args.backbone, len(args.classes)).to(device)
     class_weights = inverse_frequency_weights(train_items, args.classes).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -473,10 +481,21 @@ def eval_transforms(img_size: int):
     ])
 
 
-def build_model(num_classes: int) -> nn.Module:
-    model = efficientnet_b3(weights=EfficientNet_B3_Weights.IMAGENET1K_V1)
-    in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, num_classes)
+BACKBONES = ("efficientnet_b3", "convnext_tiny", "resnet50")
+
+
+def build_model(backbone: str, num_classes: int) -> nn.Module:
+    if backbone == "efficientnet_b3":
+        model = efficientnet_b3(weights=EfficientNet_B3_Weights.IMAGENET1K_V1)
+        model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+    elif backbone == "convnext_tiny":
+        model = convnext_tiny(weights=ConvNeXt_Tiny_Weights.IMAGENET1K_V1)
+        model.classifier[2] = nn.Linear(model.classifier[2].in_features, num_classes)
+    elif backbone == "resnet50":
+        model = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+    else:
+        raise ValueError(f"unknown backbone: {backbone}")
     return model
 
 
@@ -557,7 +576,7 @@ def save_checkpoint(path: Path, model, args, class_to_idx: dict[str, int], best_
     torch.save(
         {
             "state_dict": model.state_dict(),
-            "arch": "efficientnet_b3",
+            "arch": args.backbone,
             "classes": list(class_to_idx.keys()),
             "class_to_idx": class_to_idx,
             "img_size": args.img_size,

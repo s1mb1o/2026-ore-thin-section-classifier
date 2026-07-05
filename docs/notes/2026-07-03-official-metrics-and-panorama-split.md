@@ -49,3 +49,41 @@ For the next measurable iteration:
    - confidence heatmaps;
    - stress testing on large unannotated images.
 5. If panoramas are later annotated or assigned class labels, record that as a new dataset version and do not mix it silently with the current unlabelled panorama set.
+
+## QA session #4: no talc-fraction GT + jury accepts the team's own definition
+
+Source (verbatim, with timecodes): `docs/official/2026-07-04-qna-session-4-transcript.md`
+(video SHA-256 `a1df6a549d189bd1ecf6b30a7fda96144bc27be2996a7d7b49eb5945ab5066b7`).
+
+### (a) No expert talc-fraction ground truth exists
+- **[29:44] our question:** «Можно ли сообщить хотя бы выборочно, сколько доля талька
+  у тех изображений, что размечено синими линиями?»
+- **[30:46–31:15] expert answer:** «у меня нет такой экспертизы в геологии, чтобы
+  посмотреть на картинку… сказать, да, тут точно 16%. Результат лаборатории у меня
+  нету… Если ничего дополнительно не предоставили организаторы, то скорее всего уже
+  ничего… всё, что есть, вам показали, дополнительно ничего не можем уточнить.»
+
+→ There is **no expert talc-fraction reference at all** (participants, jury, or
+organizers). The "talc-fraction error ≤ ±3%" criterion is therefore **not gradeable**;
+"not met" is an absence of any reference, not a solution deficiency. Report leak-free
+proxies instead: OOF fraction error vs the reviewed masks (median ~5.5 pp) and the
+grade-relevant "talc > 10%" decision agreement (90% on the 42; talcose F1 0.851 in the
+pipeline). See `docs/notes/2026-07-05-consolidated-metrics.md` §5.
+
+### (b) Jury ruling — grade against the TEAM'S OWN documented definition
+- **[28:04 / 43:57–44:05]:** «жюри при оценке будет учитывать мнение команды на тему
+  того, что такое тальк, оталькованная руда… тальк — это не то, что геолог думает, а
+  то, что команда прописала, как она поняла, что это такое» — **valid only if the team
+  states its definition explicitly** in the README / solution description.
+- **[45:07–47:34]:** the same applies to intergrowth types (ordinary/fine) — write the
+  operational definition/methodology ("предпосылки") the team used.
+- **[46:21–46:33 / 46:53]:** **keep the 10% talc threshold**; you may adjust the
+  *definition* of talc, not the threshold.
+- **[01:00:41]:** organizers acknowledge the annotation is weak («по разметке поняли…
+  ещё месяц назад»).
+
+**Action for submission:** state our operational definitions explicitly in the
+README/presentation — talc (what pixels/regions we count, denominator, >10% rule),
+ordinary vs fine intergrowth (morphology criteria), and the sulfide basis. Per the
+ruling, we are then graded against *our* stated definition, which converts the
+"no GT" problem into a documented, defensible choice.

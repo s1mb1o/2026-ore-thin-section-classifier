@@ -26,7 +26,22 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from torchvision import transforms
-from torchvision.models import efficientnet_b3
+from torchvision.models import convnext_tiny, efficientnet_b3, resnet50
+
+
+def build_model_by_arch(arch: str, num_classes: int) -> nn.Module:
+    if arch == "efficientnet_b3":
+        m = efficientnet_b3(weights=None)
+        m.classifier[1] = nn.Linear(m.classifier[1].in_features, num_classes)
+    elif arch == "convnext_tiny":
+        m = convnext_tiny(weights=None)
+        m.classifier[2] = nn.Linear(m.classifier[2].in_features, num_classes)
+    elif arch == "resnet50":
+        m = resnet50(weights=None)
+        m.fc = nn.Linear(m.fc.in_features, num_classes)
+    else:
+        raise ValueError(f"unknown arch: {arch}")
+    return m
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -70,8 +85,7 @@ def main() -> int:
     class_to_idx = ckpt["class_to_idx"]
     idx_to_class = {v: k for k, v in class_to_idx.items()}
 
-    model = efficientnet_b3(weights=None)
-    model.classifier[1] = nn.Linear(model.classifier[1].in_features, len(classes))
+    model = build_model_by_arch(ckpt.get("arch", "efficientnet_b3"), len(classes))
     model.load_state_dict(ckpt["state_dict"])
     model.to(device).eval()
 

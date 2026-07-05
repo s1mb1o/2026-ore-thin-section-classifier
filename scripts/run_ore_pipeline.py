@@ -188,6 +188,12 @@ def main() -> int:
         args.out_dir.mkdir(parents=True, exist_ok=True)
         Path(grade_branch_path).write_text(json.dumps(grade_branch, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    # Fused primary verdict: talcose from the talc branch (rule), ordinary↔fine from
+    # the Grade-CNN. Only when a grade checkpoint is provided; the rule ore_class is
+    # kept for provenance. Matches the measured 3-class result (macro-F1 0.861).
+    ore_summary = json.loads((analysis_dir / "ore_summary.json").read_text(encoding="utf-8"))
+    fused_ore_class, fused_ore_class_ru, verdict_source = fuse_verdict(ore_summary, grade_branch)
+
     summary = {
         "schema_version": "ore-pipeline-run-v0.2",
         "image": str(args.image),
@@ -198,6 +204,11 @@ def main() -> int:
         "talc_checkpoint_meta": talc_summary.get("checkpoint_meta") if talc_summary else None,
         "grade_checkpoint": str(args.grade_checkpoint) if args.grade_checkpoint is not None else None,
         "grade_branch": grade_branch,
+        "rule_ore_class": ore_summary.get("ore_class"),
+        "rule_ore_class_ru": ore_summary.get("ore_class_ru"),
+        "fused_ore_class": fused_ore_class,
+        "fused_ore_class_ru": fused_ore_class_ru,
+        "verdict_source": verdict_source,
         "rule_config": rule_config,
         "paths": {
             "binary_sulfide_summary": str(inference_dir / "summary.json"),
@@ -223,6 +234,21 @@ def main() -> int:
     (args.out_dir / "pipeline_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
+
+
+def fuse_verdict(ore_summary: dict, grade_branch: dict | None) -> tuple[str, str, str]:
+    """Fused primary verdict: talcose from the talc branch (rule), else Grade-CNN.
+
+    Returns (ore_class, ore_class_ru, source). Falls back to the rule verdict when no
+    grade branch is available.
+    """
+    rule_class = ore_summary.get("ore_class")
+    rule_class_ru = ore_summary.get("ore_class_ru")
+    if rule_class == "talcose_ore":
+        return "talcose_ore", "оталькованная руда", "talc_branch"
+    if grade_branch and grade_branch.get("predicted_ore_class") in ("row_ore", "hard_to_process_ore"):
+        return grade_branch["predicted_ore_class"], grade_branch.get("predicted_ore_class_ru", ""), "grade_cnn"
+    return rule_class, rule_class_ru, "rule_fallback"
 
 
 def run(cmd: list[str]) -> None:

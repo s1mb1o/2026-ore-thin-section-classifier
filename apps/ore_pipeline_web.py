@@ -4979,7 +4979,21 @@ print(json.dumps({
             metadata["grade_branch"] = grade_branch
             summary["grade_branch"] = grade_branch
             if "predicted_ore_class_ru" in grade_branch:
+                # Fused primary verdict: talcose from the talc branch (rule), else Grade-CNN.
+                if summary.get("ore_class") == "talcose_ore":
+                    fused_class, fused_ru, source = "talcose_ore", "оталькованная руда", "talc_branch"
+                elif grade_branch.get("predicted_ore_class") in ("row_ore", "hard_to_process_ore"):
+                    fused_class = grade_branch["predicted_ore_class"]
+                    fused_ru = grade_branch.get("predicted_ore_class_ru", "")
+                    source = "grade_cnn"
+                else:
+                    fused_class, fused_ru, source = summary.get("ore_class"), summary.get("ore_class_ru"), "rule_fallback"
+                metadata["fused_ore_class"] = fused_class
+                metadata["fused_ore_class_ru"] = fused_ru
+                metadata["verdict_source"] = source
+                summary["fused_ore_class"] = fused_class
                 metadata["text_output"] += (
+                    f" Итоговый сорт (фьюз тальк⊕Grade-CNN): {fused_ru}."
                     f" Классификатор по зерну (CNN, обычное/тонкое): {grade_branch['predicted_ore_class_ru']}"
                     f" (уверенность {float(grade_branch.get('confidence', 0.0)) * 100:.1f}%)."
                 )
