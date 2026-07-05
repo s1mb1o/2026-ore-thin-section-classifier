@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the grade-classifier CNN branch (analog of the competitor's variant).
+"""Train the grade-classifier CNN branch.
 
 A supervised image-level EfficientNet-B3 classifier over ore-grade folder labels,
 added as a PARALLEL branch to our segmentation-first pipeline. By default it
@@ -120,7 +120,7 @@ def main() -> int:
     parser.add_argument(
         "--four-class",
         action="store_true",
-        help="Benchmark mode: 4-class grade (ordinary/thin/talc/refractory) with grouped train/val over ALL labelled images (no eval-split holdout), mirroring the competitor's schema.",
+        help="Benchmark mode: 4-class grade (ordinary/thin/talc/refractory) with grouped train/val over ALL labelled images (no eval-split holdout).",
     )
     add_mlflow_args(parser, default_experiment="grade-classifier")
     args = parser.parse_args()
@@ -308,7 +308,7 @@ def build_sample_pool(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 
 def four_class_label(label_hint: str, path: str) -> str | None:
-    # 4-class grade schema (competitor A): split fine_intergrowth into thin (ч2/тонкие)
+    # 4-class grade schema: split fine_intergrowth into thin (ч2/тонкие)
     # vs refractory (труднообогатимые). talc = the talcose grade only, NOT the 42
     # "Области оталькования" blue-contour annotations (label_hint talc_annotation).
     if label_hint == "ordinary_intergrowth":

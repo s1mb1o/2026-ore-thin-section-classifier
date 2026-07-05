@@ -52,8 +52,7 @@ Deconflicted split = sha256 conflict+duplicate content excluded (115/class).
 `outputs/evaluations/grade_fusion_20260705.*`): talcose from the B0 talc branch,
 ordinary↔fine from the Grade-CNN, morphology rule as fallback. **macro-F1 0.861**
 (row 0.867 / fine 0.865 / talc 0.851) — a 3–4× lift over the pure rule (0.508) on
-row/fine, and **on par with competitor A (0.880)** on a leak-free 345 split (theirs
-218). 211/345 decided by the CNN, 134 by the talc branch. Note: the "тип срастаний
+row/fine, on a leak-free 345 split. 211/345 decided by the CNN, 134 by the talc branch. Note: the "тип срастаний
 ≥90%" criterion is carried by the standalone 2-class Grade-CNN (0.93); inside the
 3-class fusion the talc branch's false-positives pull row/fine to ~0.865.
 
